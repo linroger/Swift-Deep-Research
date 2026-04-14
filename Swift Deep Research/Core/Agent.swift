@@ -1,431 +1,680 @@
 import Foundation
 
-// Error definitions for the research process.
+// MARK: - Error Definitions
+
+/// Errors that can occur during the research process
 enum ResearchError: LocalizedError {
     case noSearchResults
     case tokenBudgetExceeded(currentUsage: Int, budget: Int)
     case invalidLLMResponse(String)
+    case cancelled
+    case providerError(String)
     
     var errorDescription: String? {
         switch self {
         case .noSearchResults:
             return "No search results found. Please try a different or more specific query."
         case .tokenBudgetExceeded(let current, let budget):
-            return "Token budget would be exceeded: \(current) > \(budget)"
+            return "Token budget exceeded: \(current) > \(budget)"
         case .invalidLLMResponse(let message):
-            return "LLM response could not be parsed: \(message)"
+            return "Could not parse LLM response: \(message)"
+        case .cancelled:
+            return "Research was cancelled."
+        case .providerError(let message):
+            return "LLM provider error: \(message)"
         }
     }
 }
 
-// Agent configuration for tuning parameters.
+// MARK: - Agent Configuration
+
+/// Configuration for tuning agent behavior
 struct AgentConfiguration {
-    let stepSleep: UInt64  // in nanoseconds
-    let maxAttempts: Int
-    let tokenBudget: Int
+    let stepSleep: UInt64  // nanoseconds between steps
+    let maxAttempts: Int   // max bad attempts before fallback
+    let tokenBudget: Int   // max approximate tokens
+    let maxSearchQueries: Int  // max search queries to generate
+    let maxWebpagesPerQuery: Int  // max webpages to fetch per query
+    
+    static let `default` = AgentConfiguration(
+        stepSleep: 500_000_000,  // 0.5 seconds
+        maxAttempts: 5,
+        tokenBudget: 500_000,
+        maxSearchQueries: 4,
+        maxWebpagesPerQuery: 5
+    )
+    
+    static let fast = AgentConfiguration(
+        stepSleep: 250_000_000,
+        maxAttempts: 3,
+        tokenBudget: 200_000,
+        maxSearchQueries: 2,
+        maxWebpagesPerQuery: 3
+    )
+    
+    static let thorough = AgentConfiguration(
+        stepSleep: 1_000_000_000,
+        maxAttempts: 8,
+        tokenBudget: 1_000_000,
+        maxSearchQueries: 6,
+        maxWebpagesPerQuery: 8
+    )
 }
 
-// The Agent state logs internal diary events.
-struct AgentDiary {
-    private(set) var entries: [String] = []
+// MARK: - Research Progress
+
+/// A single step in the research process for UI display
+struct ResearchStep: Identifiable {
+    let id = UUID()
+    let timestamp: Date
+    let type: StepType
+    let title: String
+    let detail: String?
+    var urls: [String]?
+    var isExpanded: Bool = false
     
-    mutating func add(_ entry: String) {
-        let formatter = DateFormatter()
-        formatter.timeStyle = .medium
-        let timestamp = formatter.string(from: Date())
-        entries.append("[\(timestamp)] " + entry)
+    enum StepType: String {
+        case query = "magnifyingglass"
+        case search = "globe"
+        case reading = "doc.text"
+        case thinking = "brain"
+        case answer = "checkmark.circle"
+        case error = "exclamationmark.triangle"
+    }
+}
+
+/// Represents the current state of research for UI updates
+struct ResearchProgress {
+    var phase: ResearchPhase
+    var currentQuery: String?
+    var sourcesFound: Int
+    var sourcesProcessed: Int
+    var iterations: Int
+    var statusMessage: String
+    var steps: [ResearchStep] = []
+    var searchQueries: [String] = []
+    var urlsBeingRead: [String] = []
+    var currentThinking: String?
+    
+    enum ResearchPhase: String {
+        case starting = "Starting research..."
+        case generatingQueries = "Generating search queries..."
+        case searching = "Searching the web..."
+        case extractingContent = "Reading webpages..."
+        case analyzing = "Analyzing information..."
+        case synthesizing = "Synthesizing answer..."
+        case reflecting = "Reflecting on findings..."
+        case complete = "Research complete"
+    }
+    
+    static let initial = ResearchProgress(
+        phase: .starting,
+        currentQuery: nil,
+        sourcesFound: 0,
+        sourcesProcessed: 0,
+        iterations: 0,
+        statusMessage: "Starting research...",
+        steps: [],
+        searchQueries: [],
+        urlsBeingRead: [],
+        currentThinking: nil
+    )
+    
+    mutating func addStep(_ type: ResearchStep.StepType, title: String, detail: String? = nil, urls: [String]? = nil) {
+        steps.append(ResearchStep(timestamp: Date(), type: type, title: title, detail: detail, urls: urls))
+    }
+}
+
+// MARK: - Agent Diary
+
+/// Logs internal agent events for debugging and transparency
+struct AgentDiary {
+    private(set) var entries: [DiaryEntry] = []
+    
+    struct DiaryEntry {
+        let timestamp: Date
+        let message: String
+        let type: EntryType
+        
+        enum EntryType {
+            case info, search, extract, llm, error, decision
+        }
+    }
+    
+    mutating func add(_ message: String, type: DiaryEntry.EntryType = .info) {
+        entries.append(DiaryEntry(timestamp: Date(), message: message, type: type))
     }
     
     func log() -> String {
-        entries.joined(separator: "\n")
+        let formatter = DateFormatter()
+        formatter.timeStyle = .medium
+        return entries.map { entry in
+            "[\(formatter.string(from: entry.timestamp))] \(entry.message)"
+        }.joined(separator: "\n")
+    }
+    
+    func recentEntries(_ count: Int = 10) -> [DiaryEntry] {
+        Array(entries.suffix(count))
     }
 }
 
-// The Agent orchestrates web search, content extraction, LLM reasoning, and iterative research.
+// MARK: - Research Agent
+
+/// The Agent orchestrates web search, content extraction, LLM reasoning, and iterative research.
 @MainActor
-struct Agent {
+class Agent: ObservableObject {
     
     // MARK: - Dependencies
     let searchService: SearchServiceProtocol
     let webReaderService: ContentExtractor 
     let llmProvider: LLMProviderProtocol
+    let systemPrompt: String
     
-    // MARK: - Agent Config and State
+    // MARK: - Published State
+    @Published var progress: ResearchProgress = .initial
+    @Published var isRunning: Bool = false
+    
+    // MARK: - Internal State
     private let config: AgentConfiguration
     private var diary = AgentDiary()
     private var gaps: [String] = []
     private var visitedURLs: Set<URL> = []
-    
+    private var collectedSources: [SourceCitation] = []
     private var tokenUsage = 0
+    private var isCancelled = false
+    
+    // Callback for streaming updates
+    var onStreamingUpdate: ((String) -> Void)?
+    var onProgressUpdate: ((ResearchProgress) -> Void)?
     
     init(searchService: SearchServiceProtocol,
          webReaderService: ContentExtractor,
          llmProvider: LLMProviderProtocol,
-         config: AgentConfiguration = AgentConfiguration(
-            stepSleep: 1_000_000_000,  // 1 second
-            maxAttempts: 3,
-            tokenBudget: 1_000_000
-         )
+         systemPrompt: String = "",
+         config: AgentConfiguration = .default
     ) {
         self.searchService = searchService
         self.webReaderService = webReaderService
         self.llmProvider = llmProvider
+        self.systemPrompt = systemPrompt
         self.config = config
     }
     
-    // Main workflow method
-    mutating func getResponse(for question: String,
-                              maxBadAttempts: Int = 5) async throws -> String {
+    /// Cancel ongoing research
+    func cancel() {
+        isCancelled = true
+        isRunning = false
+    }
+    
+    /// Get collected sources
+    var sources: [SourceCitation] {
+        collectedSources
+    }
+    
+    // MARK: - Main Research Method
+    
+    /// Performs deep research on a question and returns a comprehensive answer
+    func getResponse(for question: String) async throws -> String {
         // Reset state
+        isRunning = true
+        isCancelled = false
         gaps = [question]
         diary = AgentDiary()
-        diary.add("Starting research for: \(question)")
         visitedURLs = []
+        collectedSources = []
         tokenUsage = 0
         
+        defer { isRunning = false }
+        
+        updateProgress(.starting, message: "Starting research on: \(question)")
+        progress.addStep(.query, title: "Research question", detail: question)
+        diary.add("Starting research for: \(question)", type: .info)
+        
         var badAttempts = 0
-        
-        // Generate initial search queries using LLM
-        let initialQueries = try await generateSearchQueries(for: question)
-        if !initialQueries.isEmpty, !initialQueries.contains(question) {
-            gaps.insert(contentsOf: initialQueries, at: 0)
-            diary.add("Generated initial search queries: \(initialQueries)")
-        }
-        
-        // answers
         var candidateAnswers: [String] = []
         
-        while true {
+        // Step 1: Generate search queries
+        updateProgress(.generatingQueries, message: "Generating search queries...")
+        let initialQueries = try await generateSearchQueries(for: question)
+        if !initialQueries.isEmpty {
+            gaps = initialQueries + [question]
+            progress.searchQueries = initialQueries
+            progress.addStep(.query, title: "Generated \(initialQueries.count) search queries", detail: initialQueries.joined(separator: "\n• "))
+            diary.add("Generated \(initialQueries.count) search queries", type: .search)
+        }
+        
+        // Main research loop
+        while !isCancelled {
             try await Task.sleep(nanoseconds: config.stepSleep)
-            if Task.isCancelled { throw CancellationError() }
+            if Task.isCancelled || isCancelled { throw ResearchError.cancelled }
             
-            // If no pending gaps, re-add the original question.
-            let currentQuestion = gaps.isEmpty ? question : gaps.removeFirst()
-            diary.add("Processing query: \(currentQuestion)")
+            let currentQuery = gaps.isEmpty ? question : gaps.removeFirst()
+            progress.currentQuery = currentQuery
+            progress.iterations += 1
             
-            // 1) Perform search
-            let searchResults = try await fetchConcurrentSearchResults(for: currentQuestion)
-            guard !searchResults.isEmpty else {
-                diary.add("No search results for query: \(currentQuestion)")
-                throw ResearchError.noSearchResults
-            }
+            // Step 2: Search
+            updateProgress(.searching, message: "Searching: \(currentQuery)")
+            progress.addStep(.search, title: "Searching", detail: currentQuery)
+            diary.add("Searching for: \(currentQuery)", type: .search)
             
-            // 2) Filter out already visited URLs
-            let unvisitedResults = searchResults.filter { !visitedURLs.contains($0.url) }
-            if unvisitedResults.isEmpty {
-                diary.add("All URLs already visited for query: \(currentQuestion)")
-                gaps.append(currentQuestion)
+            let searchResults = try await fetchSearchResults(for: currentQuery)
+            if searchResults.isEmpty {
+                progress.addStep(.error, title: "No results found", detail: currentQuery)
+                diary.add("No results for: \(currentQuery)", type: .error)
+                if gaps.isEmpty {
+                    throw ResearchError.noSearchResults
+                }
                 continue
             }
-            unvisitedResults.forEach { visitedURLs.insert($0.url) }
-            diary.add("Collected \(unvisitedResults.count) new URL(s) for query: \(currentQuestion)")
             
-            // 3) Fetch webpage contents concurrently using your content extractor factory.
-            let webpages = try await fetchWebpagesContent(from: unvisitedResults)
+            // Filter visited URLs
+            let newResults = searchResults.filter { !visitedURLs.contains($0.url) }
+                .prefix(config.maxWebpagesPerQuery)
             
-            let aggregatedContent = webpages.joined(separator: "\n\n")
-            diary.add("Aggregated content from \(webpages.count) webpage(s)")
-            
-            
-            // 4) Build the prompt including chain-of-thought context with enhanced instructions.
-            let prompt = buildPrompt(
-                for: currentQuestion,
-                aggregatedContent: aggregatedContent,
-                diaryLog: diary.entries,
-                references: visitedURLs.map { $0.absoluteString }
-            )
-            diary.add("Built prompt for LLM.")
-            
-            // 5) Token usage check
-            tokenUsage += prompt.count
-            if tokenUsage > config.tokenBudget {
-                diary.add("Token budget exceeded: \(tokenUsage) > \(config.tokenBudget)")
-                throw ResearchError.tokenBudgetExceeded(currentUsage: tokenUsage, budget: config.tokenBudget)
+            if newResults.isEmpty {
+                diary.add("All URLs already visited", type: .info)
+                continue
             }
             
-            // 6) Invoke LLM with the constructed prompt
+            newResults.forEach { visitedURLs.insert($0.url) }
+            progress.sourcesFound = visitedURLs.count
+            
+            // Step 3: Extract content
+            let urlStrings = newResults.map { $0.url.absoluteString }
+            progress.urlsBeingRead = urlStrings
+            updateProgress(.extractingContent, message: "Reading \(newResults.count) sources...")
+            progress.addStep(.reading, title: "Reading \(newResults.count) sources", detail: newResults.map { "• \($0.title)" }.joined(separator: "\n"), urls: urlStrings)
+            diary.add("Extracting content from \(newResults.count) pages", type: .extract)
+            
+            let contents = await fetchWebpagesContent(from: Array(newResults))
+            progress.sourcesProcessed += contents.count
+            
+            // Add to sources
+            for result in newResults {
+                collectedSources.append(SourceCitation(
+                    title: result.title,
+                    url: result.url.absoluteString,
+                    snippet: nil
+                ))
+            }
+            
+            let aggregatedContent = contents.joined(separator: "\n\n---\n\n")
+            
+            // Step 4: Analyze with LLM
+            updateProgress(.analyzing, message: "Analyzing information...")
+            progress.addStep(.thinking, title: "Analyzing content", detail: "Processing \(contents.count) sources for: \(currentQuery)")
+            progress.urlsBeingRead = []
+            
+            let prompt = buildAnalysisPrompt(
+                question: question,
+                currentQuery: currentQuery,
+                content: aggregatedContent,
+                previousFindings: candidateAnswers.last
+            )
+            
+            tokenUsage += prompt.count
+            if tokenUsage > config.tokenBudget {
+                diary.add("Token budget exceeded", type: .error)
+                break
+            }
+            
+            diary.add("Invoking LLM for analysis", type: .llm)
+            
             let rawResponse = try await llmProvider.processText(
-                systemPrompt: "You are an advanced research assistant with deep chain-of-thought reasoning.",
+                systemPrompt: buildSystemPrompt(),
                 userPrompt: prompt,
                 streaming: true
             )
             
-            // Print the AI response to the console for debugging.
-            print("AI response: \(rawResponse)")
+            tokenUsage += rawResponse.count
             
-            diary.add("Received LLM response.")
-            tokenUsage += rawResponse.count  // simplistic token usage addition
-            
-            // Parse LLM response.
+            // Parse response
             let parseResult = LLMResponseParser.parse(from: rawResponse)
+            
             switch parseResult {
-            case .failure(let error):
-                diary.add("Parsing error: \(error.localizedDescription)")
-                throw ResearchError.invalidLLMResponse(rawResponse)
+            case .failure:
+                // If parsing fails, treat raw response as answer
+                diary.add("Using raw response as answer", type: .decision)
+                candidateAnswers.append(rawResponse)
                 
             case .success(let response):
-                diary.add("LLM response action: \(response.action), Thoughts: \(response.thoughts)")
+                diary.add("Action: \(response.action)", type: .decision)
+                
+                // Capture thinking/reasoning if available
+                if !response.thoughts.isEmpty {
+                    progress.currentThinking = response.thoughts
+                    progress.addStep(.thinking, title: "Reasoning", detail: response.thoughts)
+                }
                 
                 switch response.action.lowercased() {
                 case "answer":
-                    if let finalAnswer = response.answer, !finalAnswer.isEmpty {
-                        diary.add("Answer received: \(finalAnswer)")
-                        let refinedAnswer = try await reflectionStepIfNeeded(finalAnswer)
-                        if isDefinitive(answer: refinedAnswer) || refinedAnswer.count > 50 {
-                            diary.add("Definitive answer found: \(refinedAnswer)")
-                            print("Definitive answer found: \(refinedAnswer)")
-                            // Append to candidate answers
-                            candidateAnswers.append(refinedAnswer)
-                            // Instead of returning here, do NOT break out of the loop immediately.
+                    if let answer = response.answer, !answer.isEmpty {
+                        if isDefinitive(answer: answer) {
+                            candidateAnswers.append(answer)
+                            progress.addStep(.answer, title: "Found answer", detail: String(answer.prefix(200)) + (answer.count > 200 ? "..." : ""))
+                            diary.add("Found definitive answer", type: .decision)
                         } else {
-                            diary.add("Answer was ambiguous or too short, increasing badAttempts.")
                             badAttempts += 1
                         }
                     } else {
-                        diary.add("Empty answer received, increasing badAttempts.")
                         badAttempts += 1
                     }
                     
                 case "reflect":
                     if let subQuestions = response.questionsToAnswer, !subQuestions.isEmpty {
-                        diary.add("Reflection action received with sub-questions: \(subQuestions)")
-                        gaps.append(contentsOf: subQuestions)
-                    } else {
-                        diary.add("Reflection action but no sub-questions provided; reusing current query.")
-                        gaps.append(currentQuestion)
+                        gaps.append(contentsOf: subQuestions.prefix(3))
+                        progress.addStep(.thinking, title: "Identified \(subQuestions.count) follow-up questions", detail: subQuestions.joined(separator: "\n• "))
+                        diary.add("Added \(subQuestions.count) sub-questions", type: .decision)
                     }
                     badAttempts += 1
                     
                 case "search":
                     if let query = response.searchQuery, !query.isEmpty {
-                        diary.add("LLM requested new search query: \(query)")
                         gaps.insert(query, at: 0)
-                    } else {
-                        diary.add("Empty search query received; reusing current query.")
-                        gaps.append(currentQuestion)
+                        progress.searchQueries.append(query)
+                        progress.addStep(.search, title: "Need more information", detail: "New search: \(query)")
+                        diary.add("New search query: \(query)", type: .search)
                     }
                     badAttempts += 1
                     
                 default:
-                    diary.add("Unknown action '\(response.action)'; counting as bad attempt.")
                     badAttempts += 1
                 }
-                
-                if gaps.isEmpty {
-                    print("All URLs processed. Candidate answers so far: \(candidateAnswers)")
-                    // Choose the best candidate (for example, the last one or by some ranking)
-                    if let bestAnswer = candidateAnswers.last, !bestAnswer.isEmpty {
-                        let referencesText = visitedURLs.isEmpty ? "" :
-                        "\n\nSources:\n" + visitedURLs.map { $0.absoluteString }.joined(separator: "\n")
-                        return bestAnswer + referencesText
-                    } else {
-                        diary.add("No definitive candidate found; triggering Beast Mode.")
-                        let beastAnswer = try await beastModeAnswer(for: question)
-                        let referencesText = visitedURLs.isEmpty ? "" :
-                        "\n\nSources:\n" + visitedURLs.map { $0.absoluteString }.joined(separator: "\n")
-                        return beastAnswer + referencesText
-                    }
-                }
             }
             
-            // For debugging: print out the current candidate answers so far.
-            print("Candidate answers so far: \(candidateAnswers)")
-            
-            // If the loop has run for a set number of iterations (or if gaps become empty)
-            // you might decide to break out and return the best candidate.
-            if badAttempts >= maxBadAttempts || gaps.isEmpty {
-                if let bestAnswer = candidateAnswers.last, !bestAnswer.isEmpty {
-                    let referencesText = visitedURLs.isEmpty ? "" :
-                    "\n\nSources:\n" + visitedURLs.map { $0.absoluteString }.joined(separator: "\n")
-                    return bestAnswer + referencesText
-                } else {
-                    diary.add("Exceeded maximum bad attempts; triggering Beast Mode.")
-                    let beastAnswer = try await beastModeAnswer(for: question)
-                    let referencesText = visitedURLs.isEmpty ? "" :
-                    "\n\nSources:\n" + visitedURLs.map { $0.absoluteString }.joined(separator: "\n")
-                    return beastAnswer + referencesText
-                }
+            // Check termination conditions
+            if gaps.isEmpty || badAttempts >= config.maxAttempts {
+                break
             }
         }
-    }
-    
-    // Generates initial search queries using LLM
-    private mutating func generateSearchQueries(for question: String) async throws -> [String] {
-        let prompt = """
-        You are a research query generator. Given the topic:
-        "\(question)"
-        Generate up to four distinct, non-redundant search queries that can be used to gather more information. Return the output in valid JSON format:
-        {
-          "queries": ["query1", "query2", "query3", "query4"]
-        }
-        """
-        let rawResponse = try await llmProvider.processText(
-            systemPrompt: "You are a research query generator.",
-            userPrompt: prompt,
-            streaming: false
-        )
-        struct QueryResponse: Codable { let queries: [String] }
-        if let data = rawResponse.data(using: .utf8),
-           let queryResponse = try? JSONDecoder().decode(QueryResponse.self, from: data) {
-            return queryResponse.queries.filter { !$0.isEmpty }
+        
+        // Step 5: Synthesize final answer
+        updateProgress(.synthesizing, message: "Synthesizing final answer...")
+        progress.addStep(.thinking, title: "Synthesizing final answer", detail: "Combining findings from \(collectedSources.count) sources")
+        
+        let finalAnswer: String
+        if let best = candidateAnswers.last, !best.isEmpty {
+            finalAnswer = best
         } else {
-            diary.add("Failed to generate search queries via LLM; defaulting to original question.")
-            return [question]
+            finalAnswer = try await synthesizeFinalAnswer(for: question)
+        }
+        
+        // Update memory with any insights
+        parseMemoryUpdates(from: finalAnswer)
+        
+        updateProgress(.complete, message: "Research complete")
+        
+        return finalAnswer
+    }
+    
+    // MARK: - Progress Updates
+    
+    private func updateProgress(_ phase: ResearchProgress.ResearchPhase, message: String) {
+        progress.phase = phase
+        progress.statusMessage = message
+        onProgressUpdate?(progress)
+    }
+    
+    // MARK: - Search Query Generation
+    
+    private func generateSearchQueries(for question: String) async throws -> [String] {
+        let prompt = """
+        Generate \(config.maxSearchQueries) diverse search queries to research this question:
+        "\(question)"
+        
+        Create queries that:
+        1. Cover different aspects of the topic
+        2. Use varied terminology and phrasing
+        3. Include both broad and specific searches
+        4. Target authoritative sources when relevant
+        
+        Return ONLY a JSON object:
+        {"queries": ["query1", "query2", "query3", "query4"]}
+        """
+        
+        do {
+            let response = try await llmProvider.processText(
+                systemPrompt: "You generate search queries. Return only valid JSON.",
+                userPrompt: prompt,
+                streaming: false
+            )
+            
+            struct QueryResponse: Codable { let queries: [String] }
+            
+            // Try to extract JSON from response
+            let jsonString = extractJSON(from: response)
+            if let data = jsonString.data(using: .utf8),
+               let parsed = try? JSONDecoder().decode(QueryResponse.self, from: data) {
+                return Array(parsed.queries.filter { !$0.isEmpty }.prefix(config.maxSearchQueries))
+            }
+        } catch {
+            diary.add("Query generation failed: \(error.localizedDescription)", type: .error)
+        }
+        
+        return [question]
+    }
+    
+    // MARK: - Search
+    
+    private func fetchSearchResults(for query: String) async throws -> [SearchResult] {
+        do {
+            let results = try await searchService.search(query: query)
+            return results
+        } catch {
+            diary.add("Search failed: \(error.localizedDescription)", type: .error)
+            return []
         }
     }
     
-    // Fetches search results concurrently for a given query.
-    private mutating func fetchConcurrentSearchResults(for query: String) async throws -> [SearchResult] {
-        var allResults: [SearchResult] = []
-        let searchQueries = [query]
-        
-        try await withThrowingTaskGroup(of: [SearchResult].self) { group in
-            for q in searchQueries {
-                group.addTask { [localSearchService = self.searchService] in
-                    return try await localSearchService.search(query: q)
-                }
-            }
-            for try await partial in group {
-                allResults.append(contentsOf: partial)
-            }
-        }
-        
-        // Deduplicate results
-        var unique: [SearchResult] = []
-        var seen = Set<URL>()
-        for res in allResults {
-            if !seen.contains(res.url) {
-                seen.insert(res.url)
-                unique.append(res)
-            }
-        }
-        return unique
-    }
+    // MARK: - Content Extraction
     
-    // Fetches webpage content concurrently from search results using a content extractor factory.
-    private mutating func fetchWebpagesContent(from results: [SearchResult]) async throws -> [String] {
+    private func fetchWebpagesContent(from results: [SearchResult]) async -> [String] {
         var contents: [String] = []
-        var localDiary = self.diary // Create local copy
-        try await withThrowingTaskGroup(of: String.self) { group in
-            for r in results {
-                // Resolve the final URL from the DuckDuckGo redirect.
-                let finalURL = ContentExtractionFactory.resolveRedirect(for: r.url)
-                // Create extractor based on the resolved URL.
-                let extractor = ContentExtractionFactory.createExtractor(for: finalURL)
+        
+        await withTaskGroup(of: String?.self) { group in
+            for result in results {
                 group.addTask {
+                    let finalURL = ContentExtractionFactory.resolveRedirect(for: result.url)
+                    let extractor = ContentExtractionFactory.createExtractor(for: finalURL)
+                    
                     do {
-                        return try await extractor.extractContent(from: finalURL)
+                        let content = try await extractor.extractContent(from: finalURL)
+                        // Truncate very long content
+                        let maxLength = 15000
+                        if content.count > maxLength {
+                            return String(content.prefix(maxLength)) + "\n[Content truncated...]"
+                        }
+                        return content
                     } catch {
-                        localDiary.add("Failed to extract content from \(finalURL.absoluteString): \(error.localizedDescription)")
-                        return ""
+                        return nil
                     }
                 }
             }
-            for try await content in group {
-                if !content.isEmpty {
+            
+            for await content in group {
+                if let content = content, !content.isEmpty {
                     contents.append(content)
                 }
             }
         }
+        
         return contents
     }
     
-    // Builds the prompt for the LLM using the current query, aggregated content, and diary log.
-    private func buildPrompt(for question: String,
-                             aggregatedContent: String,
-                             diaryLog: [String],
-                             references: [String]) -> String {
-        let currentDate = DateFormatter.localizedString(from: Date(),
-                                                        dateStyle: .medium,
-                                                        timeStyle: .medium)
+    // MARK: - System Prompt
+    
+    private func buildSystemPrompt() -> String {
+        var prompt = systemPrompt.isEmpty ? defaultSystemPrompt : systemPrompt
         
-        let prompt = """
-        Current date: \(currentDate)
-        
-        You are an advanced research assistant with expertise in deep, multi-step research and analysis. Your task is to answer the following question using **only** the aggregated content provided below and your internal research diary. Provide a detailed, step-by-step chain-of-thought explanation of how you arrived at your answer, including specific evidence (exact quotes when appropriate) from the content. Do not add any information that is not supported by the data.
-        
-        ## Question:
-        \(question)
-        
-        ## Aggregated Content:
-        \(aggregatedContent)
-        
-        ## Research Diary:
-        \(diaryLog.joined(separator: "\n"))
-        
-        ## References:
-        \(references.joined(separator: "\n"))
-        
-        Provide your output in valid JSON format strictly following the schema below. Do not include any additional commentary.
-        
-        Schema:
-        {
-          "action": "answer" | "search" | "reflect",
-          "thoughts": "Your internal chain-of-thought reasoning process.",
-          "searchQuery": "If action is search, provide a new query to search for missing information.",
-          "questionsToAnswer": ["If action is reflect, list sub-questions to explore."],
-          "answer": "Final, detailed answer if action is answer.",
-          "references": [{"exactQuote": "Relevant snippet", "url": "URL of the source"}]
+        // Add memory context if available
+        if AppSettings.shared.enableMemory {
+            prompt += MemoryManager.shared.formatForPrompt()
         }
-        """
+        
         return prompt
     }
     
-    // Checks if the answer is definitive.
+    private var defaultSystemPrompt: String {
+        """
+        You are an expert research assistant. Your role is to analyze information from web sources and provide accurate, well-reasoned answers.
+        
+        Guidelines:
+        - Use ONLY information from the provided sources
+        - Cite specific evidence with quotes when possible
+        - Acknowledge uncertainty when information is incomplete
+        - Think step-by-step before answering
+        - Be concise but comprehensive
+        
+        If you learn important facts about the user's preferences or context, save them using:
+        [MEMORY:category]content[/MEMORY]
+        Categories: preference, project, insight, correction, instruction, general
+        """
+    }
+    
+    // MARK: - Analysis Prompt
+    
+    private func buildAnalysisPrompt(question: String,
+                                      currentQuery: String,
+                                      content: String,
+                                      previousFindings: String?) -> String {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateStyle = .medium
+        dateFormatter.timeStyle = .short
+        let currentDate = dateFormatter.string(from: Date())
+        
+        var prompt = """
+        # Research Task
+        
+        **Date:** \(currentDate)
+        **Original Question:** \(question)
+        **Current Focus:** \(currentQuery)
+        
+        ## Source Content
+        
+        \(content)
+        
+        """
+        
+        if let previous = previousFindings, !previous.isEmpty {
+            prompt += """
+            
+            ## Previous Findings
+            
+            \(previous)
+            
+            """
+        }
+        
+        prompt += """
+        
+        ## Instructions
+        
+        Analyze the source content to answer the question. You must respond with valid JSON:
+        
+        ```json
+        {
+          "action": "answer" | "search" | "reflect",
+          "thoughts": "Your step-by-step reasoning process",
+          "answer": "Your comprehensive answer (if action is 'answer')",
+          "searchQuery": "A new search query (if action is 'search')",
+          "questionsToAnswer": ["Sub-questions to explore (if action is 'reflect')"],
+          "confidence": "high" | "medium" | "low",
+          "references": [{"exactQuote": "quote", "url": "source"}]
+        }
+        ```
+        
+        Choose:
+        - "answer" if you have enough information for a complete response
+        - "search" if you need more specific information
+        - "reflect" if the question needs to be broken into sub-questions
+        """
+        
+        return prompt
+    }
+    
+    // MARK: - Answer Validation
+    
     private func isDefinitive(answer: String) -> Bool {
         let lower = answer.lowercased()
-        if lower.contains("i don't know") ||
-            lower.contains("unsure") ||
-            lower.contains("not available") {
-            return false
+        
+        // Check for uncertainty markers
+        let uncertaintyPhrases = [
+            "i don't know",
+            "i'm not sure",
+            "unsure",
+            "not available",
+            "cannot determine",
+            "no information",
+            "unclear"
+        ]
+        
+        for phrase in uncertaintyPhrases {
+            if lower.contains(phrase) {
+                return false
+            }
         }
-        return answer.count > 30
+        
+        // Answer should be substantive
+        return answer.count > 50
     }
     
-    // Reflection step: if the answer is too short or ambiguous, request LLM to expand it.
-    private mutating func reflectionStepIfNeeded(_ answer: String) async throws -> String {
-        guard answer.count < 40 else { return answer }
-        diary.add("Triggering reflection due to short or ambiguous answer.")
-        
-        let reflectPrompt = """
-        The current answer is: \(answer)
-        
-        Review the aggregated content and the research diary below.
-        Use the provided content to expand your answer with detailed, step-by-step reasoning and supporting evidence. Your final answer must be comprehensive and based solely on the available data.
-        
-        Research Diary:
-        \(diary.entries.joined(separator: "\n"))
-        """
-        
-        let improved = try await llmProvider.processText(
-            systemPrompt: "You are a thorough and accurate research assistant.",
-            userPrompt: reflectPrompt,
-            streaming: false
-        )
-        diary.add("Reflection step produced an expanded answer.")
-        return improved
-    }
+    // MARK: - Final Synthesis
     
-    // Beast mode: if multiple attempts have failed, provide a best-effort answer.
-    private mutating func beastModeAnswer(for question: String) async throws -> String {
-        let logs = diary.log()
+    private func synthesizeFinalAnswer(for question: String) async throws -> String {
+        let diaryLog = diary.log()
+        let sourcesText = collectedSources.map { "- \($0.title): \($0.url)" }.joined(separator: "\n")
+        
         let prompt = """
-        Beast Mode Activated:
-        Despite multiple attempts, a definitive answer has not been reached.
+        # Final Synthesis Required
         
-        Based on the following research diary and aggregated content, provide your best final answer. Ensure your answer is detailed, includes step-by-step reasoning, and cites specific evidence from the data.
+        After extensive research, synthesize a comprehensive answer to:
+        **\(question)**
         
-        Question: \(question)
+        ## Research Log
+        \(diaryLog)
         
-        Research Diary:
-        \(logs)
+        ## Sources Consulted
+        \(sourcesText)
+        
+        ## Instructions
+        Provide your best possible answer based on all research conducted. Be comprehensive, cite evidence, and acknowledge any limitations in the available information.
+        
+        Write your answer in clear, well-structured prose. Do not use JSON format for this response.
         """
-        let finalAnswer = try await llmProvider.processText(
-            systemPrompt: "You are in Beast Mode. Provide your best possible answer now with full supporting details.",
+        
+        let answer = try await llmProvider.processText(
+            systemPrompt: "You are synthesizing research findings into a final, comprehensive answer.",
             userPrompt: prompt,
             streaming: true
         )
-        diary.add("Beast mode produced a final answer.")
-        return finalAnswer
+        
+        return answer
+    }
+    
+    // MARK: - Memory Updates
+    
+    private func parseMemoryUpdates(from response: String) {
+        Task { @MainActor in
+            MemoryManager.shared.parseAndUpdateFromResponse(response)
+        }
+    }
+    
+    // MARK: - Helpers
+    
+    private func extractJSON(from text: String) -> String {
+        // Try to find JSON object in the text
+        var cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // Remove markdown code blocks
+        cleaned = cleaned.replacingOccurrences(of: "```json", with: "")
+        cleaned = cleaned.replacingOccurrences(of: "```", with: "")
+        
+        // Find JSON boundaries
+        if let start = cleaned.firstIndex(of: "{"),
+           let end = cleaned.lastIndex(of: "}") {
+            return String(cleaned[start...end])
+        }
+        
+        return cleaned
     }
 }

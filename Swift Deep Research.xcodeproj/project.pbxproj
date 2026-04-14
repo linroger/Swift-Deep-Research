@@ -7,6 +7,20 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0212FB84415DC6108844CFED /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A0B2DB54F87AFA1773E5B0 /* Agent.swift */; };
+		02211C2098C7449E77978E1D /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A0B2DB54F87AFA1773E5B0 /* Agent.swift */; };
+		04CB78C8AE3208075B05E0AF /* OllamaProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */; };
+		0889F2CAF62C93BD31CC466B /* OllamaProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */; };
+		0B744AA13B79C20B369A77AA /* OllamaProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */; };
+		0BFB2BB071310F426203084F /* OllamaProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */; };
+		0F4FB1781A36F7823BB6984A /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A0B2DB54F87AFA1773E5B0 /* Agent.swift */; };
+		13EEB92ACC5172BC281E0F60 /* Swift_Deep_ResearchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EEFD194849DBA853D5D8D38 /* Swift_Deep_ResearchApp.swift */; };
+		1A7D66506A125E423DBCC4B9 /* OllamaProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */; };
+		1F18F63EBEF947C5B7887BB3 /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A0B2DB54F87AFA1773E5B0 /* Agent.swift */; };
+		203E86018C385544F20F0941 /* OllamaProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */; };
+		2070A8987547D883CAF86551 /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A0B2DB54F87AFA1773E5B0 /* Agent.swift */; };
+		20901E4AFB3D5B1C98849EC7 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8818DC2421F6BE5DA9D48E93 /* ChatView.swift */; };
+		2523F87EAC9595EDC98C9CD7 /* OllamaProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */; };
 		2A6031A42D517812001E22A9 /* SwiftSoup in Frameworks */ = {isa = PBXBuildFile; productRef = 2A6031A32D517812001E22A9 /* SwiftSoup */; };
 		2A8EA9B62D515B90003DC358 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 2A8EA9B52D515B90003DC358 /* MLXLLM */; };
 		2A8EA9B82D515B90003DC358 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 2A8EA9B72D515B90003DC358 /* MLXLMCommon */; };
@@ -19,10 +33,81 @@
 		2A8EA9C72D515B9F003DC358 /* MLXLinalg in Frameworks */ = {isa = PBXBuildFile; productRef = 2A8EA9C62D515B9F003DC358 /* MLXLinalg */; };
 		2A8EA9C92D515B9F003DC358 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = 2A8EA9C82D515B9F003DC358 /* MLXNN */; };
 		2A8EA9CC2D515BAF003DC358 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = 2A8EA9CB2D515BAF003DC358 /* MarkdownUI */; };
+		2D570BC02248ABF65C4FD21E /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 625972248143F9682CE02BDC /* SettingsView.swift */; };
+		3315424740805D4F4C2E4B9A /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A0B2DB54F87AFA1773E5B0 /* Agent.swift */; };
+		42DE365F3F1B6C2B2620DB17 /* MemoryListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 785AA0055FC74A028EF2FA2C /* MemoryListView.swift */; };
+		451D45A171E0DF65457C95FD /* OllamaProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */; };
+		48E7DE577CD80EE9E4554DAD /* ResearchStepsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51CDD2D248675F1CC3D23693 /* ResearchStepsView.swift */; };
+		4E2E0A1BA8CC1A06EE1871D3 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9E7FB4A436481028C3F90A0 /* AppSettings.swift */; };
+		54F3C4C7FD86CDDB7BFCDEBF /* ResearchStepsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51CDD2D248675F1CC3D23693 /* ResearchStepsView.swift */; };
+		5698765D61686963FF099A79 /* OllamaProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */; };
+		56BCBC3583B040BAE00893A3 /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A0B2DB54F87AFA1773E5B0 /* Agent.swift */; };
+		60CBD5BE89427BF05A17AB50 /* OllamaProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */; };
+		63C90B92273C38339CBED02A /* OllamaProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */; };
+		65A2D26706C9329E859DFA5C /* OllamaProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */; };
+		66ABE12D8999B706B916411A /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A0B2DB54F87AFA1773E5B0 /* Agent.swift */; };
+		6727E9AC7B1581FF3DD49625 /* OllamaProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */; };
+		6850C6910435E6918D19E21F /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9E7FB4A436481028C3F90A0 /* AppSettings.swift */; };
+		6BCAC272C39CF431585AD1B0 /* Conversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 082E7B21578C1BA4C45CCD65 /* Conversation.swift */; };
+		6F9E3591B326D297C5BE3095 /* Memory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BE7A2F3EBD1EB64D72C48AB /* Memory.swift */; };
+		78C2F1F622219ABCA78125E0 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8818DC2421F6BE5DA9D48E93 /* ChatView.swift */; };
+		78E34C92C2008EDD34DB6BED /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A0B2DB54F87AFA1773E5B0 /* Agent.swift */; };
+		7BCA4597248FF2B0DEFE644A /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9E7FB4A436481028C3F90A0 /* AppSettings.swift */; };
+		808D14DAC42345007289FAF5 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8818DC2421F6BE5DA9D48E93 /* ChatView.swift */; };
+		856D5B011F37F3B9A8F95CB7 /* OllamaProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */; };
+		8CC3E4EA87075FE46C821CA3 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9E7FB4A436481028C3F90A0 /* AppSettings.swift */; };
+		91DD97BC3D1798FC0C18B2A2 /* Appstate.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEE6A8D2BB93EC90EDB2FEAE /* Appstate.swift */; };
+		92A7A41C5E0C443CDD2F8E07 /* ChatBubbleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D703B49926B3F6B664E0F2 /* ChatBubbleView.swift */; };
+		936932A045D6B081C5B19C0F /* ChatMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = F925717455AD67BBB8BD439A /* ChatMessage.swift */; };
+		97E6136786FAB431E1A5225E /* ResearchStepsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51CDD2D248675F1CC3D23693 /* ResearchStepsView.swift */; };
+		98D2E46B00EDA3FFDF7FE225 /* OllamaProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */; };
+		A05D797976D31D9E66407725 /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A0B2DB54F87AFA1773E5B0 /* Agent.swift */; };
+		A2DCAA23491E6694AEF84600 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8818DC2421F6BE5DA9D48E93 /* ChatView.swift */; };
+		A790CBDA2F8ED8DF000F1E4A /* Ollama in Frameworks */ = {isa = PBXBuildFile; productRef = A790CBD92F8ED8DF000F1E4A /* Ollama */; };
+		AE0C55ECADA967621D1A4732 /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A0B2DB54F87AFA1773E5B0 /* Agent.swift */; };
+		AE3CCC74FD91E64429054B4C /* ResearchStepsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51CDD2D248675F1CC3D23693 /* ResearchStepsView.swift */; };
+		AF56736BFC067705C68CC4FE /* OllamaProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */; };
+		AF980CF15FBD7DA7A4B6F563 /* Conversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 082E7B21578C1BA4C45CCD65 /* Conversation.swift */; };
+		B355F8EEAB3EA0370F364468 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8818DC2421F6BE5DA9D48E93 /* ChatView.swift */; };
+		B613188AC4B9792D700FE8FE /* OllamaProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */; };
+		C532B21DBE23D0F902CCAA2A /* OllamaProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */; };
+		C71CE02DDE847D668A091C6D /* ChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D63CAD0FAA0FDF101FB9125F /* ChatViewModel.swift */; };
+		CAE279FB13A3A08EBC651E91 /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A0B2DB54F87AFA1773E5B0 /* Agent.swift */; };
+		CF3C7880D512DBE570331896 /* PromptEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6324AFDC08443DCF77B00B58 /* PromptEditorView.swift */; };
+		D0E9B80302B24478CCAE1948 /* OllamaProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */; };
+		DDD80B76573B142862491F08 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 625972248143F9682CE02BDC /* SettingsView.swift */; };
+		E8B2458C194A91B655162556 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9E7FB4A436481028C3F90A0 /* AppSettings.swift */; };
+		ED21B0A4D33D7C3418D989FF /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A0B2DB54F87AFA1773E5B0 /* Agent.swift */; };
+		EDF0447FDA14A7C798C27012 /* ChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D63CAD0FAA0FDF101FB9125F /* ChatViewModel.swift */; };
+		F6CA450865C0BCD65DB01AA7 /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A0B2DB54F87AFA1773E5B0 /* Agent.swift */; };
+		F8FEB1C7D79FF350DBEB4844 /* CustomPrompt.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB16F6D6EBD619FBF188843A /* CustomPrompt.swift */; };
+		FC723FA765E5FC5F3AEA6C02 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 625972248143F9682CE02BDC /* SettingsView.swift */; };
+		FE2C144E36AB316C56FB954C /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A0B2DB54F87AFA1773E5B0 /* Agent.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		082E7B21578C1BA4C45CCD65 /* Conversation.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = Conversation.swift; path = "Swift Deep Research/Models/Conversation.swift"; sourceTree = SOURCE_ROOT; };
+		0EEFD194849DBA853D5D8D38 /* Swift_Deep_ResearchApp.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = Swift_Deep_ResearchApp.swift; path = "Swift Deep Research/Swift_Deep_ResearchApp.swift"; sourceTree = SOURCE_ROOT; };
+		24027781C1DA419ADC55D562 /* README_zh.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; lastKnownFileType = net.daringfireball.markdown; name = README_zh.md; path = README_zh.md; sourceTree = SOURCE_ROOT; };
+		29A0B2DB54F87AFA1773E5B0 /* Agent.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = Agent.swift; path = "Swift Deep Research/Core/Agent.swift"; sourceTree = SOURCE_ROOT; };
 		2A89B85D2D514ACF00EB12F9 /* Swift Deep Research.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Swift Deep Research.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		35DC20AAD76193E783A57D47 /* manifest.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = manifest.json; path = build/XCBuildData/eddd5ebc78e95320da9489cfcf0d6c8a.xcbuilddata/manifest.json; sourceTree = SOURCE_ROOT; };
+		51CDD2D248675F1CC3D23693 /* ResearchStepsView.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; lastKnownFileType = sourcecode.swift; name = ResearchStepsView.swift; path = "Swift Deep Research/Views/ResearchStepsView.swift"; sourceTree = SOURCE_ROOT; };
+		625972248143F9682CE02BDC /* SettingsView.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = SettingsView.swift; path = "Swift Deep Research/Views/SettingsView.swift"; sourceTree = SOURCE_ROOT; };
+		6324AFDC08443DCF77B00B58 /* PromptEditorView.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = PromptEditorView.swift; path = "Swift Deep Research/Views/PromptEditorView.swift"; sourceTree = SOURCE_ROOT; };
+		66BBA5F9BF9CB0DAE650B50C /* build-request.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = "build-request.json"; path = "build/XCBuildData/eddd5ebc78e95320da9489cfcf0d6c8a.xcbuilddata/build-request.json"; sourceTree = SOURCE_ROOT; };
+		6EEC1C6516603B8356F5B3FF /* target-graph.txt */ = {isa = PBXFileReference; explicitFileType = text; name = "target-graph.txt"; path = "build/XCBuildData/eddd5ebc78e95320da9489cfcf0d6c8a.xcbuilddata/target-graph.txt"; sourceTree = SOURCE_ROOT; };
+		785AA0055FC74A028EF2FA2C /* MemoryListView.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = MemoryListView.swift; path = "Swift Deep Research/Views/MemoryListView.swift"; sourceTree = SOURCE_ROOT; };
+		8818DC2421F6BE5DA9D48E93 /* ChatView.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = ChatView.swift; path = "Swift Deep Research/Views/ChatView.swift"; sourceTree = SOURCE_ROOT; };
+		9BE7A2F3EBD1EB64D72C48AB /* Memory.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = Memory.swift; path = "Swift Deep Research/Models/Memory.swift"; sourceTree = SOURCE_ROOT; };
+		A4D703B49926B3F6B664E0F2 /* ChatBubbleView.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = ChatBubbleView.swift; path = "Swift Deep Research/Views/ChatBubbleView.swift"; sourceTree = SOURCE_ROOT; };
+		C75EF9819295552714422E18 /* README.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; lastKnownFileType = net.daringfireball.markdown; name = README.md; path = README.md; sourceTree = SOURCE_ROOT; };
+		D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = OllamaProvider.swift; path = "Swift Deep Research/Services/OllamaProvider.swift"; sourceTree = SOURCE_ROOT; };
+		D63CAD0FAA0FDF101FB9125F /* ChatViewModel.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = ChatViewModel.swift; path = "Swift Deep Research/Views/ChatViewModel.swift"; sourceTree = SOURCE_ROOT; };
+		DB16F6D6EBD619FBF188843A /* CustomPrompt.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = CustomPrompt.swift; path = "Swift Deep Research/Models/CustomPrompt.swift"; sourceTree = SOURCE_ROOT; };
+		DEE6A8D2BB93EC90EDB2FEAE /* Appstate.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = Appstate.swift; path = "Swift Deep Research/Appstate.swift"; sourceTree = SOURCE_ROOT; };
+		F925717455AD67BBB8BD439A /* ChatMessage.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = ChatMessage.swift; path = "Swift Deep Research/Views/ChatMessage.swift"; sourceTree = SOURCE_ROOT; };
+		F9E7FB4A436481028C3F90A0 /* AppSettings.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = AppSettings.swift; path = "Swift Deep Research/Models/AppSettings.swift"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -38,6 +123,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A790CBDA2F8ED8DF000F1E4A /* Ollama in Frameworks */,
 				2A8EA9C12D515B9F003DC358 /* MLX in Frameworks */,
 				2A8EA9BA2D515B90003DC358 /* MLXMNIST in Frameworks */,
 				2A8EA9B82D515B90003DC358 /* MLXLMCommon in Frameworks */,
@@ -61,6 +147,27 @@
 			children = (
 				2A89B85F2D514ACF00EB12F9 /* Swift Deep Research */,
 				2A89B85E2D514ACF00EB12F9 /* Products */,
+				D4C76F37F12412FED726E3C2 /* OllamaProvider.swift */,
+				9BE7A2F3EBD1EB64D72C48AB /* Memory.swift */,
+				DB16F6D6EBD619FBF188843A /* CustomPrompt.swift */,
+				082E7B21578C1BA4C45CCD65 /* Conversation.swift */,
+				F925717455AD67BBB8BD439A /* ChatMessage.swift */,
+				F9E7FB4A436481028C3F90A0 /* AppSettings.swift */,
+				DEE6A8D2BB93EC90EDB2FEAE /* Appstate.swift */,
+				29A0B2DB54F87AFA1773E5B0 /* Agent.swift */,
+				D63CAD0FAA0FDF101FB9125F /* ChatViewModel.swift */,
+				625972248143F9682CE02BDC /* SettingsView.swift */,
+				785AA0055FC74A028EF2FA2C /* MemoryListView.swift */,
+				6324AFDC08443DCF77B00B58 /* PromptEditorView.swift */,
+				8818DC2421F6BE5DA9D48E93 /* ChatView.swift */,
+				A4D703B49926B3F6B664E0F2 /* ChatBubbleView.swift */,
+				0EEFD194849DBA853D5D8D38 /* Swift_Deep_ResearchApp.swift */,
+				6EEC1C6516603B8356F5B3FF /* target-graph.txt */,
+				35DC20AAD76193E783A57D47 /* manifest.json */,
+				66BBA5F9BF9CB0DAE650B50C /* build-request.json */,
+				51CDD2D248675F1CC3D23693 /* ResearchStepsView.swift */,
+				C75EF9819295552714422E18 /* README.md */,
+				24027781C1DA419ADC55D562 /* README_zh.md */,
 			);
 			sourceTree = "<group>";
 		};
@@ -104,6 +211,7 @@
 				2A8EA9C82D515B9F003DC358 /* MLXNN */,
 				2A8EA9CB2D515BAF003DC358 /* MarkdownUI */,
 				2A6031A32D517812001E22A9 /* SwiftSoup */,
+				A790CBD92F8ED8DF000F1E4A /* Ollama */,
 			);
 			productName = "Swift Deep Research";
 			productReference = 2A89B85D2D514ACF00EB12F9 /* Swift Deep Research.app */;
@@ -138,6 +246,7 @@
 				2A8EA9BF2D515B9F003DC358 /* XCRemoteSwiftPackageReference "mlx-swift" */,
 				2A8EA9CA2D515BAF003DC358 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
 				2A6031A22D517812001E22A9 /* XCRemoteSwiftPackageReference "SwiftSoup" */,
+				A790CBD82F8ED8DF000F1E4A /* XCRemoteSwiftPackageReference "ollama-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 2A89B85E2D514ACF00EB12F9 /* Products */;
@@ -164,6 +273,69 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				04CB78C8AE3208075B05E0AF /* OllamaProvider.swift in Sources */,
+				6F9E3591B326D297C5BE3095 /* Memory.swift in Sources */,
+				F8FEB1C7D79FF350DBEB4844 /* CustomPrompt.swift in Sources */,
+				6BCAC272C39CF431585AD1B0 /* Conversation.swift in Sources */,
+				AF980CF15FBD7DA7A4B6F563 /* Conversation.swift in Sources */,
+				936932A045D6B081C5B19C0F /* ChatMessage.swift in Sources */,
+				7BCA4597248FF2B0DEFE644A /* AppSettings.swift in Sources */,
+				91DD97BC3D1798FC0C18B2A2 /* Appstate.swift in Sources */,
+				ED21B0A4D33D7C3418D989FF /* Agent.swift in Sources */,
+				A05D797976D31D9E66407725 /* Agent.swift in Sources */,
+				AE0C55ECADA967621D1A4732 /* Agent.swift in Sources */,
+				1F18F63EBEF947C5B7887BB3 /* Agent.swift in Sources */,
+				02211C2098C7449E77978E1D /* Agent.swift in Sources */,
+				EDF0447FDA14A7C798C27012 /* ChatViewModel.swift in Sources */,
+				FC723FA765E5FC5F3AEA6C02 /* SettingsView.swift in Sources */,
+				42DE365F3F1B6C2B2620DB17 /* MemoryListView.swift in Sources */,
+				CF3C7880D512DBE570331896 /* PromptEditorView.swift in Sources */,
+				DDD80B76573B142862491F08 /* SettingsView.swift in Sources */,
+				808D14DAC42345007289FAF5 /* ChatView.swift in Sources */,
+				92A7A41C5E0C443CDD2F8E07 /* ChatBubbleView.swift in Sources */,
+				13EEB92ACC5172BC281E0F60 /* Swift_Deep_ResearchApp.swift in Sources */,
+				8CC3E4EA87075FE46C821CA3 /* AppSettings.swift in Sources */,
+				0889F2CAF62C93BD31CC466B /* OllamaProvider.swift in Sources */,
+				60CBD5BE89427BF05A17AB50 /* OllamaProvider.swift in Sources */,
+				65A2D26706C9329E859DFA5C /* OllamaProvider.swift in Sources */,
+				1A7D66506A125E423DBCC4B9 /* OllamaProvider.swift in Sources */,
+				B613188AC4B9792D700FE8FE /* OllamaProvider.swift in Sources */,
+				C532B21DBE23D0F902CCAA2A /* OllamaProvider.swift in Sources */,
+				0BFB2BB071310F426203084F /* OllamaProvider.swift in Sources */,
+				0B744AA13B79C20B369A77AA /* OllamaProvider.swift in Sources */,
+				D0E9B80302B24478CCAE1948 /* OllamaProvider.swift in Sources */,
+				451D45A171E0DF65457C95FD /* OllamaProvider.swift in Sources */,
+				203E86018C385544F20F0941 /* OllamaProvider.swift in Sources */,
+				6727E9AC7B1581FF3DD49625 /* OllamaProvider.swift in Sources */,
+				63C90B92273C38339CBED02A /* OllamaProvider.swift in Sources */,
+				98D2E46B00EDA3FFDF7FE225 /* OllamaProvider.swift in Sources */,
+				856D5B011F37F3B9A8F95CB7 /* OllamaProvider.swift in Sources */,
+				2523F87EAC9595EDC98C9CD7 /* OllamaProvider.swift in Sources */,
+				5698765D61686963FF099A79 /* OllamaProvider.swift in Sources */,
+				AF56736BFC067705C68CC4FE /* OllamaProvider.swift in Sources */,
+				78E34C92C2008EDD34DB6BED /* Agent.swift in Sources */,
+				56BCBC3583B040BAE00893A3 /* Agent.swift in Sources */,
+				3315424740805D4F4C2E4B9A /* Agent.swift in Sources */,
+				F6CA450865C0BCD65DB01AA7 /* Agent.swift in Sources */,
+				0212FB84415DC6108844CFED /* Agent.swift in Sources */,
+				0F4FB1781A36F7823BB6984A /* Agent.swift in Sources */,
+				FE2C144E36AB316C56FB954C /* Agent.swift in Sources */,
+				2070A8987547D883CAF86551 /* Agent.swift in Sources */,
+				66ABE12D8999B706B916411A /* Agent.swift in Sources */,
+				CAE279FB13A3A08EBC651E91 /* Agent.swift in Sources */,
+				97E6136786FAB431E1A5225E /* ResearchStepsView.swift in Sources */,
+				A2DCAA23491E6694AEF84600 /* ChatView.swift in Sources */,
+				6850C6910435E6918D19E21F /* AppSettings.swift in Sources */,
+				4E2E0A1BA8CC1A06EE1871D3 /* AppSettings.swift in Sources */,
+				E8B2458C194A91B655162556 /* AppSettings.swift in Sources */,
+				2D570BC02248ABF65C4FD21E /* SettingsView.swift in Sources */,
+				78C2F1F622219ABCA78125E0 /* ChatView.swift in Sources */,
+				20901E4AFB3D5B1C98849EC7 /* ChatView.swift in Sources */,
+				B355F8EEAB3EA0370F364468 /* ChatView.swift in Sources */,
+				C71CE02DDE847D668A091C6D /* ChatViewModel.swift in Sources */,
+				48E7DE577CD80EE9E4554DAD /* ResearchStepsView.swift in Sources */,
+				54F3C4C7FD86CDDB7BFCDEBF /* ResearchStepsView.swift in Sources */,
+				AE3CCC74FD91E64429054B4C /* ResearchStepsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -294,11 +466,12 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "Swift Deep Research/Swift_Deep_Research.entitlements";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"Swift Deep Research/Preview Content\"";
-				DEVELOPMENT_TEAM = MK2V998W66;
+				DEVELOPMENT_TEAM = X8AD8YC886;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -322,11 +495,12 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "Swift Deep Research/Swift_Deep_Research.entitlements";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"Swift Deep Research/Preview Content\"";
-				DEVELOPMENT_TEAM = MK2V998W66;
+				DEVELOPMENT_TEAM = X8AD8YC886;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -400,6 +574,14 @@
 				minimumVersion = 2.4.1;
 			};
 		};
+		A790CBD82F8ED8DF000F1E4A /* XCRemoteSwiftPackageReference "ollama-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mattt/ollama-swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.8.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -462,6 +644,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 2A8EA9CA2D515BAF003DC358 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
 			productName = MarkdownUI;
+		};
+		A790CBD92F8ED8DF000F1E4A /* Ollama */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A790CBD82F8ED8DF000F1E4A /* XCRemoteSwiftPackageReference "ollama-swift" */;
+			productName = Ollama;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

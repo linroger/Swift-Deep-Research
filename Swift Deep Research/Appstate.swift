@@ -1,91 +1,121 @@
 import SwiftUI
 
-enum LLMType: String, CaseIterable, Identifiable {
-    case local = "Local LLM"
-    case gemini = "Gemini"
-    
-    var id: String { self.rawValue }
-}
-
 @MainActor
 class AppState: ObservableObject {
     static let shared = AppState()
     
-    
-    // Local LLM provider.
+    // MARK: - LLM Providers
     @Published var localLLMProvider: LocalLLMProvider
-    
     @Published var geminiProvider: GeminiProvider
-
-    // Current provider with UI binding support
-    @Published private(set) var currentProvider: String
+    @Published var ollamaProvider: OllamaProvider
     
-    // Other properties
-    @Published var customInstruction: String = ""
-    @Published var selectedText: String = ""
-    @Published var isPopupVisible: Bool = false
+    // MARK: - Current Provider
+    @Published var currentProviderType: LLMProviderType {
+        didSet {
+            AppSettings.shared.currentProvider = currentProviderType
+            objectWillChange.send()
+        }
+    }
+    
+    // MARK: - App State
     @Published var isProcessing: Bool = false
-    @Published var previousApplication: NSRunningApplication?
+    @Published var showOnboarding: Bool = false
+    
+    // MARK: - Managers
+    let memoryManager = MemoryManager.shared
+    let promptManager = CustomPromptManager.shared
+    let conversationManager = ConversationManager.shared
     
     private init() {
-        // Read from AppSettings
-        let asettings = AppSettings.shared
-        self.currentProvider = asettings.currentProvider
+        let settings = AppSettings.shared
         
-        // Initialize Gemini
-        let geminiConfig = GeminiConfig(apiKey: asettings.geminiApiKey,
-                                        modelName: asettings.geminiModel.rawValue)
+        // Initialize current provider type
+        self.currentProviderType = settings.currentProvider
+        
+        // Initialize Gemini Provider
+        let geminiConfig = GeminiConfig(
+            apiKey: settings.geminiApiKey,
+            modelName: settings.geminiModel.rawValue
+        )
         self.geminiProvider = GeminiProvider(config: geminiConfig)
         
-        /*
-        // Initialize OpenAI
-        let openAIConfig = OpenAIConfig(
-            apiKey: asettings.openAIApiKey,
-            baseURL: asettings.openAIBaseURL,
-            organization: asettings.openAIOrganization,
-            project: asettings.openAIProject,
-            model: asettings.openAIModel
+        // Initialize Ollama Provider
+        let ollamaConfig = OllamaConfig(
+            host: settings.ollamaHost,
+            selectedModel: settings.ollamaModel
         )
-        self.openAIProvider = OpenAIProvider(config: openAIConfig)
+        self.ollamaProvider = OllamaProvider(config: ollamaConfig)
         
-        // Initialize Mistral
-        let mistralConfig = MistralConfig(
-            apiKey: asettings.mistralApiKey,
-            baseURL: asettings.mistralBaseURL,
-            model: asettings.mistralModel
-        )
-        self.mistralProvider = MistralProvider(config: mistralConfig)
-        
-        if asettings.openAIApiKey.isEmpty && asettings.geminiApiKey.isEmpty && asettings.mistralApiKey.isEmpty {
-            print("Warning: No API keys configured.")
-        }*/
-        
-        // Initialize local LLM Provider
+        // Initialize Local MLX Provider
         self.localLLMProvider = LocalLLMProvider()
+        
+        // Check Ollama connection on startup
+        Task {
+            await ollamaProvider.refreshModels()
+        }
     }
     
-    /// Returns the active LLMProvider based on current selection.
-    /// ChatViewModel can use this property.
+    // MARK: - Active Provider
+    
+    /// Returns the currently active LLM provider based on user selection
     var activeLLMProvider: LLMProviderProtocol {
-            if currentProvider == "local" {
-                return localLLMProvider
-            }else {
-                return geminiProvider
-            }
+        switch currentProviderType {
+        case .gemini:
+            return geminiProvider
+        case .ollama:
+            return ollamaProvider
+        case .localMLX:
+            return localLLMProvider
+        }
     }
     
-    func setCurrentProvider(_ provider: String) {
-        currentProvider = provider
-        AppSettings.shared.currentProvider = provider
-        objectWillChange.send()  // Explicitly notify observers
+    /// Get the display name of the current provider
+    var currentProviderName: String {
+        switch currentProviderType {
+        case .gemini:
+            return "Gemini \(AppSettings.shared.geminiModel.displayName)"
+        case .ollama:
+            return "Ollama: \(ollamaProvider.selectedModel)"
+        case .localMLX:
+            return "MLX Local"
+        }
     }
     
-    /// Call when Gemini configuration is updated in settings.
+    // MARK: - Provider Management
+    
+    func setCurrentProvider(_ type: LLMProviderType) {
+        currentProviderType = type
+    }
+    
+    /// Update Gemini configuration
     func saveGeminiConfig(apiKey: String, model: GeminiModel) {
         AppSettings.shared.geminiApiKey = apiKey
         AppSettings.shared.geminiModel = model
         
         let config = GeminiConfig(apiKey: apiKey, modelName: model.rawValue)
         geminiProvider = GeminiProvider(config: config)
+    }
+    
+    /// Update Ollama configuration
+    func saveOllamaConfig(host: String, model: String) {
+        AppSettings.shared.ollamaHost = host
+        AppSettings.shared.ollamaModel = model
+        
+        ollamaProvider.updateHost(host)
+        ollamaProvider.selectModel(model)
+    }
+    
+    // MARK: - System Prompt
+    
+    /// Get the current system prompt with memory context
+    func getSystemPrompt() -> String {
+        var prompt = promptManager.selectedPrompt?.content ?? ""
+        
+        // Inject memory context if enabled
+        if AppSettings.shared.enableMemory {
+            prompt += memoryManager.formatForPrompt()
+        }
+        
+        return prompt
     }
 }
