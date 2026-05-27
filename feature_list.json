@@ -1,0 +1,268 @@
+{
+  "version": "2.0",
+  "project": "Swift Deep Research",
+  "rebuild_target": "Orchestrator-worker deep research agent on macOS 26",
+  "features": [
+    {
+      "id": "feat_project_modernization",
+      "category": "infrastructure",
+      "description": "Project targets macOS 26 with Swift 6.2 strict concurrency",
+      "steps": [
+        "MACOSX_DEPLOYMENT_TARGET = 26.0",
+        "SWIFT_VERSION = 6.0",
+        "SWIFT_STRICT_CONCURRENCY = complete",
+        "Add swift-anthropic, MacPaw/OpenAI, mcp-swift-sdk, firebase-ios-sdk deps",
+        "Project builds cleanly with zero warnings"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_unified_llm_protocol",
+      "category": "core",
+      "description": "Single Sendable LLMProvider protocol covers streaming, tool calling, and structured output",
+      "steps": [
+        "Define LLMProvider protocol with stream(messages:) -> AsyncThrowingStream<LLMChunk>",
+        "Define stream(messages:tools:) for tool calling",
+        "Define generate<T: Generable>(messages:as:) for structured output",
+        "All provider implementations conform"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_provider_anthropic",
+      "category": "providers",
+      "description": "Anthropic Claude Sonnet 4 and Opus 4.1 via documented Messages API model IDs",
+      "steps": [
+        "AnthropicProvider conforms to LLMProvider",
+        "Supports SSE streaming via the Anthropic Messages API",
+        "Supports tool calling",
+        "API key loaded from Keychain"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_provider_openai",
+      "category": "providers",
+      "description": "OpenAI GPT-5.5 / GPT-5.4 family via direct REST",
+      "steps": [
+        "OpenAIProvider conforms to LLMProvider",
+        "Streaming + tool calling",
+        "API key loaded from Keychain"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_provider_gemini",
+      "category": "providers",
+      "description": "Google Gemini 3 Pro Preview / 3 Flash Preview / 2.5 Pro via direct REST",
+      "steps": [
+        "GeminiProvider conforms to LLMProvider",
+        "Streaming via SSE",
+        "Tool calling via function declarations",
+        "API key loaded from Keychain"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_provider_ollama",
+      "category": "providers",
+      "description": "Local Ollama server provider with model picker",
+      "steps": [
+        "OllamaProvider conforms to LLMProvider",
+        "/api/tags model discovery",
+        "/api/chat streaming"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_provider_mlx",
+      "category": "providers",
+      "description": "MLX-Swift on-device inference (Qwen 2.5, DeepSeek R1, etc.)",
+      "steps": [
+        "MLXProvider conforms to LLMProvider",
+        "Model download progress UI",
+        "Streaming token generation"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_provider_foundation_models",
+      "category": "providers",
+      "description": "Apple Foundation Models on-device orchestrator brain",
+      "steps": [
+        "FoundationModelsProvider conforms to LLMProvider",
+        "@Generable types for ResearchPlan, ToolDecision",
+        "LanguageModelSession wired with tool array",
+        "Availability-gated to macOS 26"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_keychain_keys",
+      "category": "security",
+      "description": "API keys stored in Keychain, not UserDefaults",
+      "steps": [
+        "KeychainStore actor",
+        "Settings UI uses SecureField",
+        "No plaintext key in `defaults read`"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_swiftdata_persistence",
+      "category": "persistence",
+      "description": "ResearchSession / Source / Citation persisted via SwiftData",
+      "steps": [
+        "@Model classes defined",
+        "ModelContainer wired in @main",
+        "Sessions survive relaunch",
+        "Sources clickable from history"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_search_tool",
+      "category": "tools",
+      "description": "Multi-provider web search with fallback chain",
+      "steps": [
+        "Tavily primary (REST, $0.008/credit)",
+        "Exa secondary (semantic, $2.50/1k)",
+        "Brave/DDG free fallback",
+        "Deduplication across providers"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_web_reader",
+      "category": "tools",
+      "description": "Web content extraction handles JS-rendered pages",
+      "steps": [
+        "Static path: URLSession + SwiftSoup",
+        "Dynamic path: hidden WKWebView with evaluateJavaScript",
+        "Reddit specialized client (existing RedditAPI)",
+        "Content trimmed to fit context window"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_citation_extractor",
+      "category": "tools",
+      "description": "Citations extracted with exact quotes and source URLs",
+      "steps": [
+        "Each source chunk tagged with origin URL",
+        "Quotes preserved in synthesizer context",
+        "Final draft references rendered as chips"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_orchestrator_worker",
+      "category": "orchestration",
+      "description": "Actor-based orchestrator dispatches parallel worker agents",
+      "steps": [
+        "ResearchOrchestrator actor decomposes query into ≥2 sub-tasks",
+        "TaskGroup fans out worker actors in parallel",
+        "Workers emit progress events through shared AsyncThrowingStream",
+        "Orchestrator synthesizes final answer with citations",
+        "Token budget enforced; cancellation propagates cleanly"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_research_events_stream",
+      "category": "orchestration",
+      "description": "Single AsyncThrowingStream<ResearchEvent> drives all UI",
+      "steps": [
+        "Event variants: planEmitted, workerStarted, toolInvoked, sourceFetched, tokenDelta, citationAdded, draftReady, error",
+        "View model consumes the stream",
+        "UI updates with withAnimation"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_mcp_integration",
+      "category": "tools",
+      "description": "MCP Swift SDK client wired in for dynamic tool extension",
+      "steps": [
+        "Connect to user-configured MCP servers",
+        "Discover tools",
+        "Surface MCP tools as Tool protocol implementations"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_three_pane_ui",
+      "category": "ui",
+      "description": "SessionList | ResearchCanvas | SourcePanel three-pane layout",
+      "steps": [
+        "NavigationSplitView with 3 columns",
+        "SessionList shows SwiftData sessions",
+        "Canvas streams ResearchEvents into reasoning/draft groups",
+        "SourcePanel lists citations with hover preview"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_liquid_glass_adoption",
+      "category": "ui",
+      "description": "macOS 26 Liquid Glass on toolbars, source cards, settings sheet",
+      "steps": [
+        ".glassEffect() applied to source cards",
+        "Toolbar uses GlassEffectContainer where appropriate",
+        "Settings sheet adopts liquid materials",
+        "All gated with availability checks"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_streaming_chat",
+      "category": "ui",
+      "description": "Tokens stream live with collapsible reasoning groups",
+      "steps": [
+        "Markdown rendered via swift-markdown-ui",
+        "Reasoning section collapsible/expandable",
+        "Citation chips inline",
+        "Smooth withAnimation transitions"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_settings_ui",
+      "category": "ui",
+      "description": "Settings sheet for provider selection + key entry + tool toggles",
+      "steps": [
+        "Tab per provider",
+        "SecureField for keys (Keychain-backed)",
+        "Search provider keys (Tavily, Exa, Brave)",
+        "Toggles for tool availability"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_document_knowledge_base",
+      "category": "knowledge",
+      "description": "Document upload view embeds PDFs, notes, and pasted text into a local pyseekdb/seekdb vector knowledge base for research-time retrieval",
+      "steps": [
+        "Document sheet opens from toolbar and keyboard shortcut",
+        "User can drop or choose PDFs, markdown, text, CSV, JSON, YAML, and HTML files",
+        "Sidecar chunks documents and stores embeddings in embedded or server-mode seekdb",
+        "Workers call `knowledge_base` before web search when enabled",
+        "Knowledge-base passages become first-class fetched sources for citation extraction"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_build_clean_smoke_test",
+      "category": "qa",
+      "description": "App builds via xcodebuild and launches; one full research run completes",
+      "steps": [
+        "xcodebuild build succeeds",
+        "App launches without crash",
+        "User can enter a query and see streaming response",
+        "Source citations rendered correctly",
+        "Session persists across relaunch"
+      ],
+      "passes": false
+    }
+  ]
+}

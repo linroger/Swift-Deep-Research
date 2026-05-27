@@ -1,15 +1,22 @@
 # Swift Deep Research
 
 <p align="center">
-  <img src="https://img.shields.io/badge/macOS-14%2B-red" />
-  <img src="https://img.shields.io/badge/Swift-5.9-orange" />
+  <img src="https://img.shields.io/badge/macOS-26%20Tahoe-red" />
+  <img src="https://img.shields.io/badge/Swift-6.2-orange" />
+  <img src="https://img.shields.io/badge/SwiftUI-Liquid%20Glass-purple" />
   <img src="https://img.shields.io/badge/License-MIT-green" />
   <img src="https://img.shields.io/badge/Platform-Apple%20Silicon-blue" />
 </p>
 
-**Swift Deep Research** is an open-source macOS application that brings AI-powered deep research to your desktop. It leverages Large Language Models (LLMs) to autonomously conduct multi-step web research — generating search queries, extracting content, analyzing findings iteratively, and synthesizing comprehensive answers with source citations.
+<p align="center">
+  <a href="./README.md">English</a> · <a href="./README_zh.md">简体中文</a>
+</p>
 
-Built with 100% Swift and SwiftUI, it runs entirely on your Mac (Apple Silicon) with optional cloud LLM support.
+**Swift Deep Research** is an open-source macOS research agent that runs a multi-round **ReAct loop** — reason, act, observe, reflect — against the open web *and* your own private documents. A planner decomposes the question, parallel workers issue tool calls (search, fetch, knowledge base, arXiv, Wikipedia, Reddit, calculator), a reflector identifies gaps, and a synthesizer produces a cited markdown report. Up to six rounds of refinement; gap-finding for the first half, deepening + cross-verification for the second.
+
+Private documents live in **SeekDB**, an embedded vector knowledge base wired through a Python FastAPI sidecar that the app launches on first run. PDFs are chunked, embedded, and queried semantically — the worker calls `knowledge_base` *before* the web so your own notes get priority.
+
+Built top-to-bottom in Swift 6.2 / SwiftUI for macOS 26 Tahoe with strict concurrency, structured tool calling across every provider, and a Liquid Glass UI.
 
 ---
 
@@ -17,292 +24,158 @@ Built with 100% Swift and SwiftUI, it runs entirely on your Mac (Apple Silicon) 
 
 | | |
 |:--|:--:|
-| **Main Chat View** — Research results with structured academic format, source citations, and sidebar navigation | ![Main Chat View](./Swift%20Deep%20Research%202026-04-15%20at%2005.04.37@2x.png) |
-| **Sources Panel** — All 24 cited sources from the research, organized with direct links to original content | ![Sources Panel](./Swift%20Deep%20Research%202026-04-15%20at%2005.13.16@2x.png) |
-| **Settings** — Provider configuration for Gemini, Ollama (local), and MLX (on-device) | ![Settings](./Swift%20Deep%20Research%202026-04-15%20at%2005.13.21@2x.png) |
-| **Research Progress** — Real-time view of the agent's iterative reasoning loop: generated queries, sources found, and analysis steps | ![Research Progress](./Swift%20Deep%20Research%202026-04-15%20at%2005.30.33@2x.png) |
+| **Hero composer** — Spotlight-style entry with depth presets, knowledge-base toggle, and live provider/model status | ![Composer](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2010.17.21%402x.png) |
+| **Iterative research canvas** — Round-by-round plan, parallel workers, tool-call drill-down, live activity inspector | ![Canvas](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2010.17.39%402x.png) |
+| **Sources inspector** — Discovered, fetched, and cited sources side-by-side with the synthesized draft | ![Sources](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2010.19.44%402x.png) |
+| **Knowledge base** — Drop PDFs to chunk + embed via the SeekDB sidecar; queried automatically during research | ![Knowledge Base](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2010.53.03%402x.png) |
+| **Settings** — Provider routing for orchestrator / worker / synthesizer, API keys, sidecar host, budget tuning | ![Settings](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2011.17.46%402x.png) |
+
+---
+
+## The Deep Research Agent — a ReAct loop, end to end
+
+The engine is an **orchestrator–worker–synthesizer** architecture implementing the classic **ReAct** (Reason + Act) pattern, extended with multi-round reflection in the spirit of Anthropic's research-agent design notes:
+
+```
+                ┌───────────────────────────────────────────┐
+   user query ──▶│ Planner (orchestrator LLM)               │── ResearchPlan ──┐
+                └───────────────────────────────────────────┘                  │
+                                                                               ▼
+                                  ┌────────────────────────────────────────────────────┐
+                                  │ Worker pool (TaskGroup, N parallel ReAct agents)   │
+                                  │  for each subtask:                                 │
+                                  │   Thought ─▶ Act (tool) ─▶ Observation ─▶ Thought… │
+                                  │   tools: knowledge_base · web_search · fetch_url   │
+                                  │          read_pdf · wikipedia · arxiv · reddit     │
+                                  │          calculator · current_datetime             │
+                                  └────────────────────────────────────────────────────┘
+                                                       │  WorkerOutput[]
+                                                       ▼
+                                  ┌────────────────────────────────────────────────────┐
+                                  │ Synthesizer (cloud or local LLM)                   │
+                                  │  cites every load-bearing claim, [1][2] markers    │
+                                  └────────────────────────────────────────────────────┘
+                                                       │  draft markdown
+                                                       ▼
+                                  ┌────────────────────────────────────────────────────┐
+                                  │ Reflector  ── rounds 2–3: gap-finding              │
+                                  │            ── rounds 4–6: deepening + cross-verify │
+                                  └────────────────────────────────────────────────────┘
+                                                       │  new subtasks
+                                                       └─────▶ loop until maxRounds
+```
+
+What this buys you over a one-shot RAG pipeline:
+
+- **No early termination.** Earlier "ready" verdicts used to collapse the difference between Fast and Thorough modes. The engine now commits to running every configured round; when the reflector finds no gaps, it switches to **deepening mode** — cross-verifying load-bearing claims, hunting for counter-evidence, surfacing 30–90-day updates, replacing generic prose with hard numbers. If the LLM still produces nothing, the engine synthesizes deepening subtasks itself so no round is a no-op.
+- **Real source diversity.** Each worker is told to issue 2+ search queries with different phrasings, then fetch *at least* `sourceTarget − 2` and *up to* `sourceTarget` distinct URLs (4 fast / 6 standard / 12 thorough). Paywalled or off-topic pages trigger a fallback fetch rather than a quiet skip.
+- **Provider-agnostic tool calling.** A unified `LLMRequest(messages:, tools:, …)` envelope is translated into Anthropic's `tool_use`, OpenAI's `tools[].function`, Gemini's `function_declarations`, *and* Ollama's `/api/chat tools` field — including streaming `tool_call` parsing for each.
+- **Hard budget envelope.** A shared `BudgetMeter` actor enforces wall-clock, token, per-worker tool-call, and per-worker source caps. Fast / Standard / Thorough presets scale every dimension together.
+
+---
+
+## SeekDB — your private knowledge base, embedded
+
+Most research questions have *some* answer in documents you already own. Swift Deep Research integrates **SeekDB** (via `pyseekdb`) as a first-class tool the agent reaches for *before* the web:
+
+- **Embedded vector store.** No external server. A small FastAPI **sidecar** ships with the app and is auto-launched on first run (`SidecarSupervisor` watches `/health` and PATH-augments for pyenv/Homebrew Python). Quit the app, the sidecar quits with it.
+- **Drop-in ingestion.** Drag a PDF onto the Knowledge tab; the sidecar chunks it (NLTK sentence boundaries), embeds each chunk, and persists locally.
+- **Semantic retrieval as a tool.** Workers see a `knowledge_base(query, k)` tool in their tool catalogue. The system prompt instructs them to call it *first* whenever private documents could be relevant, then corroborate with the web. Results stream into the same `sourceDiscovered` / `sourceFetched` event channel as web hits, so the citation extractor and inspector treat them uniformly.
+- **`kb://` citation scheme.** Knowledge-base passages get synthetic URLs of the form `kb://<doc-id>/<chunk-id>` so the source panel can distinguish them from web hits and link back to the document.
+
+End-to-end this means: ingest the DeepSeek-v4 paper into the KB, ask *"research the architectural innovations of DeepSeek-v4"*, and the worker fires `knowledge_base` first, gets five high-relevance passages, then runs `web_search` to find external benchmarks — producing a synthesis that cites both your private PDF *and* recent blog posts in the same report.
 
 ---
 
 ## Features
 
-### Deep Research Agent
-- **Iterative Research Loop**: The agent autonomously searches, extracts, and analyzes web content in a reasoning loop until a comprehensive answer is synthesized
-- **Smart Query Generation**: Uses the LLM to generate diverse, effective search queries
-- **Source Citations**: Every claim is backed by cited sources with clickable links
-- **Research Progress Tracking**: Real-time view of each research step, URLs being read, and findings
+### Multi-provider LLM routing
+Pick a different provider for the planner, workers, and synthesizer — keep planning cheap, splurge on synthesis.
 
-### Triple LLM Provider Support
-Switch between three provider types in Settings:
+| Provider | Type | Notes |
+|---|---|---|
+| **Ollama** | Local server | Tool calling on qwen2.5 / llama3.3 / gpt-oss / mistral-small; context window auto-set to 131 072 |
+| **Anthropic** | Cloud | Claude Opus 4.x, Sonnet 4.x — streaming + native `tool_use` |
+| **OpenAI** | Cloud | GPT-5.5 / 5.4 / 4.1 series, SSE streaming, function calling |
+| **Gemini** | Cloud | 2.0 / 2.5 Flash + Pro, function calling |
+| **Foundation Models** | On-device | Apple Intelligence FM, when available on macOS 26 |
+| **MLX** | On-device | Mistral Small 24B, Qwen 2.5 7B, DeepSeek-R1 Distill |
 
-| Provider | Type | Models | Notes |
-|----------|------|--------|-------|
-| **Gemini** | Cloud | Gemini 1.5 Flash 8B, 1.5 Pro, 2.0 Flash, 2.0 Pro | Requires Google API key |
-| **Ollama** | Local Server | Any Ollama-compatible model | Streams responses, model management built-in |
-| **MLX** | On-Device (Apple Silicon) | Mistral Small 24B, Qwen 2.5 7B, DeepSeek R1 Distill | Privacy-first, runs fully offline |
+### Multi-backend web search with fallback
+Configured priority order: **Tavily** (agent-optimised) → **Exa** (semantic) → **Brave** (general) → **DuckDuckGo** (HTML, no key). Each backend validates HTTP status before decoding, so a 401 / 429 / 422 surfaces in the inspector instead of silently disappearing as "no results."
 
-### AI Memory System
-- The agent can save memories during research using `[MEMORY:category]content[/MEMORY]` markers
-- Categories: `preference`, `project`, `insight`, `correction`, `instruction`, `general`
-- Memories are injected into the system prompt for persistent context
-- Manual CRUD operations via the Memory panel (Cmd+Shift+M)
+### Three depth presets
+| Preset | Rounds | Workers | Sources/worker | Tool calls/worker | Wall clock |
+|---|---|---|---|---|---|
+| **Fast** | 1 | 2 | 4 | 6 | 180 s |
+| **Standard** | 3 | 4 | 6 | 20 | 900 s |
+| **Thorough** | 6 | 6 | 12 | 36 | 1 800 s |
 
-### Web Content Extraction
-- **Generic Websites**: Parses HTML via SwiftSoup, removing scripts/styles/navigation clutter
-- **Reddit**: Specialized client with recursive comment fetching and rate limiting
-- **Redirect Resolution**: Automatically resolves DuckDuckGo redirects to final URLs
+### Inspector & live event stream
+Every plan, worker start, tool invocation, tool result, source discovery, source fetch, reflection, and citation flows through a typed `ResearchEvent` async stream. The right-hand inspector renders them live so you can watch the agent think.
 
-### Conversation Management
-- Multiple concurrent research conversations with sidebar navigation
-- Auto-titled from the first user message
-- Up to 50 conversations persisted in UserDefaults
-- Keyboard shortcut: Cmd+N for new conversation
-
-### Custom Prompts
-- Define and manage custom system prompts with templates
-- Quick access via Cmd+Shift+P
-- Adjust research behavior, tone, and output format
+### Citation extraction
+After synthesis, a dedicated `CitationExtractor` re-reads the draft and maps every `[N]` marker back to the source it claims, exposing the result in a sources panel with title, URL, fetched extract, and click-through.
 
 ---
 
-## Architecture
+## Getting started
 
-Swift Deep Research follows **MVVM** (Model-View-ViewModel) with a service-oriented design.
+### Requirements
+- macOS 26 (Tahoe) on Apple Silicon
+- Xcode 26
+- Python 3.10+ (for the SeekDB sidecar — `pip install pyseekdb fastapi uvicorn`)
+- Optional: API keys for any combination of Anthropic, OpenAI, Gemini, Tavily, Exa, Brave
+- Optional: Ollama running locally (`ollama serve`) with at least one tool-capable model pulled
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Swift_Deep_ResearchApp                    │
-│                      (App Entry Point)                        │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                         AppState                             │
-│                    (Global Singleton State)                   │
-│  ┌─────────────┐ ┌──────────────┐ ┌────────────────────┐   │
-│  │ LLMProvider │ │MemoryManager │ │ConversationManager │   │
-│  └─────────────┘ └──────────────┘ └────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-                              │
-              ┌───────────────┼───────────────┐
-              ▼               ▼               ▼
-     ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-     │  ChatView    │ │SettingsView  │ │MemoryListView│
-     │ (Main Chat)  │ │              │ │              │
-     └──────────────┘ └──────────────┘ └──────────────┘
-              │
-              ▼
-     ┌──────────────┐       ┌──────────────────────────────────┐
-     │ ChatViewModel│──────▶│           Agent                  │
-     └──────────────┘       │  (Research Orchestration Loop)   │
-                            └──────────────────────────────────┘
-                                      │
-                    ┌─────────────────┼─────────────────┐
-                    ▼                 ▼                 ▼
-           ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-           │SearchService │  │WebReaderSvc  │  │ LLMProvider   │
-           │ (DuckDuckGo) │  │(SwiftSoup)   │  │(Gemini/Ollama)│
-           └──────────────┘  └──────────────┘  └──────────────┘
-```
+### Build & run
+1. Open `Swift Deep Research.xcodeproj` in Xcode 26.
+2. Build (⌘B) and run (⌘R).
+3. On first launch the app spawns the SeekDB sidecar (`sidecar/seekdb_sidecar.py`) on `127.0.0.1:9100` and waits for it to come up.
+4. Open Settings → paste any API keys you want to use.
+5. Drag PDFs into the Knowledge tab if you want a private KB.
+6. Type a question in the hero composer, pick a depth preset, and run.
 
-### Key Components
-
-| Layer | Directory | Purpose |
-|-------|-----------|---------|
-| **Models** | `Models/` | Data structures (Memory, Conversation, AppSettings, CustomPrompt, ModelConfiguration) |
-| **Core** | `Core/` | Agent orchestrator, LLM response parser, protocol definitions |
-| **Services** | `Services/` | LLM providers (Gemini, Ollama, MLX), Search, WebReader, Reddit API |
-| **Views** | `Views/` | SwiftUI views, ViewModels, chat bubble, research steps, settings |
-| **LLMLibrary** | `LLMLibrary/` | Local LLM model management UI |
-
-### Research Loop Flow (Agent.swift)
-
-```
-User Input
-    │
-    ▼
-┌─────────────────┐
-│ Generate Queries│◀──────┐
-└────────┬────────┘       │
-         ▼                │
-┌─────────────────┐       │
-│   Web Search    │       │
-│  (DuckDuckGo)   │       │
-└────────┬────────┘       │
-         ▼                │
-┌─────────────────┐       │
-│Extract Content  │       │
-│ (SwiftSoup)     │       │
-└────────┬────────┘       │
-         ▼                │
-┌─────────────────┐       │
-│  LLM Analysis   │───────┤ (iterative loop)
-│  (action:       │       │
-│   answer/search/│       │
-│   reflect)      │       │
-└────────┬────────┘       │
-         ▼                │
-┌─────────────────┐       │
-│ Final Synthesis │───────┘
-└────────┬────────┘
-         ▼
-   Final Answer
-   (with citations)
-```
-
----
-
-## Requirements
-
-- **macOS 14.0+** (Sonoma or later)
-- **Apple Silicon Mac** (M1/M2/M3/M4) — required for on-device MLX models
-- **Intel Mac** — supported with Gemini or Ollama providers only
-- **12GB+ RAM** recommended for local LLM execution
-
----
-
-## Installation
-
-### From Source
-
-1. Clone the repository:
+### Sidecar manually
+If the auto-launch ever fails (PATH issues, missing Python), run it yourself:
 ```bash
-git clone https://github.com/linroger/Swift-Deep-Research.git
-cd Swift-Deep-Research
+cd sidecar
+python3 seekdb_sidecar.py
 ```
-
-2. Open in Xcode:
-```bash
-open "Swift Deep Research.xcodeproj"
-```
-
-3. Select your target Mac and click Run
-
-### Configure LLM Provider
-
-1. Open the app → **Settings** (gear icon or Cmd+,)
-2. Choose your provider tab:
-   - **Gemini**: Enter your Google API key
-   - **Ollama**: Ensure Ollama is running locally (`ollama serve`)
-   - **MLX**: Select a model (Qwen 2.5 7B recommended for first run)
+The app will detect the running instance via `/health` and connect automatically.
 
 ---
 
-## Usage
-
-### Basic Research
-
-1. Launch the app
-2. Type your research question in the chat input
-3. Press Enter or click Send
-4. Watch the research agent work in real-time
-5. Receive a comprehensive answer with source citations
-
-### Keyboard Shortcuts
-
-| Shortcut | Action |
-|----------|--------|
-| `Cmd+N` | New research conversation |
-| `Cmd+,` | Open Settings |
-| `Cmd+Shift+M` | Open Memory panel |
-| `Cmd+Shift+P` | Open Custom Prompts |
-
-### Memory Commands
-
-During research, the agent can save memories. You can also manually add memories:
-
-```
-[MEMORY:preference]I prefer concise answers with bullet points[/MEMORY]
-[MEMORY:project]Current project: investigating LLM architectures[/MEMORY]
-```
-
----
-
-## Project Structure
+## Project layout
 
 ```
 Swift Deep Research/
-├── Swift_Deep_ResearchApp.swift    # App entry point, command menu
-├── AppState.swift                  # Global singleton state
-├── ContentView.swift               # Root SwiftUI view
-├── Core/
-│   ├── Agent.swift                 # Research orchestrator
-│   ├── LLMResponseParser.swift     # JSON response parsing
-│   └── Protocols.swift            # Provider protocols
-├── Models/
-│   ├── Memory.swift                # MemoryEntry & MemoryManager
-│   ├── Conversation.swift          # Conversation & ConversationManager
-│   ├── AppSettings.swift           # UserDefaults settings
-│   ├── ModelConfiguration.swift    # MLX model configs
-│   └── CustomPrompt.swift          # CustomPrompt & Manager
-├── Services/
-│   ├── GeminiProvider.swift        # Google Gemini API
-│   ├── OllamaProvider.swift        # Local Ollama server
-│   ├── LocalLLMProvider.swift     # Apple MLX on-device
-│   ├── SearchService.swift         # DuckDuckGo search
-│   ├── WebReaderService.swift     # SwiftSoup content extraction
-│   └── RedditAPI.swift            # Reddit API client
-├── Views/
-│   ├── ChatView.swift              # Main chat UI
-│   ├── ChatViewModel.swift         # Chat coordination
-│   ├── ChatBubbleView.swift        # Message bubbles w/ Markdown
-│   ├── ChatMessage.swift           # ChatMessage & SourceCitation
-│   ├── SettingsView.swift          # Multi-tab settings
-│   ├── ResearchStepsView.swift     # Research progress UI
-│   ├── MemoryListView.swift        # Memory management UI
-│   └── PromptEditorView.swift      # System prompt editor
-└── LLMLibrary/
-    ├── LLMLibraryView.swift        # Model management UI
-    └── LLMLibraryViewModel.swift   # Model list ViewModel
+├── Bootstrap/        # App lifecycle, dependency wiring
+├── Domain/           # Value types: LLMMessage, LLMRequest, ResearchPlan,
+│                     # ResearchEvent, AgentBudget, FetchedSource, …
+├── Engine/           # ResearchEngine, Planner, WorkerAgent (ReAct loop),
+│                     # Synthesizer, Reflector, IterationController
+├── Interface/        # SwiftUI: MainScene, Composer, ResearchCanvas,
+│                     # SourcePanel, SettingsSheet, ConversationView
+├── Knowledge/        # SeekDBClient, SidecarSupervisor, KnowledgeBase actor
+├── LLM/              # Provider clients (Anthropic, OpenAI, Gemini, Ollama,
+│                     # FoundationModels, MLX) behind a single LLMClient protocol
+├── ResearchTools/    # Tool implementations: WebSearchTool, WebReaderTool,
+│                     # KnowledgeBaseTool, ArXivTool, WikipediaTool, …
+├── Shared/           # KeychainStore, Logging, HTTP helpers
+└── Storage/          # SwiftData @Model persistence
+sidecar/              # Python FastAPI seekdb sidecar
 ```
 
 ---
 
-## Technical Details
-
-### LLM Provider Protocol
-
-All LLM providers conform to `LLMProviderProtocol`:
-
-```swift
-protocol LLMProviderProtocol: AnyObject {
-    var providerName: String { get }
-    func generateResponse(messages: [ChatMessage], stream: Bool) async throws -> String
-    func generateResponseStream(messages: [ChatMessage]) -> AsyncStream<String>
-}
-```
-
-### Search Service
-
-Uses DuckDuckGo HTML search with SwiftSoup parsing. Results are filtered to the top 5 URLs per query, with automatic redirect resolution.
-
-### Content Extraction
-
-- **Generic**: SwiftSoup-based HTML parsing with element filtering (removes `<script>`, `<style>`, `<nav>`, `<footer>`, `<iframe>`)
-- **Reddit**: Dedicated API client with recursive comment fetching and Reddit's rate limits respected
-
-### Data Persistence
-
-- **Conversations**: UserDefaults via `ConversationManager`
-- **Settings**: UserDefaults via `AppSettings`
-- **Memories**: UserDefaults via `MemoryManager`
-- **Custom Prompts**: UserDefaults via `CustomPromptManager`
-
----
-
-## Contributing
-
-Contributions are welcome! Please open an issue or submit a pull request.
+## Inspirations & related work
+- Anthropic's "Building effective agents" and multi-agent research notes
+- The original **ReAct** paper (Yao et al., *Reasoning + Acting in Language Models*)
+- Perplexity / ChatGPT Search citation-rendering pattern
+- Open-source agents: STORM, GPT-Researcher, smolagents
 
 ---
 
 ## License
-
-MIT License — see LICENSE file for details.
-
----
-
-## Acknowledgments
-
-- Built with [SwiftUI](https://developer.apple.com/xcode/swiftui/), [SwiftSoup](https://github.com/scinfu/SwiftSoup), and [MLX](https://github.com/ml-explore/mlx)
-- Inspired by cloud deep research features from ChatGPT, Perplexity, and Gemini
+MIT — see `LICENSE`.

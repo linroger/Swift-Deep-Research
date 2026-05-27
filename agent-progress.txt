@@ -1,0 +1,120 @@
+Swift Deep Research v2 — Agent Progress Log
+=============================================
+
+PROJECT OVERVIEW
+----------------
+Complete rebuild of an existing macOS 14 / Swift 5.9 single-agent research app into a macOS 26 / Swift 6.2
+orchestrator-worker deep research agent. Architecture mirrors Anthropic's multi-agent research system
+(orchestrator + parallel worker subagents) with Foundation Models as the on-device orchestrator brain
+and Anthropic/OpenAI/Gemini as long-context synthesizers.
+
+CURRENT STATE OF REPO
+---------------------
+Old single-agent app (~6,235 LOC) still in place. Will be replaced incrementally; legacy files
+deleted only after their replacements are wired and the build is green.
+
+Existing dependencies (kept): SwiftSoup, mlx-swift, mlx-swift-examples, swift-markdown-ui,
+ollama-swift.
+
+To be added: swift-anthropic, MacPaw/OpenAI, mcp-swift-sdk, firebase-ios-sdk (for Firebase AI Logic
+Gemini fallback).
+
+SESSION LOG
+-----------
+
+### 2026-05-24 | Session 1 | main | Roger Lin
+- Reviewed ~156k tokens of prior research from memory (8 frameworks surveyed, Anthropic
+  orchestrator-worker pattern analyzed, full architecture decision #5349 already crystallized).
+- Read current project: 30 Swift files, MVVM single-agent loop, Gemini/Ollama/MLX providers,
+  UserDefaults persistence, macOS 14 / Swift 5.9, DuckDuckGo search, SwiftSoup web reader.
+- Captured three one-way decisions via AskUserQuestion: macOS 26, all 6 providers + extra
+  model names, in-place rebuild.
+- Created planning artifacts (handoff.md, feature_list.json, agent-progress.txt) and tasks #1–#10.
+- Bumped project.pbxproj: MACOSX_DEPLOYMENT_TARGET 15.2→26.0; SWIFT_VERSION 5.0→6.0;
+  SWIFT_STRICT_CONCURRENCY=complete; SWIFT_APPROACHABLE_CONCURRENCY=YES. (Initially also set
+  SWIFT_DEFAULT_ACTOR_ISOLATION=MainActor and SWIFT_UPCOMING_FEATURE_* — reverted to keep
+  defaults predictable.)
+- Wrote 32 new Swift files (~3000 LOC) across 8 module directories:
+  - Domain/: ResearchEvent, ResearchPlan (+ JSON schema/decoder/fallback), AgentBudget +
+    BudgetMeter actor, Message (LLMMessage, LLMRequest, LLMStreamChunk, LLMToolSpec)
+  - Storage/: SwiftData @Model schema (StoredSession/Turn/Source/Citation/Event),
+    ResearchStore main-actor façade
+  - Shared/: KeychainStore actor with 6 KeyAccount cases, Logging namespace,
+    SSEParser for AnthropicClient/OpenAIClient/GeminiClient streaming, HTTP common
+  - LLM/: LLMClient protocol + LLMCompletion drain helper, AnyJSON, AnthropicClient
+    (Messages API + SSE + tool use), OpenAIClient (chat/completions + SSE + tool calling),
+    GeminiClient (streamGenerateContent + SSE + function declarations), OllamaClient
+    (newline-delimited JSON + /api/tags discovery), MLXClient actor (lazy ModelContainer),
+    FoundationModelsClient (#if canImport(FoundationModels) gated, macOS 26+),
+    ProviderRegistry with model lists per provider
+  - ResearchTools/: ResearchTool protocol + ToolContext, WebSearchTool with backend
+    fallback chain (Tavily → Exa → Brave → DuckDuckGo), WebReaderTool with SwiftSoup +
+    WKWebView dual extraction, CitationExtractor (separate LLM pass for grounded quotes)
+  - Engine/: EngineConfiguration, Planner, WorkerAgent actor, Synthesizer,
+    ResearchEngine struct emitting AsyncThrowingStream<ResearchEvent>
+  - Interface/: AppEnvironment @Observable, LiveSession @Observable with event ingest,
+    MainScene NavigationSplitView (sidebar/canvas/source panel), SessionSidebar,
+    ResearchCanvas with streaming markdown rendering, PlanCard, WorkersGrid,
+    DraftCard with FlowLayout for citation chips, SourcePanel, SettingsSheet
+    (Providers/APIKeys/Budget/About tabs, Keychain-backed SecureField for keys)
+  - Bootstrap/: SwiftDeepResearchApp @main with ModelContainer wiring
+- Deleted all legacy code: Appstate.swift, ContentView.swift, Swift_Deep_ResearchApp.swift,
+  and the Core/Models/Services/Views/LLMLibrary directories (~3000 LOC of v1 code removed).
+- Cleaned pbxproj: ran a Python script to drop 16 stale PBXFileReference and 63 PBXBuildFile
+  entries for deleted files. The PBXFileSystemSynchronizedRootGroup is now the sole source
+  of file membership.
+- Encountered SwiftPM cache corruption on multiple build attempts; required full wipe of
+  ~/Library/Caches/org.swift.swiftpm + ~/Library/org.swift.swiftpm + project build/.
+- Build attempted: in progress at session-end; package resolution succeeded after cache
+  wipe; awaiting first compile pass result. Logs in logs/build-*.log.
+
+KNOWN ISSUES / TECHNICAL DEBT TO MIND
+-------------------------------------
+- project.pbxproj has many DUPLICATE PBXBuildFile entries for the same files (Agent.swift,
+  OllamaProvider.swift, ChatView.swift, etc.). Xcode tolerates this but it bloats the file. Will
+  clean up when migrating file references.
+- objectVersion = 77 is modern; no need to bump.
+- Bundle identifier `com.aryamirsepasi.Swift-Deep-Research` — originating from a fork. Considered
+  changing but left as-is to preserve identity per "keep .xcodeproj" decision.
+- Foundation Models has a 4096-token context window (memory #5336). Designs that route synthesis
+  through FM must chunk; current plan routes synthesis to cloud LLMs (200K+ window) instead.
+
+### 2026-05-25 | Session 2 | main | Codex
+- User explicitly requested recursive codebase review, all Swift-file reading, current deep-research
+  architecture research, no app build because package dependencies are not fetched, and a robustness
+  pass around the deep-research framework plus document-upload/pyseekdb knowledge base.
+- Read the repository inventory, README/README_zh, handoff.md, feature_list.json, sidecar docs,
+  project.pbxproj, and all 56 Swift files (8,040 lines after this session's edits).
+- Researched current sources:
+  - Anthropic multi-agent Research architecture: orchestrator-worker, parallel subagents, iterative
+    refinement, citation agent, explicit token-budget tradeoff.
+  - OpenAI model/tool docs: GPT-5.5 family, Responses-capable tools, long context.
+  - Google Gemini docs: Gemini 3 Pro/Flash Preview and Gemini 2.5 function-calling support.
+  - Apple Foundation Models docs: LanguageModelSession, guided generation, tool calling, context limits.
+  - seekdb/pyseekdb docs: embedded/server modes, built-in embeddings, vector/full-text/hybrid search.
+- Implemented one focused robustness slice:
+  - Fixed Anthropic streamed tool-call argument routing by preserving content-block-index -> tool-use-id
+    mapping in `AnthropicClient`.
+  - Updated Anthropic/OpenAI/Gemini defaults to documented model IDs instead of speculative names.
+  - Made `WorkerAgent` collect `FetchedSource` evidence from any evidence-producing tool, not only
+    `fetch_url`, so PDF/Wikipedia/Reddit/knowledge-base results can feed synthesis and citation extraction.
+  - Made `KnowledgeBaseTool` emit and return synthetic `kb://` fetched sources for pyseekdb passages.
+  - Added `knowledgeBase` extraction strategy.
+  - Hardened `KnowledgeBase` file ingestion with security-scoped URL access and empty-text errors.
+  - Hardened `sidecar/seekdb_sidecar.py` with empty-document rejection, paragraph/sentence-aware
+    chunking, and optional server-mode seekdb connection (`--server-host/--server-port`) for users who
+    run seekdb outside embedded pyseekdb.
+  - Added `PLANS.md` and a `feat_document_knowledge_base` entry in `feature_list.json`.
+- Verification run (no app build):
+  - `python3 -m py_compile sidecar/seekdb_sidecar.py` passed.
+  - `python3 -m json.tool feature_list.json` passed.
+  - `plutil -lint "Swift Deep Research.xcodeproj/project.pbxproj"` passed.
+  - Syntax-only `xcrun swiftc -parse` passed for the touched Swift files.
+  - `swift -e 'import UniformTypeIdentifiers; _ = UTType.commaSeparatedText; print("ok")'` passed,
+    confirming the document upload view's CSV content type member resolves in the installed SDK.
+  - `git diff --check` passed.
+- Remaining next steps:
+  - Fetch SwiftPM packages and run the real Xcode build when the dependency constraint is lifted.
+  - Do a live sidecar smoke test after installing `pyseekdb fastapi uvicorn pydantic`.
+  - Consider replacing the OpenAI Chat Completions path with Responses API if the app needs hosted
+    web/file/code tools rather than only local tool execution.

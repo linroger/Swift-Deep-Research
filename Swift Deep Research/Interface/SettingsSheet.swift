@@ -1,0 +1,818 @@
+import SwiftUI
+import AppKit
+
+/// macOS System Settings-style preferences. Sidebar of section icons on the
+/// left, content on the right. No redundant Done button at the bottom —
+/// the standard ⌘W / red traffic light close the sheet.
+struct SettingsSheet: View {
+    @Environment(AppEnvironment.self) private var env
+    @Environment(\.dismiss) private var dismiss
+    @State private var section: Section = .providers
+
+    enum Section: String, CaseIterable, Identifiable {
+        case providers, apiKeys, knowledge, budget, iteration, instructions, about
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .providers: "Providers"
+            case .apiKeys: "API keys"
+            case .knowledge: "Knowledge base"
+            case .budget: "Budget"
+            case .iteration: "Iteration"
+            case .instructions: "Instructions"
+            case .about: "About"
+            }
+        }
+        var systemImage: String {
+            switch self {
+            case .providers: "cpu"
+            case .apiKeys: "key.fill"
+            case .knowledge: "books.vertical.fill"
+            case .budget: "gauge.with.dots.needle.50percent"
+            case .iteration: "arrow.triangle.2.circlepath"
+            case .instructions: "text.alignleft"
+            case .about: "info.circle"
+            }
+        }
+        var tint: Color {
+            switch self {
+            case .providers: .blue
+            case .apiKeys: .yellow
+            case .knowledge: .indigo
+            case .budget: .green
+            case .iteration: .purple
+            case .instructions: .pink
+            case .about: .gray
+            }
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            sidebar
+            Divider()
+            VStack(spacing: 0) {
+                detailHeader
+                Divider().opacity(0.6)
+                detail
+                Divider().opacity(0.6)
+                footer
+            }
+        }
+        .frame(minWidth: 920, idealWidth: 980, minHeight: 640, idealHeight: 720)
+    }
+
+    private var detailHeader: some View {
+        HStack(spacing: 12) {
+            iconBadge(systemImage: section.systemImage,
+                     color: section.tint,
+                     size: 28)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(section.title)
+                    .font(.title3.weight(.semibold))
+                Text(subtitle(for: section))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 16)
+    }
+
+    private var footer: some View {
+        HStack {
+            Spacer()
+            Button("Done") { dismiss() }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 14)
+        .background(.regularMaterial.opacity(0.4))
+    }
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Settings")
+                .font(.title2.weight(.bold))
+                .padding(.horizontal, 16)
+                .padding(.top, 20)
+                .padding(.bottom, 12)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Section.allCases) { item in
+                        sidebarRow(item)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 16)
+            }
+        }
+        .frame(width: 230)
+        .background(.regularMaterial.opacity(0.6))
+    }
+
+    private func sidebarRow(_ item: Section) -> some View {
+        Button {
+            section = item
+        } label: {
+            HStack(spacing: 10) {
+                iconBadge(systemImage: item.systemImage, color: item.tint, size: 22)
+                Text(item.title)
+                    .font(.body)
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(section == item
+                          ? Color.accentColor.opacity(0.18)
+                          : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func iconBadge(systemImage: String, color: Color, size: CGFloat = 22) -> some View {
+        RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
+            .fill(color.gradient)
+            .frame(width: size, height: size)
+            .overlay(
+                Image(systemName: systemImage)
+                    .font(.system(size: size * 0.55, weight: .semibold))
+                    .foregroundStyle(.white)
+            )
+    }
+
+    @ViewBuilder
+    private var detail: some View {
+        ScrollView {
+            content
+                .padding(.horizontal, 24)
+                .padding(.vertical, 18)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func subtitle(for s: Section) -> String {
+        switch s {
+        case .providers: "Pick the LLMs that plan, research, and synthesize."
+        case .apiKeys: "Keys are stored in Keychain — never on disk."
+        case .knowledge: "Connect to the local pyseekdb sidecar."
+        case .budget: "Hard caps on tokens, workers, sources, and wall-clock."
+        case .iteration: "How many reflection rounds each run gets."
+        case .instructions: "House-style guidance appended to every prompt."
+        case .about: "Build info and architecture overview."
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch section {
+        case .providers: ProvidersTab().environment(env)
+        case .apiKeys: APIKeysTab()
+        case .knowledge: KnowledgeTab().environment(env)
+        case .budget: BudgetTab().environment(env)
+        case .iteration: IterationTab().environment(env)
+        case .instructions: InstructionsTab().environment(env)
+        case .about: AboutTab()
+        }
+    }
+}
+
+// MARK: - Reusable section card
+
+private struct SettingsGroup<Content: View>: View {
+    let title: String?
+    let footer: String?
+    @ViewBuilder var content: Content
+
+    init(_ title: String? = nil, footer: String? = nil, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.footer = footer
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let title {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                    .padding(.leading, 12)
+            }
+            VStack(spacing: 0) { content }
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(.background.secondary)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
+                )
+            if let footer {
+                Text(footer)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 12)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+private struct SettingsRow<Content: View>: View {
+    let label: String
+    let icon: String?
+    @ViewBuilder var content: Content
+
+    init(_ label: String, icon: String? = nil, @ViewBuilder content: () -> Content) {
+        self.label = label
+        self.icon = icon
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if let icon {
+                Image(systemName: icon)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+            }
+            Text(label)
+                .font(.body)
+            Spacer()
+            content
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .overlay(alignment: .bottom) {
+            Divider().opacity(0.4)
+        }
+    }
+}
+
+// MARK: - Providers
+
+private struct ProvidersTab: View {
+    @Environment(AppEnvironment.self) private var env
+    @State private var ollamaModels: [String] = []
+    @State private var ollamaState: OllamaFetchState = .idle
+
+    enum OllamaFetchState: Equatable { case idle, loading, ok, error(String) }
+
+    var body: some View {
+        @Bindable var env = env
+        VStack(alignment: .leading, spacing: 20) {
+            roleGroup(
+                title: "Orchestrator",
+                subtitle: "Decomposes the user's query into sub-tasks.",
+                provider: $env.configuration.orchestratorProvider,
+                model: $env.configuration.orchestratorModel
+            )
+            roleGroup(
+                title: "Workers",
+                subtitle: "Run sub-tasks in parallel with tool calling.",
+                provider: $env.configuration.workerProvider,
+                model: $env.configuration.workerModel
+            )
+            roleGroup(
+                title: "Synthesizer",
+                subtitle: "Writes the final markdown answer with citations.",
+                provider: $env.configuration.synthesisProvider,
+                model: $env.configuration.synthesisModel
+            )
+            if usesOllama { ollamaCard }
+        }
+        .task(id: env.configuration.ollamaHost) {
+            if usesOllama { await fetchOllamaModels() }
+        }
+        .onChange(of: env.configuration.orchestratorProvider) { _, _ in
+            Task { if usesOllama { await fetchOllamaModels() } }
+        }
+        .onChange(of: env.configuration.workerProvider) { _, _ in
+            Task { if usesOllama { await fetchOllamaModels() } }
+        }
+        .onChange(of: env.configuration.synthesisProvider) { _, _ in
+            Task { if usesOllama { await fetchOllamaModels() } }
+        }
+    }
+
+    private func roleGroup(title: String,
+                           subtitle: String,
+                           provider: Binding<ProviderRegistry.ProviderID>,
+                           model: Binding<String?>) -> some View {
+        SettingsGroup(title, footer: subtitle) {
+            SettingsRow("Provider", icon: "cpu") {
+                Picker("", selection: provider) {
+                    ForEach(ProviderRegistry.ProviderID.allCases, id: \.self) { p in
+                        Text(p.displayName).tag(p)
+                    }
+                }
+                .labelsHidden()
+                .onChange(of: provider.wrappedValue) { _, _ in
+                    model.wrappedValue = nil
+                }
+            }
+            SettingsRow("Model", icon: "cube") {
+                modelField(provider: provider.wrappedValue, value: model)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func modelField(provider: ProviderRegistry.ProviderID,
+                            value: Binding<String?>) -> some View {
+        let live = liveModels(for: provider)
+        if provider == .ollama && live.isEmpty {
+            HStack(spacing: 6) {
+                TextField("qwen3:8b",
+                          text: Binding(get: { value.wrappedValue ?? "" },
+                                       set: { value.wrappedValue = $0.isEmpty ? nil : $0 }))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 220)
+                Button {
+                    Task { await fetchOllamaModels() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .help("Refresh from /api/tags")
+            }
+        } else {
+            Picker("", selection: Binding(
+                get: { value.wrappedValue ?? live.first ?? provider.defaultModel },
+                set: { value.wrappedValue = $0 }
+            )) {
+                ForEach(live, id: \.self) { Text($0).tag($0) }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 260)
+        }
+    }
+
+    private var ollamaCard: some View {
+        SettingsGroup("Ollama discovery") {
+            SettingsRow("Status", icon: "wave.3.right") {
+                ollamaStatusLabel
+            }
+            SettingsRow("Host", icon: "network") {
+                Text(env.configuration.ollamaHost.absoluteString)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            HStack {
+                Spacer()
+                Button("Refresh") { Task { await fetchOllamaModels() } }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .padding(12)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var ollamaStatusLabel: some View {
+        switch ollamaState {
+        case .idle:
+            Text("Not checked").font(.caption).foregroundStyle(.secondary)
+        case .loading:
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text("Fetching…").font(.caption).foregroundStyle(.secondary)
+            }
+        case .ok:
+            Label("\(ollamaModels.count) model\(ollamaModels.count == 1 ? "" : "s")",
+                  systemImage: "checkmark.seal.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.green)
+                .labelStyle(.titleAndIcon)
+        case .error(let msg):
+            Label("Offline", systemImage: "exclamationmark.triangle.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.orange)
+                .help(msg)
+        }
+    }
+
+    private func fetchOllamaModels() async {
+        ollamaState = .loading
+        do {
+            ollamaModels = try await OllamaClient.listModels(host: env.configuration.ollamaHost)
+            ollamaState = .ok
+            commitOllamaDefaults()
+        } catch {
+            ollamaModels = []
+            ollamaState = .error(error.localizedDescription)
+        }
+    }
+
+    /// The Picker's synthetic Binding shows `live.first` as the default but
+    /// doesn't commit it to `env.configuration` until the user manually
+    /// selects something. That left workerModel == nil → makeClient falls
+    /// back to the hardcoded "qwen3:8b" which the user often doesn't have.
+    /// After /api/tags loads, write the first live model into any nil Ollama
+    /// role so the engine sees what the UI shows.
+    @MainActor
+    private func commitOllamaDefaults() {
+        guard let first = ollamaModels.first else { return }
+        if env.configuration.orchestratorProvider == .ollama,
+           (env.configuration.orchestratorModel ?? "").isEmpty {
+            env.configuration.orchestratorModel = first
+        }
+        if env.configuration.workerProvider == .ollama,
+           (env.configuration.workerModel ?? "").isEmpty {
+            env.configuration.workerModel = first
+        }
+        if env.configuration.synthesisProvider == .ollama,
+           (env.configuration.synthesisModel ?? "").isEmpty {
+            env.configuration.synthesisModel = first
+        }
+    }
+
+    private var usesOllama: Bool {
+        env.configuration.orchestratorProvider == .ollama
+            || env.configuration.workerProvider == .ollama
+            || env.configuration.synthesisProvider == .ollama
+    }
+
+    private func liveModels(for provider: ProviderRegistry.ProviderID) -> [String] {
+        provider == .ollama ? ollamaModels : provider.availableModels
+    }
+}
+
+// MARK: - API Keys
+
+private struct APIKeysTab: View {
+    @State private var keys: [KeyAccount: String] = [:]
+    @State private var saved: KeyAccount?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            ForEach(KeyAccount.allCases, id: \.rawValue) { account in
+                SettingsGroup(account.humanLabel) {
+                    VStack(spacing: 0) {
+                        SettingsRow("Key", icon: "key") {
+                            SecureField("Paste API key…",
+                                       text: Binding(get: { keys[account] ?? "" },
+                                                    set: { keys[account] = $0 }))
+                                .textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: 320)
+                        }
+                        HStack {
+                            Link(destination: account.helpURL) {
+                                Label("Get a key", systemImage: "arrow.up.right.square")
+                                    .font(.caption)
+                            }
+                            Spacer()
+                            if saved == account {
+                                Label("Saved", systemImage: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                                    .font(.caption)
+                            }
+                            Button("Save") {
+                                let value = keys[account] ?? ""
+                                Task {
+                                    if value.isEmpty {
+                                        await KeychainStore.shared.delete(account)
+                                    } else {
+                                        await KeychainStore.shared.set(value, for: account)
+                                    }
+                                    saved = account
+                                    try? await Task.sleep(for: .seconds(1))
+                                    saved = nil
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                        }
+                        .padding(12)
+                    }
+                }
+            }
+        }
+        .task {
+            for account in KeyAccount.allCases {
+                keys[account] = await KeychainStore.shared.get(account) ?? ""
+            }
+        }
+    }
+}
+
+// MARK: - Budget
+
+private struct BudgetTab: View {
+    @Environment(AppEnvironment.self) private var env
+
+    var body: some View {
+        @Bindable var env = env
+        VStack(alignment: .leading, spacing: 20) {
+            SettingsGroup("Preset",
+                         footer: "Quickly switch between cost/quality trade-offs.") {
+                HStack(spacing: 8) {
+                    presetButton("Fast", isOn: env.configuration.budget == .fast) {
+                        env.configuration.budget = .fast
+                    }
+                    presetButton("Standard", isOn: env.configuration.budget == .standard) {
+                        env.configuration.budget = .standard
+                    }
+                    presetButton("Thorough", isOn: env.configuration.budget == .thorough) {
+                        env.configuration.budget = .thorough
+                    }
+                }
+                .padding(12)
+            }
+            SettingsGroup("Caps") {
+                SettingsRow("Max tokens", icon: "circle.hexagongrid") {
+                    Stepper(value: $env.configuration.budget.maxTokens,
+                            in: 10_000...1_000_000, step: 10_000) {
+                        Text(env.configuration.budget.maxTokens.formatted())
+                            .monospacedDigit()
+                            .frame(minWidth: 80, alignment: .trailing)
+                    }
+                }
+                SettingsRow("Max workers", icon: "person.3") {
+                    Stepper(value: $env.configuration.budget.maxWorkers, in: 1...8) {
+                        Text("\(env.configuration.budget.maxWorkers)")
+                            .monospacedDigit()
+                            .frame(minWidth: 30, alignment: .trailing)
+                    }
+                }
+                SettingsRow("Sources per worker", icon: "doc.text") {
+                    Stepper(value: $env.configuration.budget.maxSourcesPerWorker, in: 1...20) {
+                        Text("\(env.configuration.budget.maxSourcesPerWorker)")
+                            .monospacedDigit()
+                            .frame(minWidth: 30, alignment: .trailing)
+                    }
+                }
+                SettingsRow("Tool calls per worker", icon: "wrench.and.screwdriver") {
+                    Stepper(value: $env.configuration.budget.maxToolCallsPerWorker, in: 1...60) {
+                        Text("\(env.configuration.budget.maxToolCallsPerWorker)")
+                            .monospacedDigit()
+                            .frame(minWidth: 30, alignment: .trailing)
+                    }
+                }
+            }
+        }
+    }
+
+    private func presetButton(_ label: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.callout.weight(.medium))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(isOn ? Color.accentColor : Color.primary.opacity(0.06),
+                           in: Capsule())
+                .foregroundStyle(isOn ? .white : .primary)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Iteration
+
+private struct IterationTab: View {
+    @Environment(AppEnvironment.self) private var env
+
+    var body: some View {
+        @Bindable var env = env
+        VStack(alignment: .leading, spacing: 20) {
+            SettingsGroup("Preset") {
+                HStack(spacing: 8) {
+                    presetButton("Fast", isOn: env.configuration.iteration == .fast) {
+                        env.configuration.iteration = .fast
+                    }
+                    presetButton("Standard", isOn: env.configuration.iteration == .standard) {
+                        env.configuration.iteration = .standard
+                    }
+                    presetButton("Thorough", isOn: env.configuration.iteration == .thorough) {
+                        env.configuration.iteration = .thorough
+                    }
+                }
+                .padding(12)
+            }
+            SettingsGroup("Rounds",
+                         footer: "Reflection adds an editorial critic between synthesis and an optional follow-up round.") {
+                SettingsRow("Max iterations", icon: "number") {
+                    Stepper(value: Binding(
+                        get: { env.configuration.iteration.maxRounds },
+                        set: { env.configuration.iteration = IterationController(
+                            maxRounds: $0,
+                            reflectAfterFirstRound: env.configuration.iteration.reflectAfterFirstRound) }
+                    ), in: 1...6) {
+                        Text("\(env.configuration.iteration.maxRounds)")
+                            .monospacedDigit()
+                            .frame(minWidth: 30, alignment: .trailing)
+                    }
+                }
+                SettingsRow("Reflect after first round", icon: "brain.head.profile") {
+                    Toggle("", isOn: Binding(
+                        get: { env.configuration.iteration.reflectAfterFirstRound },
+                        set: { env.configuration.iteration = IterationController(
+                            maxRounds: env.configuration.iteration.maxRounds,
+                            reflectAfterFirstRound: $0) }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                }
+            }
+        }
+    }
+
+    private func presetButton(_ label: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.callout.weight(.medium))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(isOn ? Color.accentColor : Color.primary.opacity(0.06),
+                           in: Capsule())
+                .foregroundStyle(isOn ? .white : .primary)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Knowledge base
+
+private struct KnowledgeTab: View {
+    @Environment(AppEnvironment.self) private var env
+    @State private var hostString: String = ""
+    @State private var health: String = "Unknown"
+
+    var body: some View {
+        @Bindable var env = env
+        VStack(alignment: .leading, spacing: 20) {
+            SettingsGroup("Sidecar",
+                         footer: "The Python sidecar wraps pyseekdb behind a tiny HTTP API.") {
+                SettingsRow("Host URL", icon: "network") {
+                    TextField("http://127.0.0.1:9100", text: $hostString)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 280)
+                        .onSubmit { commitHost() }
+                }
+                SettingsRow("Status", icon: "wave.3.right") {
+                    Text(health)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(health.contains("✓") ? .green : .secondary)
+                }
+                HStack {
+                    Spacer()
+                    Button("Apply") { commitHost() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    Button("Test connection") { Task { await ping() } }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
+                .padding(12)
+            }
+            SettingsGroup("Engine") {
+                SettingsRow("Include by default", icon: "books.vertical") {
+                    Toggle("", isOn: $env.configuration.useKnowledgeBase)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                }
+            }
+            SettingsGroup("Setup", footer: "Run these once in a terminal:") {
+                VStack(alignment: .leading, spacing: 8) {
+                    codeRow("python3 -m pip install pyseekdb fastapi uvicorn pydantic")
+                    codeRow("python3 sidecar/seekdb_sidecar.py --port 9100")
+                }
+                .padding(12)
+            }
+        }
+        .task {
+            hostString = env.configuration.seekdbHost.absoluteString
+            await ping()
+        }
+    }
+
+    private func codeRow(_ text: String) -> some View {
+        HStack {
+            Text(text)
+                .font(.caption.monospaced())
+                .textSelection(.enabled)
+            Spacer()
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .font(.caption2)
+            }
+            .buttonStyle(.borderless)
+            .help("Copy")
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func commitHost() {
+        if let url = URL(string: hostString) { env.configuration.seekdbHost = url }
+    }
+
+    private func ping() async {
+        let client = SeekDBClient(host: env.configuration.seekdbHost)
+        do {
+            let h = try await client.health()
+            let mode = h.mode.map { " \($0)" } ?? ""
+            health = "✓ Online\(mode) — \(h.documents ?? 0) docs"
+        } catch SeekDBClient.SeekDBError.unreachable {
+            health = "✗ Unreachable"
+        } catch {
+            health = "✗ \(error.localizedDescription)"
+        }
+    }
+}
+
+// MARK: - Instructions
+
+private struct InstructionsTab: View {
+    @Environment(AppEnvironment.self) private var env
+    var body: some View {
+        @Bindable var env = env
+        SettingsGroup("System addendum",
+                     footer: "Appended to planner, worker, and synthesizer prompts.") {
+            VStack(alignment: .leading, spacing: 8) {
+                TextEditor(text: $env.configuration.systemPromptAddendum)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 240)
+                    .padding(8)
+                    .background(Color.primary.opacity(0.04),
+                               in: RoundedRectangle(cornerRadius: 6))
+                HStack {
+                    Button("Clear") { env.configuration.systemPromptAddendum = "" }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                    Spacer()
+                    Text("\(env.configuration.systemPromptAddendum.count) characters")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(12)
+        }
+    }
+}
+
+// MARK: - About
+
+private struct AboutTab: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 14) {
+                Image(systemName: "sparkles.rectangle.stack.fill")
+                    .font(.system(size: 44))
+                    .foregroundStyle(Color.accentColor.gradient)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Swift Deep Research")
+                        .font(.title2.weight(.bold))
+                    Text("v2.0 · macOS 26 Tahoe · Swift 6.2")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Text("An open-source, on-device-first deep research agent. Decomposes questions into parallel sub-tasks, dispatches tool-using workers, and synthesizes cited answers.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            SettingsGroup("Architecture") {
+                VStack(alignment: .leading, spacing: 8) {
+                    aboutRow("person.3.fill", "Orchestrator-worker pattern (Anthropic-inspired)", .blue)
+                    aboutRow("brain.head.profile", "Six LLM providers — cloud, local, on-device", .purple)
+                    aboutRow("magnifyingglass", "Tavily / Exa / Brave / DuckDuckGo fallback chain", .orange)
+                    aboutRow("doc.text", "Static HTML + JS-rendered SPA reader", .teal)
+                    aboutRow("books.vertical.fill", "pyseekdb vector knowledge base", .indigo)
+                    aboutRow("quote.bubble.fill", "Inline numbered citations with exact-quote grounding", .pink)
+                    aboutRow("key.fill", "Keychain-backed API keys, never on disk", .yellow)
+                }
+                .padding(12)
+            }
+        }
+    }
+
+    private func aboutRow(_ icon: String, _ text: String, _ color: Color) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.callout)
+                .foregroundStyle(color)
+                .frame(width: 22)
+            Text(text)
+                .font(.callout)
+        }
+    }
+}

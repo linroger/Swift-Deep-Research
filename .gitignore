@@ -40,6 +40,20 @@ fastlane/screenshots/
 # Logs and temporary files
 *.log
 *.tmp
+logs/
+Swift Deep Research/logs/
+
+# Built app bundle (use Xcode/DerivedData)
+Swift Deep Research.app/
+
+# Local Claude Code state
+.claude/
+
+# Python sidecar caches
+__pycache__/
+*.pyc
+sidecar/.venv/
+sidecar/data/
 
 # Crash reports
 *.crash
