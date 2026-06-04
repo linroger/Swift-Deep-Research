@@ -110,10 +110,12 @@ private struct NumberedSourceRow: View {
     let source: FetchedSource
     @Environment(\.openURL) private var openURL
     @State private var hovered = false
+    /// KB chunks open in a reader sheet (kb:// has no browser handler).
+    @State private var showChunk = false
 
     var body: some View {
         Button {
-            openURL(source.url)
+            if source.isKnowledgeBase { showChunk = true } else { openURL(source.url) }
         } label: {
             HStack(alignment: .top, spacing: 8) {
                 Text("[\(index)]")
@@ -125,14 +127,23 @@ private struct NumberedSourceRow: View {
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
-                    Text(source.url.host ?? source.url.absoluteString)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    if source.isKnowledgeBase {
+                        HStack(spacing: 5) {
+                            Label("Knowledge base", systemImage: "text.book.closed.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.indigo)
+                            KBScoreBadge(score: source.relevanceScore)
+                        }
+                    } else {
+                        Text(source.url.host ?? source.url.absoluteString)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
                 Spacer()
                 if hovered {
-                    Image(systemName: "arrow.up.right.square")
+                    Image(systemName: source.isKnowledgeBase ? "doc.text.magnifyingglass" : "arrow.up.right.square")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -144,7 +155,10 @@ private struct NumberedSourceRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
-        .help("\(source.title)\n\(source.url.absoluteString)\n\n\(String(source.extractedText.prefix(280)))…")
+        .help(source.isKnowledgeBase
+              ? "\(source.title) — knowledge base\n\n\(String(source.extractedText.prefix(280)))…"
+              : "\(source.title)\n\(source.url.absoluteString)\n\n\(String(source.extractedText.prefix(280)))…")
+        .sheet(isPresented: $showChunk) { KBChunkDetail(source: source) }
     }
 }
 

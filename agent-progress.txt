@@ -176,3 +176,25 @@ Remaining / next steps:
   a running LM Studio server; wire format is OpenAI-standard and matches the
   proven OpenAI path.
 - Live sidecar venv-bootstrap test on a machine without pyseekdb installed.
+
+================================================================================
+Session: 2026-06-04 (cont.) — SeekDB verification + KB chunk visibility
+Branch: main
+--------------------------------------------------------------------------------
+- Verified the SeekDB sidecar live (system python3 3.12.6 already has deps):
+  /health -> embedded mode; POST /documents chunked a doc; POST /query returned
+  the chunk with score 0.58 and metadata (title/doc_id/chunk_index). KB works.
+- FetchedSource gained optional relevanceScore + isKnowledgeBase; KnowledgeBaseTool
+  passes hit.score through.
+- SourcePanel: dedicated "Knowledge base (N)" inspector section ranked by score,
+  with a tappable KBChunkRow that opens a full-text reader sheet (kb:// URLs have
+  no browser handler). Web discoveries filtered out of the generic Discovered
+  section to avoid duplication.
+- New Interface/KBChunkDetail.swift: shared KBChunkDetail reader + KBScoreBadge
+  (colour-coded). Used by both the inspector and the final-answer source list.
+- DraftCard NumberedSourceRow: KB sources now render as "Knowledge base" + score
+  and open the chunk reader instead of a dead kb:// link.
+- KnowledgeBaseTool.queryWithRecovery: if the sidecar is unreachable mid-run, ask
+  SidecarSupervisor.ensureRunning and retry once before soft-failing.
+- Refreshed stale SeekDBClient/KnowledgeBaseTool guidance (auto-start, not manual).
+- Verify: xcodebuild Debug build SUCCEEDED, 0 errors / 0 dup warnings.

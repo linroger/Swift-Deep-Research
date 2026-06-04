@@ -117,11 +117,21 @@ public struct FetchedSource: Sendable, Codable, Identifiable {
     public let extractedText: String
     public let extractedAt: Date
     public let strategy: ExtractionStrategy
+    /// Semantic-search relevance score for knowledge-base chunks (0…1, higher is
+    /// closer). `nil` for web sources. Surfaced in the inspector so users can see
+    /// which private-document chunks the agent retrieved and how relevant they were.
+    public let relevanceScore: Double?
     public init(id: String = UUID().uuidString, url: URL, title: String, extractedText: String,
-                extractedAt: Date = .now, strategy: ExtractionStrategy) {
+                extractedAt: Date = .now, strategy: ExtractionStrategy,
+                relevanceScore: Double? = nil) {
         self.id = id; self.url = url; self.title = title; self.extractedText = extractedText
         self.extractedAt = extractedAt; self.strategy = strategy
+        self.relevanceScore = relevanceScore
     }
+
+    /// True when this source came from the user's private knowledge base
+    /// (pyseekdb), as opposed to a web fetch.
+    public var isKnowledgeBase: Bool { strategy == .knowledgeBase }
 
     public enum ExtractionStrategy: String, Sendable, Codable {
         case staticHTML, javascriptRendered, reddit, knowledgeBase

@@ -37,7 +37,7 @@ public struct KnowledgeBaseTool: ResearchTool {
 
         let k = max(1, min(args.k ?? 6, 20))
         do {
-            let hits = try await client.query(trimmed, k: k)
+            let hits = try await queryWithRecovery(trimmed, k: k)
             let fetchedSources = hits.compactMap(Self.fetchedSource)
             // Emit each hit as a discovered source so the UI surfaces them in
             // the inspector under "discovered". We use a synthetic URL scheme
@@ -80,9 +80,25 @@ public struct KnowledgeBaseTool: ResearchTool {
             return .ok(summary: "Knowledge base: \(hits.count) hits for '\(Clip.clip(trimmed, to: 60))'",
                        payloadJSON: String(decoding: payloadData, as: UTF8.self))
         } catch SeekDBClient.SeekDBError.unreachable(let url) {
-            return .failed(message: "Knowledge base sidecar offline at \(url.absoluteString). Start it with `python3 sidecar/seekdb_sidecar.py` or disable the toggle.")
+            return .failed(message: "Knowledge base sidecar offline at \(url.absoluteString). It auto-starts at app launch; open Settings → Knowledge → Start / repair, or disable the knowledge-base toggle.")
         } catch {
             return .failed(message: "knowledge_base error: \(error.localizedDescription)")
+        }
+    }
+
+    /// Query the sidecar, and if it's unreachable, ask `SidecarSupervisor` to
+    /// bring it up (auto-launch / venv bootstrap) and retry once. Keeps a
+    /// research run alive when the sidecar wasn't started yet, instead of
+    /// failing the whole knowledge-base lookup.
+    private func queryWithRecovery(_ query: String, k: Int) async throws -> [SeekDBClient.QueryHit] {
+        do {
+            return try await client.query(query, k: k)
+        } catch SeekDBClient.SeekDBError.unreachable {
+            let status = await SidecarSupervisor.shared.ensureRunning(host: client.host)
+            guard status == .running else {
+                throw SeekDBClient.SeekDBError.unreachable(client.host)
+            }
+            return try await client.query(query, k: k)
         }
     }
 
@@ -94,7 +110,8 @@ public struct KnowledgeBaseTool: ResearchTool {
                              url: url,
                              title: hit.title,
                              extractedText: hit.text,
-                             strategy: .knowledgeBase)
+                             strategy: .knowledgeBase,
+                             relevanceScore: hit.score)
     }
 
     private struct Payload: Encodable {

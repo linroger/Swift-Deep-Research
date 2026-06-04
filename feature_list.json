@@ -367,6 +367,40 @@
         "xcodebuild clean build SUCCEEDED, 0 duplicate warnings"
       ],
       "passes": true
+    },
+    {
+      "id": "feat_kb_verified_e2e",
+      "category": "knowledge",
+      "description": "SeekDB sidecar verified end-to-end (health/upsert/query) returning chunks with relevance scores + metadata",
+      "steps": [
+        "python3 sidecar/seekdb_sidecar.py boots in embedded mode",
+        "POST /documents chunks and stores a doc",
+        "POST /query returns ranked chunks with score + doc_id/title/chunk_index"
+      ],
+      "passes": true
+    },
+    {
+      "id": "feat_kb_chunk_visibility",
+      "category": "ui",
+      "description": "Users can see and read the knowledge-base chunks the agent retrieved as sources, with relevance scores",
+      "steps": [
+        "FetchedSource carries relevanceScore; isKnowledgeBase helper",
+        "Inspector shows a dedicated 'Knowledge base' section ranked by score",
+        "Tapping a chunk opens a full-text reader sheet (kb:// has no browser)",
+        "Final answer source list renders KB sources as 'Knowledge base' + score and opens the reader",
+        "Score badge colour-coded by relevance"
+      ],
+      "passes": true
+    },
+    {
+      "id": "feat_kb_midrun_recovery",
+      "category": "knowledge",
+      "description": "knowledge_base tool auto-recovers the sidecar via SidecarSupervisor and retries once if it is offline mid-run",
+      "steps": [
+        "On SeekDBError.unreachable, call ensureRunning(host)",
+        "Retry the query once when it comes up; otherwise soft-fail so the worker falls back to web"
+      ],
+      "passes": true
     }
   ]
 }

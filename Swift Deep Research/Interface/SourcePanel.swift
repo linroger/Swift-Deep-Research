@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import AppKit
 
 /// Right-pane inspector. Tabs the user can flip between:
 ///   - Sources: discovered + cited
@@ -9,6 +10,9 @@ struct SourcePanel: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.modelContext) private var modelContext
     @State private var selectedTab: InspectorTab = .sources
+    /// KB chunk currently open in the reader sheet (kb:// URLs can't open in a
+    /// browser, so tapping a knowledge-base source shows its text here).
+    @State private var inspectedChunk: FetchedSource?
 
     enum InspectorTab: String, CaseIterable, Identifiable {
         case sources, activity, plan
@@ -94,20 +98,39 @@ struct SourcePanel: View {
             }
         }
         .listStyle(.plain)
+        .sheet(item: $inspectedChunk) { chunk in
+            KBChunkDetail(source: chunk)
+        }
     }
 
     @ViewBuilder
     private func liveSources(live: LiveSession) -> some View {
-        if !live.fetchedSources.isEmpty {
-            Section("Fetched (\(live.fetchedSources.count))") {
-                ForEach(Array(live.fetchedSources.values), id: \.url) { f in
+        // Knowledge-base chunks the agent retrieved from the user's documents,
+        // ranked by relevance. Tapping one opens its full text.
+        let kbChunks = live.fetchedSources.values
+            .filter(\.isKnowledgeBase)
+            .sorted { ($0.relevanceScore ?? 0) > ($1.relevanceScore ?? 0) }
+        let webFetched = live.fetchedSources.values.filter { !$0.isKnowledgeBase }
+
+        if !kbChunks.isEmpty {
+            Section("Knowledge base (\(kbChunks.count))") {
+                ForEach(kbChunks, id: \.id) { chunk in
+                    KBChunkRow(source: chunk) { inspectedChunk = chunk }
+                }
+            }
+        }
+        if !webFetched.isEmpty {
+            Section("Fetched (\(webFetched.count))") {
+                ForEach(webFetched, id: \.url) { f in
                     FetchedRow(source: f)
                 }
             }
         }
-        if !live.discoveredSources.isEmpty {
-            Section("Discovered (\(live.discoveredSources.count))") {
-                ForEach(live.discoveredSources) { s in
+        // Web discoveries only — KB hits already appear in their own section.
+        let webDiscovered = live.discoveredSources.filter { $0.provider != "knowledge_base" }
+        if !webDiscovered.isEmpty {
+            Section("Discovered (\(webDiscovered.count))") {
+                ForEach(webDiscovered) { s in
                     DiscoveredRow(source: s, fetched: live.fetchedSources[s.url] != nil)
                 }
             }
@@ -233,6 +256,44 @@ private struct DiscoveredRow: View {
         }
         .buttonStyle(.plain)
         .help(source.snippet ?? source.title)
+    }
+}
+
+/// A retrieved knowledge-base chunk. Tapping opens the full text — `kb://`
+/// URLs have no browser handler, so we show the chunk inline instead.
+private struct KBChunkRow: View {
+    let source: FetchedSource
+    let onOpen: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "text.book.closed.fill")
+                    .foregroundStyle(.indigo)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(source.title).font(.caption.weight(.medium)).lineLimit(1)
+                        Spacer(minLength: 0)
+                        KBScoreBadge(score: source.relevanceScore)
+                    }
+                    Text(source.extractedText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    HStack(spacing: 4) {
+                        Image(systemName: "doc.on.doc").font(.system(size: 8))
+                        Text("\(source.extractedText.count.formatted()) chars • tap to read")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(hovered ? Color.accentColor : Color.secondary.opacity(0.7))
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .help("Open knowledge-base chunk")
     }
 }
 

@@ -2,10 +2,11 @@ import Foundation
 
 /// HTTP client for the local pyseekdb sidecar (`sidecar/seekdb_sidecar.py`).
 ///
-/// The sidecar must be running for any operation to succeed. We never spawn
-/// it for the user — they start it from a terminal (instructions live in
-/// `DocumentUploadView`). If it isn't reachable the client surfaces a clear
-/// `SeekDBError.unreachable` instead of hanging the UI.
+/// `SidecarSupervisor` auto-launches the sidecar at app startup (and bootstraps
+/// a private Python virtualenv with the dependencies if they're missing), so
+/// users don't start it manually. If it still isn't reachable the client
+/// surfaces a clear `SeekDBError.unreachable` instead of hanging the UI;
+/// callers such as `KnowledgeBaseTool` then ask the supervisor to recover it.
 public actor SeekDBClient {
     public let host: URL
     private let session: URLSession

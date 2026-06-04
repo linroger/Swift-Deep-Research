@@ -180,3 +180,31 @@ Acceptance evidence: build logs under `logs/build-final-*.log` and
 Remaining (needs user-supplied secrets / live services, not code):
 - Per-provider live API smoke test (DeepSeek/MiniMax/Kimi keys; running LM Studio).
 - Live venv-bootstrap test on a machine lacking pyseekdb.
+
+## Update — 2026-06-04 (cont.): SeekDB verified + knowledge-base chunk visibility
+**Status:** build green, 0 warnings.
+
+- **SeekDB verified end-to-end** (live): `sidecar/seekdb_sidecar.py` in embedded
+  mode — `/health` ok, `/documents` chunked a doc, `/query` returned the chunk
+  with score 0.58 + metadata (title/doc_id/chunk_index). The system Python
+  (pyenv 3.12.6) already has the deps; the venv bootstrap path triggers only when
+  they're missing.
+- **Chunk visibility (user request):** users can now see and read the KB chunks
+  the agent used as sources.
+  - `FetchedSource` gained `relevanceScore: Double?` + `isKnowledgeBase`; the KB
+    tool threads `hit.score` through.
+  - Inspector (`SourcePanel`) has a dedicated **Knowledge base (N)** section
+    ranked by score; tapping a chunk opens a full-text reader sheet (kb:// URLs
+    have no browser handler). Web discoveries are filtered out of the generic
+    Discovered section.
+  - New `Interface/KBChunkDetail.swift` (shared `KBChunkDetail` reader +
+    colour-coded `KBScoreBadge`) is reused by the inspector and the final answer.
+  - `DraftCard` renders KB sources as "Knowledge base" + score and opens the
+    reader instead of a dead `kb://` link.
+- **Mid-run KB resilience:** `KnowledgeBaseTool.queryWithRecovery` asks
+  `SidecarSupervisor.ensureRunning` and retries once if the sidecar is offline.
+- Refreshed stale SeekDBClient / KnowledgeBaseTool comments (auto-start, not
+  manual terminal launch).
+
+Evidence: build logs `logs/build-kbshared-*.log`, `logs/build-kbrecover-*.log`
+(SUCCEEDED, 0 dup warnings); live sidecar transcript captured in session.
