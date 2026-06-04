@@ -63,11 +63,6 @@ public actor SidecarSupervisor {
     private var venvPython: URL { venvDir.appendingPathComponent("bin/python3") }
     private var hasVenv: Bool { FileManager.default.isExecutableFile(atPath: venvPython.path) }
 
-    /// Absolute path to the Python that should launch the sidecar. Prefer the
-    /// managed venv (it has the deps); otherwise let `/usr/bin/env` resolve
-    /// `python3` from PATH.
-    private var preferredPython: String { hasVenv ? venvPython.path : "python3" }
-
     // MARK: - Public API
 
     /// Ensure the sidecar is reachable at `host`. Returns the current status.
@@ -90,26 +85,94 @@ public actor SidecarSupervisor {
         }
         let resolvedPort = port ?? host.port ?? 9100
 
-        // Attempt 1 — best available Python.
-        var result = await launchAndWait(script: script, port: resolvedPort,
-                                         host: host, python: preferredPython)
-        if case .running = result { return result }
+        // Prefer an interpreter that ALREADY has the deps. Probing fixes the
+        // classic failure where the GUI launch PATH (Finder/Xcode, not a shell)
+        // resolves `python3` to a bare interpreter without pyseekdb installed —
+        // the sidecar script then prints "Missing dependencies" and exits.
+        if let python = await pythonWithDependencies() {
+            let result = await launchAndWait(script: script, port: resolvedPort,
+                                             host: host, python: python)
+            if case .running = result { status = result; return result }
+            // Failed for a non-deps reason (e.g. port busy) — bootstrapping
+            // won't help, so report it.
+            if !needsDependencies { status = result; return result }
+        }
 
-        // Attempt 2 — if it died for want of dependencies, build a venv once
-        // and relaunch from it.
-        if needsDependencies && !didAttemptBootstrap {
+        // No interpreter has the deps → build a private virtualenv once, install
+        // them, and launch from it.
+        if !didAttemptBootstrap {
             didAttemptBootstrap = true
             status = .installingDependencies
-            let installed = await installDependencies()
-            if installed {
-                result = await launchAndWait(script: script, port: resolvedPort,
-                                            host: host, python: venvPython.path)
-            } else {
-                result = .notInstalled(lastError ?? "Failed to install Python dependencies.")
+            if await installDependencies() {
+                let result = await launchAndWait(script: script, port: resolvedPort,
+                                                 host: host, python: venvPython.path)
+                status = result
+                return result
+            }
+            status = .notInstalled(lastError ?? "Failed to install Python dependencies.")
+            return status
+        }
+        status = .notInstalled(lastError ??
+            "Python dependencies unavailable. Open Settings → Knowledge → Reinstall dependencies.")
+        return status
+    }
+
+    // MARK: - Interpreter discovery
+
+    /// Candidate `python3` interpreters, most-likely-good first. Absolute paths
+    /// are tried directly; bare names rely on the augmented PATH. Probing these
+    /// for the required modules is what makes the knowledge base "just work"
+    /// regardless of how the app was launched.
+    private func pythonCandidates() -> [String] {
+        let home = NSHomeDirectory()
+        let fm = FileManager.default
+        var c: [String] = []
+        if hasVenv { c.append(venvPython.path) }
+        // Installed pyenv versions, newest first — covers the common case where
+        // the deps live in a specific pyenv version and the GUI PATH can't see
+        // the shim's global resolution.
+        let pyenvVersions = home + "/.pyenv/versions"
+        if let entries = try? fm.contentsOfDirectory(atPath: pyenvVersions) {
+            for v in entries.sorted(by: >) {
+                c.append(pyenvVersions + "/\(v)/bin/python3")
             }
         }
-        status = result
-        return result
+        c += [
+            "/opt/homebrew/bin/python3.13", "/opt/homebrew/bin/python3.12",
+            "/opt/homebrew/bin/python3.11", "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3.12", "/usr/local/bin/python3",
+            home + "/.pyenv/shims/python3",
+            "python3", "/usr/bin/python3"
+        ]
+        return c
+    }
+
+    /// First candidate interpreter that can import every required module. Uses
+    /// `importlib.util.find_spec` (no heavy import) so the probe is fast.
+    private func pythonWithDependencies() async -> String? {
+        let probe = "import importlib.util as u,sys;" +
+            "sys.exit(0 if all(u.find_spec(m) for m in " +
+            "['pyseekdb','fastapi','uvicorn','pydantic']) else 1)"
+        var seen = Set<String>()
+        for candidate in pythonCandidates() where seen.insert(candidate).inserted {
+            let (code, _) = await runProcess(executable: candidate, args: ["-c", probe])
+            if code == 0 { return candidate }
+        }
+        return nil
+    }
+
+    /// Best interpreter for *creating* the virtualenv: first candidate that runs
+    /// at all (deps not required), preferring a modern Python. Skips the venv's
+    /// own python, which may not exist yet.
+    private func pythonForVenvCreation() async -> String {
+        var seen = Set<String>()
+        for candidate in pythonCandidates()
+        where candidate != venvPython.path && seen.insert(candidate).inserted {
+            let (code, _) = await runProcess(executable: candidate,
+                                            args: ["-c", "import sys"])
+            if code == 0 { return candidate }
+        }
+        return "python3"
     }
 
     /// Force a dependency (re)install + relaunch. Exposed for a manual
@@ -149,11 +212,18 @@ public actor SidecarSupervisor {
     // MARK: - Launch plumbing
 
     /// True when the captured child output indicates a missing Python module.
+    /// Matches both raw interpreter errors and the sidecar script's own
+    /// friendly "Missing dependencies" message (which hides the underlying
+    /// `ImportError`), plus its `SystemExit(2)` deps signal.
     private var needsDependencies: Bool {
         guard let e = lastError?.lowercased() else { return false }
         return e.contains("modulenotfounderror")
             || e.contains("no module named")
             || e.contains("importerror")
+            || e.contains("missing dependencies")
+            || e.contains("is not installed")
+            || e.contains("pip install")
+            || e.contains("[exit 2]")
     }
 
     private func launchAndWait(script: URL, port: Int, host: URL, python: String) async -> Status {
@@ -211,16 +281,18 @@ public actor SidecarSupervisor {
     }
 
     /// PATH augmented with common pyenv / Homebrew locations so `python3`
-    /// resolves even when launched from Finder (minimal PATH).
+    /// resolves to a real interpreter even when launched from Finder/Xcode
+    /// (where the inherited PATH is the minimal `/usr/bin:/bin:…`). The extra
+    /// locations are *prepended* so a Homebrew/pyenv Python that actually has
+    /// the deps wins over the bare `/usr/bin/python3` stub.
     private func childEnvironment() -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         let home = env["HOME"] ?? NSHomeDirectory()
         let extraPaths = [
             "/opt/homebrew/bin", "/usr/local/bin",
-            home + "/.pyenv/shims",
-            home + "/.pyenv/versions/3.12.6/bin"
+            home + "/.pyenv/shims"
         ]
-        env["PATH"] = (env["PATH"] ?? "") + ":" + extraPaths.joined(separator: ":")
+        env["PATH"] = extraPaths.joined(separator: ":") + ":" + (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
         env["PYTHONUNBUFFERED"] = "1"
         return env
     }
@@ -249,11 +321,12 @@ public actor SidecarSupervisor {
         try? fm.createDirectory(at: appSupportDir, withIntermediateDirectories: true)
 
         if !hasVenv {
+            let creator = await pythonForVenvCreation()
             let (code, out) = await runProcess(
-                executable: "/usr/bin/env",
-                args: ["python3", "-m", "venv", venvDir.path])
+                executable: creator,
+                args: ["-m", "venv", venvDir.path])
             if code != 0 {
-                lastError = "venv creation failed:\n" + String(out.suffix(1500))
+                lastError = "venv creation failed (\(creator)):\n" + String(out.suffix(1500))
                 return false
             }
         }

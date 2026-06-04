@@ -214,3 +214,42 @@ Branch: main
 - ConversationView failure banner now shows failure.underlying (raw API body),
   selectable, when not already echoed in the message.
 - Verify: xcodebuild Debug build SUCCEEDED, 0 errors / 0 dup warnings.
+
+================================================================================
+Session: 2026-06-04 (cont.) — KB sidecar GUI-launch fix + network-loss retry
+Branch: main
+--------------------------------------------------------------------------------
+Root cause (from user screenshots): when launched from Finder/Xcode (not a
+shell), the app's PATH resolves `python3` to /usr/bin/python3 (Apple's, no
+pyseekdb) -> sidecar prints "Missing dependencies" and exits. My venv bootstrap
+never fired because needsDependencies only matched raw ImportError text, not the
+script's custom "Missing dependencies" message.
+
+Fixes (SidecarSupervisor):
+- pythonWithDependencies(): probe candidate interpreters with
+  `importlib.util.find_spec` and launch the sidecar with the FIRST one that has
+  pyseekdb/fastapi/uvicorn/pydantic. Candidates include the managed venv, every
+  installed ~/.pyenv/versions/*/bin/python3 (newest first), Homebrew, and PATH
+  fallbacks. Absolute paths work regardless of the GUI launch PATH.
+- childEnvironment(): PREPEND Homebrew/pyenv-shims so a deps-having python wins.
+- needsDependencies: also match "missing dependencies" / "is not installed" /
+  "pip install" / "[exit 2]" so the venv bootstrap fires when no interpreter has
+  the deps.
+- installDependencies(): create the venv with pythonForVenvCreation() (first
+  modern runnable interpreter), not a bare `python3`.
+- Removed unused preferredPython.
+
+Network resilience (OpenAICompatibleClient):
+- "Research failed — The network connection was lost" hit slow reasoning models
+  (deepseek-reasoner) that idle before the first token; idle connections get
+  dropped. stream() now retries transient URLErrors (networkConnectionLost,
+  timedOut, cannotConnectToHost, dnsLookupFailed, …) up to 3 attempts with
+  linear backoff — but ONLY before the server has responded, so streamed output
+  is never duplicated. 4xx/5xx and cancellation are never retried.
+
+Verification:
+- Probe confirmed: /usr/bin/python3 lacks pyseekdb (ModuleNotFoundError) while
+  ~/.pyenv/versions/3.12.6/bin/python3 find_spec -> exit 0.
+- Launched the rebuilt app: sidecar came up on /usr/.pyenv/versions/3.12.6 python,
+  /health ok (12 docs). KB now online.
+- xcodebuild Debug build SUCCEEDED, 0 errors / 0 dup warnings.

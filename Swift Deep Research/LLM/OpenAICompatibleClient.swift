@@ -43,52 +43,102 @@ public struct OpenAICompatibleClient: LLMClient {
     public func stream(_ request: LLMRequest) -> AsyncThrowingStream<LLMStreamChunk, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
+                if requiresKey && apiKey.isEmpty {
+                    continuation.yield(.finished(reason: .error))
+                    continuation.finish(throwing: EngineFailure(
+                        kind: .configurationMissing,
+                        message: "\(identity.displayName): API key not set."))
+                    return
+                }
+                let body: Data
                 do {
-                    if requiresKey && apiKey.isEmpty {
-                        throw EngineFailure(kind: .configurationMissing,
-                                            message: "\(identity.displayName): API key not set.")
-                    }
-                    var req = URLRequest(url: endpoint)
-                    req.httpMethod = "POST"
-                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    if !apiKey.isEmpty {
-                        req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-                    }
-                    req.httpBody = try Self.encodeBody(request: request,
-                                                       defaultModel: model,
-                                                       tokenParameter: tokenParameter)
-
-                    let (bytes, response) = try await session.bytes(for: req)
-                    if let http = response as? HTTPURLResponse, !(200..<300 ~= http.statusCode) {
-                        // Drain the error body so we can extract the provider's
-                        // own message (e.g. DeepSeek's "Insufficient Balance").
-                        var body = ""
-                        for try await line in bytes.lines {
-                            body += line + "\n"
-                            if body.count > 1200 { break }
-                        }
-                        throw Self.httpError(status: http.statusCode,
-                                             body: body,
-                                             provider: identity.displayName)
-                    }
-                    var toolBuffer: [Int: PartialToolCall] = [:]
-                    for try await event in SSEParser.stream(bytes) {
-                        if event.data == "[DONE]" {
-                            for (_, call) in toolBuffer { continuation.yield(.toolCallEnd(id: call.id)) }
-                            continuation.yield(.finished(reason: .stop))
-                            break
-                        }
-                        try Self.parseEvent(data: event.data,
-                                            toolBuffer: &toolBuffer,
-                                            continuation: continuation)
-                    }
-                    continuation.finish()
+                    body = try Self.encodeBody(request: request,
+                                               defaultModel: model,
+                                               tokenParameter: tokenParameter)
                 } catch {
                     continuation.yield(.finished(reason: .error))
                     continuation.finish(throwing: error)
+                    return
+                }
+
+                // Retry transient connection failures, but ONLY before the
+                // server has sent anything — once we've yielded content, a retry
+                // would duplicate output. Slow reasoning models (deepseek-reasoner,
+                // Kimi thinking) idle for many seconds before the first token, and
+                // intermediaries drop the idle connection ("network connection
+                // lost"); a fresh attempt almost always succeeds.
+                let maxAttempts = 3
+                var attempt = 0
+                while true {
+                    attempt += 1
+                    var serverResponded = false
+                    do {
+                        var req = URLRequest(url: endpoint)
+                        req.httpMethod = "POST"
+                        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                        if !apiKey.isEmpty {
+                            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                        }
+                        req.httpBody = body
+
+                        let (bytes, response) = try await session.bytes(for: req)
+                        if let http = response as? HTTPURLResponse, !(200..<300 ~= http.statusCode) {
+                            // Drain the error body so we can extract the provider's
+                            // own message (e.g. DeepSeek's "Insufficient Balance").
+                            // A 4xx/5xx is a definitive answer — never retry it.
+                            serverResponded = true
+                            var errBody = ""
+                            for try await line in bytes.lines {
+                                errBody += line + "\n"
+                                if errBody.count > 1200 { break }
+                            }
+                            throw Self.httpError(status: http.statusCode,
+                                                 body: errBody,
+                                                 provider: identity.displayName)
+                        }
+                        var toolBuffer: [Int: PartialToolCall] = [:]
+                        for try await event in SSEParser.stream(bytes) {
+                            serverResponded = true   // past the safe-retry window
+                            if event.data == "[DONE]" {
+                                for (_, call) in toolBuffer { continuation.yield(.toolCallEnd(id: call.id)) }
+                                continuation.yield(.finished(reason: .stop))
+                                break
+                            }
+                            try Self.parseEvent(data: event.data,
+                                                toolBuffer: &toolBuffer,
+                                                continuation: continuation)
+                        }
+                        continuation.finish()
+                        return
+                    } catch {
+                        if !serverResponded, attempt < maxAttempts, Self.isTransient(error) {
+                            // Linear backoff: 0.7s, 1.4s.
+                            try? await Task.sleep(nanoseconds: UInt64(attempt) * 700_000_000)
+                            continue
+                        }
+                        continuation.yield(.finished(reason: .error))
+                        continuation.finish(throwing: error)
+                        return
+                    }
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Transient transport failures worth a quick retry (connection dropped
+    /// while idle, DNS hiccup, timeout). Never retries cancellation or HTTP
+    /// status errors.
+    private static func isTransient(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        guard let urlError = error as? URLError else { return false }
+        switch urlError.code {
+        case .networkConnectionLost, .timedOut, .cannotConnectToHost,
+             .cannotFindHost, .dnsLookupFailed, .notConnectedToInternet,
+             .resourceUnavailable, .secureConnectionFailed:
+            return true
+        default:
+            return false
         }
     }
 
