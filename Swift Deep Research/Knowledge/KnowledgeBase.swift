@@ -42,9 +42,9 @@ public final class KnowledgeBase {
         switch status {
         case .running:
             _ = await tryReadHealth()
-        case .launching:
-            // Wait-for-health timed out without dying — fall through to mark
-            // unreachable so the UI shows the diagnostic.
+        case .launching, .installingDependencies:
+            // Still coming up (or building its virtualenv) — mark unreachable
+            // for now; the UI shows the diagnostic and the user can retry.
             self.health = .unreachable(host.absoluteString)
         case .notInstalled(let detail), .failed(let detail):
             self.lastError = detail

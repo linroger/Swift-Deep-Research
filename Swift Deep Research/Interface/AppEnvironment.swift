@@ -14,9 +14,26 @@ public final class AppEnvironment {
     public var live: LiveSession?
     public var settingsOpen: Bool = false
 
+    /// UserDefaults key for the persisted engine configuration. Versioned so a
+    /// schema change can invalidate stale blobs by bumping the suffix.
+    private static let configKey = "engineConfiguration.v2"
+
     public init(store: ResearchStore) {
         self.store = store
-        self.configuration = EngineConfiguration.suggestedDefault()
+        if let data = UserDefaults.standard.data(forKey: Self.configKey),
+           let saved = try? JSONDecoder().decode(EngineConfiguration.self, from: data) {
+            self.configuration = saved
+        } else {
+            self.configuration = EngineConfiguration.suggestedDefault()
+        }
+    }
+
+    /// Persist the current configuration so provider/model/endpoint choices
+    /// survive relaunch. Cheap; safe to call on every settings change.
+    public func saveConfiguration() {
+        if let data = try? JSONEncoder().encode(configuration) {
+            UserDefaults.standard.set(data, forKey: Self.configKey)
+        }
     }
 
     /// Begin a new research run. Cancels any previous live run first.

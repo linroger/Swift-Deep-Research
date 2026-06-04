@@ -58,17 +58,23 @@ public struct ResearchEngine: Sendable {
                     let orchestratorLLM = try await registry.makeClient(
                         provider: config.orchestratorProvider,
                         model: config.orchestratorModel,
-                        ollamaHost: config.ollamaHost
+                        ollamaHost: config.ollamaHost,
+                        lmStudioHost: config.lmStudioHost,
+                        customBaseURL: config.customEndpointBaseURL
                     )
                     let workerLLM = try await registry.makeClient(
                         provider: config.workerProvider,
                         model: config.workerModel,
-                        ollamaHost: config.ollamaHost
+                        ollamaHost: config.ollamaHost,
+                        lmStudioHost: config.lmStudioHost,
+                        customBaseURL: config.customEndpointBaseURL
                     )
                     let synthesisLLM = try await registry.makeClient(
                         provider: config.synthesisProvider,
                         model: config.synthesisModel,
-                        ollamaHost: config.ollamaHost
+                        ollamaHost: config.ollamaHost,
+                        lmStudioHost: config.lmStudioHost,
+                        customBaseURL: config.customEndpointBaseURL
                     )
 
                     let planner = Planner(llm: orchestratorLLM,

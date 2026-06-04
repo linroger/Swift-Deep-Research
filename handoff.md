@@ -1,8 +1,8 @@
 # Handoff.md — Swift Deep Research v2 Rebuild
 
-**Last Updated (UTC):** 2026-05-25T09:58Z
+**Last Updated (UTC):** 2026-06-04
 **Status:** In Progress
-**Current Focus:** Robustness pass for provider tool-calling, knowledge-base evidence flow, and document ingestion.
+**Current Focus:** Multi-provider expansion (DeepSeek/MiniMax/Kimi/LM Studio/custom), config persistence, and SeekDB auto-bootstrap — landed; build green.
 
 ## 1) Request & Context
 - **User's request:** "Read through this project recursively. Research deep research agents and their architectures. The purpose of this app is to build a deep research agent using the most up-to-date frameworks and in Swift. This app in its current state needs a complete overhaul, and to be rebuilt from the ground up to be more powerful and advanced. Make a plan and execute on it."
@@ -135,3 +135,48 @@ Setup for users: `python3 -m pip install pyseekdb fastapi uvicorn pydantic` then
 - Searchable session sidebar with highlighted matches.
 - StatusBar footer with budget/round/source counts.
 - SettingsSheet: added Iteration, Knowledge, Instructions tabs; system-prompt addendum threaded into planner/worker/synthesizer.
+
+## Update — 2026-06-04: Provider expansion, config persistence, sidecar bootstrap, clean build
+**Status:** In Progress → provider/UX overhaul landed; **build green, 0 warnings.**
+
+User request (this session): "Overhaul to be more robust/performant/feature-rich.
+Enable additional providers (DeepSeek, MiniMax, Kimi) and custom endpoints; make
+LM Studio work; make SeekDB start automatically; ready to ship."
+
+Delivered (all verified by `xcodebuild ... clean build` → **BUILD SUCCEEDED**, 0
+errors, 0 duplicate-build-file warnings):
+1. **Five new providers** — DeepSeek, MiniMax, Kimi (Moonshot), LM Studio, and a
+   user-defined Custom endpoint. All speak the OpenAI Chat Completions wire format.
+   - New `LLM/OpenAICompatibleClient.swift` is the single implementation of that
+     wire format (SSE + tool-call buffering + endpoint normalization + `/v1/models`
+     discovery). `OpenAIClient` is now a thin wrapper over it (selects
+     `max_completion_tokens`; third-parties use legacy `max_tokens`).
+   - `reasoning_content` (R1/Kimi thinking) is intentionally not surfaced as answer
+     text. HTTP and mid-stream errors become actionable `EngineFailure`s.
+   - Endpoints verified: DeepSeek `api.deepseek.com`, MiniMax `api.minimax.io`,
+     Moonshot `api.moonshot.ai` — each resolves to `/v1/chat/completions`.
+   - `ProviderRegistry` gained the cases + `usesFreeformModel`/`supportsModelDiscovery`;
+     `makeClient` gained `lmStudioHost`/`customBaseURL`. `KeychainStore` gained
+     `.deepseek/.minimax/.moonshot/.custom`.
+2. **Config persistence** — `EngineConfiguration` is now `Codable`/`Equatable`
+   (tolerant decoder); `AppEnvironment` loads/saves it via UserDefaults
+   (`engineConfiguration.v2`). Custom endpoint base URL + LM Studio host persist.
+3. **SeekDB robustness** — `SidecarSupervisor` still auto-starts at launch but now
+   self-bootstraps a private venv (`~/Library/Application Support/SwiftDeepResearch/
+   sidecar-venv`) and pip-installs deps on a ModuleNotFoundError, then relaunches
+   from it. Added `.installingDependencies` status, early-exit health polling, and a
+   `reinstallAndStart()` repair path. Settings → Knowledge gained Start/repair +
+   Reinstall dependencies + a live status line.
+4. **Settings UI** — editable model field with suggestion/discovery menu for the new
+   providers; LM Studio + Custom endpoint cards (host/base URL, Apply, Test & list).
+5. **project.pbxproj cleanup** — removed 72 stale explicit Swift refs that duplicated
+   the `fileSystemSynchronizedGroups`; the synchronized group still compiles
+   everything. Eliminates all "Skipping duplicate build file" warnings.
+
+Acceptance evidence: build logs under `logs/build-final-*.log` and
+`logs/build-clean-*.log` (clean build, 0 dup warnings). feature_list.json gained 9
+`passes:true` entries; agent-progress.txt has the full session log.
+
+Remaining (needs user-supplied secrets / live services, not code):
+- Per-provider live API smoke test (DeepSeek/MiniMax/Kimi keys; running LM Studio).
+- Live venv-bootstrap test on a machine lacking pyseekdb.

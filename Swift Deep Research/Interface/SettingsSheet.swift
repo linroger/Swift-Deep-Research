@@ -61,6 +61,11 @@ struct SettingsSheet: View {
             }
         }
         .frame(minWidth: 920, idealWidth: 980, minHeight: 640, idealHeight: 720)
+        .onChange(of: env.configuration) { _, _ in
+            // Persist provider/model/endpoint/budget choices on every edit so
+            // they survive relaunch.
+            env.saveConfiguration()
+        }
     }
 
     private var detailHeader: some View {
@@ -267,6 +272,12 @@ private struct ProvidersTab: View {
     @Environment(AppEnvironment.self) private var env
     @State private var ollamaModels: [String] = []
     @State private var ollamaState: OllamaFetchState = .idle
+    /// Live `/v1/models` discovery results for LM Studio / custom endpoints.
+    @State private var discovered: [ProviderRegistry.ProviderID: [String]] = [:]
+    @State private var lmStudioHostString: String = ""
+    @State private var customHostString: String = ""
+    @State private var lmStudioState: OllamaFetchState = .idle
+    @State private var customState: OllamaFetchState = .idle
 
     enum OllamaFetchState: Equatable { case idle, loading, ok, error(String) }
 
@@ -292,9 +303,15 @@ private struct ProvidersTab: View {
                 model: $env.configuration.synthesisModel
             )
             if usesOllama { ollamaCard }
+            if uses(.lmstudio) { lmStudioCard }
+            if uses(.custom) { customCard }
         }
         .task(id: env.configuration.ollamaHost) {
             if usesOllama { await fetchOllamaModels() }
+        }
+        .onAppear {
+            lmStudioHostString = env.configuration.lmStudioHost.absoluteString
+            customHostString = env.configuration.customEndpointBaseURL?.absoluteString ?? ""
         }
         .onChange(of: env.configuration.orchestratorProvider) { _, _ in
             Task { if usesOllama { await fetchOllamaModels() } }
@@ -348,6 +365,8 @@ private struct ProvidersTab: View {
                 .buttonStyle(.borderless)
                 .help("Refresh from /api/tags")
             }
+        } else if provider.usesFreeformModel && provider != .ollama {
+            freeFormModelField(provider: provider, value: value)
         } else {
             Picker("", selection: Binding(
                 get: { value.wrappedValue ?? live.first ?? provider.defaultModel },
@@ -357,6 +376,76 @@ private struct ProvidersTab: View {
             }
             .labelsHidden()
             .frame(maxWidth: 260)
+        }
+    }
+
+    /// Editable model id with a suggestion/discovery menu — used by DeepSeek,
+    /// MiniMax, Kimi, LM Studio, and custom endpoints, whose model lists either
+    /// churn frequently or are server-defined.
+    @ViewBuilder
+    private func freeFormModelField(provider: ProviderRegistry.ProviderID,
+                                    value: Binding<String?>) -> some View {
+        let suggestions = modelSuggestions(for: provider)
+        HStack(spacing: 6) {
+            TextField(provider.defaultModel,
+                      text: Binding(get: { value.wrappedValue ?? "" },
+                                   set: { value.wrappedValue = $0.isEmpty ? nil : $0 }))
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 220)
+            Menu {
+                if suggestions.isEmpty {
+                    Text("No suggestions yet")
+                } else {
+                    ForEach(suggestions, id: \.self) { m in
+                        Button(m) { value.wrappedValue = m }
+                    }
+                }
+                if provider.supportsModelDiscovery {
+                    Divider()
+                    Button("Refresh from /v1/models") {
+                        Task { await discoverModels(for: provider) }
+                    }
+                }
+            } label: {
+                Image(systemName: "chevron.down.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help(provider.supportsModelDiscovery
+                  ? "Pick a suggestion or refresh from the server"
+                  : "Pick a suggested model")
+        }
+    }
+
+    private func modelSuggestions(for provider: ProviderRegistry.ProviderID) -> [String] {
+        var all = provider.availableModels
+        if let live = discovered[provider] {
+            for m in live where !all.contains(m) { all.append(m) }
+        }
+        return all
+    }
+
+    @MainActor
+    private func discoverModels(for provider: ProviderRegistry.ProviderID) async {
+        let base: URL?
+        switch provider {
+        case .lmstudio: base = env.configuration.lmStudioHost
+        case .custom: base = env.configuration.customEndpointBaseURL
+        default: base = nil
+        }
+        guard let base else { return }
+        if provider == .lmstudio { lmStudioState = .loading } else { customState = .loading }
+        let key = provider == .custom ? (await KeychainStore.shared.get(.custom) ?? "") : ""
+        do {
+            let models = try await OpenAICompatibleClient.listModels(baseURL: base, apiKey: key)
+            discovered[provider] = models
+            if provider == .lmstudio { lmStudioState = .ok } else { customState = .ok }
+        } catch {
+            if provider == .lmstudio {
+                lmStudioState = .error(error.localizedDescription)
+            } else {
+                customState = .error(error.localizedDescription)
+            }
         }
     }
 
@@ -441,14 +530,112 @@ private struct ProvidersTab: View {
         }
     }
 
-    private var usesOllama: Bool {
-        env.configuration.orchestratorProvider == .ollama
-            || env.configuration.workerProvider == .ollama
-            || env.configuration.synthesisProvider == .ollama
+    private var usesOllama: Bool { uses(.ollama) }
+
+    /// True when any of the three roles is assigned to `provider`.
+    private func uses(_ provider: ProviderRegistry.ProviderID) -> Bool {
+        env.configuration.orchestratorProvider == provider
+            || env.configuration.workerProvider == provider
+            || env.configuration.synthesisProvider == provider
     }
 
     private func liveModels(for provider: ProviderRegistry.ProviderID) -> [String] {
         provider == .ollama ? ollamaModels : provider.availableModels
+    }
+
+    // MARK: - LM Studio
+
+    private var lmStudioCard: some View {
+        SettingsGroup("LM Studio",
+                     footer: "Start LM Studio's local server (Developer tab → Start Server) and load a model.") {
+            SettingsRow("Server URL", icon: "network") {
+                TextField("http://localhost:1234", text: $lmStudioHostString)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 240)
+                    .onSubmit { commitLMStudioHost() }
+            }
+            SettingsRow("Status", icon: "wave.3.right") {
+                discoveryStatusLabel(lmStudioState, count: discovered[.lmstudio]?.count ?? 0)
+            }
+            HStack {
+                Spacer()
+                Button("Apply") { commitLMStudioHost() }
+                    .buttonStyle(.bordered).controlSize(.small)
+                Button("Test & list models") {
+                    commitLMStudioHost()
+                    Task { await discoverModels(for: .lmstudio) }
+                }
+                .buttonStyle(.borderedProminent).controlSize(.small)
+            }
+            .padding(12)
+        }
+    }
+
+    // MARK: - Custom endpoint
+
+    private var customCard: some View {
+        SettingsGroup("Custom endpoint",
+                     footer: "Any OpenAI-compatible server. Paste the base URL (…/v1 optional). Set its API key under API keys → Custom Endpoint.") {
+            SettingsRow("Base URL", icon: "link") {
+                TextField("https://api.example.com/v1", text: $customHostString)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 280)
+                    .onSubmit { commitCustomHost() }
+            }
+            SettingsRow("Status", icon: "wave.3.right") {
+                discoveryStatusLabel(customState, count: discovered[.custom]?.count ?? 0)
+            }
+            HStack {
+                Spacer()
+                Button("Apply") { commitCustomHost() }
+                    .buttonStyle(.bordered).controlSize(.small)
+                Button("Test & list models") {
+                    commitCustomHost()
+                    Task { await discoverModels(for: .custom) }
+                }
+                .buttonStyle(.borderedProminent).controlSize(.small)
+            }
+            .padding(12)
+        }
+    }
+
+    @ViewBuilder
+    private func discoveryStatusLabel(_ state: OllamaFetchState, count: Int) -> some View {
+        switch state {
+        case .idle:
+            Text("Not checked").font(.caption).foregroundStyle(.secondary)
+        case .loading:
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text("Connecting…").font(.caption).foregroundStyle(.secondary)
+            }
+        case .ok:
+            Label("\(count) model\(count == 1 ? "" : "s")", systemImage: "checkmark.seal.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.green)
+                .labelStyle(.titleAndIcon)
+        case .error(let msg):
+            Label("Unreachable", systemImage: "exclamationmark.triangle.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.orange)
+                .help(msg)
+        }
+    }
+
+    private func commitLMStudioHost() {
+        let trimmed = lmStudioHostString.trimmingCharacters(in: .whitespaces)
+        if let url = URL(string: trimmed), url.scheme != nil {
+            env.configuration.lmStudioHost = url
+        }
+    }
+
+    private func commitCustomHost() {
+        let trimmed = customHostString.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty {
+            env.configuration.customEndpointBaseURL = nil
+        } else if let url = URL(string: trimmed), url.scheme != nil {
+            env.configuration.customEndpointBaseURL = url
+        }
     }
 }
 
@@ -651,12 +838,14 @@ private struct KnowledgeTab: View {
     @Environment(AppEnvironment.self) private var env
     @State private var hostString: String = ""
     @State private var health: String = "Unknown"
+    @State private var sidecarBusy = false
+    @State private var sidecarMessage: String = ""
 
     var body: some View {
         @Bindable var env = env
         VStack(alignment: .leading, spacing: 20) {
             SettingsGroup("Sidecar",
-                         footer: "The Python sidecar wraps pyseekdb behind a tiny HTTP API.") {
+                         footer: "The Python sidecar wraps pyseekdb behind a tiny HTTP API. It launches automatically at app startup — these controls are for diagnostics and recovery.") {
                 SettingsRow("Host URL", icon: "network") {
                     TextField("http://127.0.0.1:9100", text: $hostString)
                         .textFieldStyle(.roundedBorder)
@@ -664,9 +853,21 @@ private struct KnowledgeTab: View {
                         .onSubmit { commitHost() }
                 }
                 SettingsRow("Status", icon: "wave.3.right") {
-                    Text(health)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(health.contains("✓") ? .green : .secondary)
+                    HStack(spacing: 6) {
+                        if sidecarBusy { ProgressView().controlSize(.mini) }
+                        Text(health)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(health.contains("✓") ? .green : .secondary)
+                    }
+                }
+                if !sidecarMessage.isEmpty {
+                    SettingsRow("Last action", icon: "info.circle") {
+                        Text(sidecarMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                    }
                 }
                 HStack {
                     Spacer()
@@ -674,8 +875,12 @@ private struct KnowledgeTab: View {
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                     Button("Test connection") { Task { await ping() } }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    Button("Start / repair") { Task { await startSidecar(reinstall: false) } }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
+                        .disabled(sidecarBusy)
                 }
                 .padding(12)
             }
@@ -686,17 +891,52 @@ private struct KnowledgeTab: View {
                         .labelsHidden()
                 }
             }
-            SettingsGroup("Setup", footer: "Run these once in a terminal:") {
+            SettingsGroup("Dependencies",
+                         footer: "First launch auto-creates a private Python virtualenv and installs pyseekdb, fastapi, uvicorn, and pydantic. Use Reinstall if the install was interrupted.") {
+                HStack {
+                    Button("Reinstall dependencies") { Task { await startSidecar(reinstall: true) } }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(sidecarBusy)
+                    Spacer()
+                }
+                .padding(12)
+            }
+            DisclosureGroup("Manual setup (optional)") {
                 VStack(alignment: .leading, spacing: 8) {
                     codeRow("python3 -m pip install pyseekdb fastapi uvicorn pydantic")
                     codeRow("python3 sidecar/seekdb_sidecar.py --port 9100")
                 }
-                .padding(12)
+                .padding(.vertical, 8)
             }
+            .font(.callout)
         }
         .task {
             hostString = env.configuration.seekdbHost.absoluteString
             await ping()
+        }
+    }
+
+    private func startSidecar(reinstall: Bool) async {
+        sidecarBusy = true
+        sidecarMessage = reinstall ? "Reinstalling dependencies…" : "Starting sidecar…"
+        let host = env.configuration.seekdbHost
+        let status = reinstall
+            ? await SidecarSupervisor.shared.reinstallAndStart(host: host)
+            : await SidecarSupervisor.shared.ensureRunning(host: host)
+        sidecarMessage = describe(status)
+        await ping()
+        sidecarBusy = false
+    }
+
+    private func describe(_ status: SidecarSupervisor.Status) -> String {
+        switch status {
+        case .running: "Sidecar running."
+        case .launching: "Sidecar launching…"
+        case .installingDependencies: "Installing Python dependencies…"
+        case .notInstalled(let m): "Dependencies missing: \(m)"
+        case .scriptMissing: "seekdb_sidecar.py not found in the app bundle."
+        case .failed(let m): "Failed: \(m)"
         }
     }
 
@@ -793,7 +1033,7 @@ private struct AboutTab: View {
             SettingsGroup("Architecture") {
                 VStack(alignment: .leading, spacing: 8) {
                     aboutRow("person.3.fill", "Orchestrator-worker pattern (Anthropic-inspired)", .blue)
-                    aboutRow("brain.head.profile", "Six LLM providers — cloud, local, on-device", .purple)
+                    aboutRow("brain.head.profile", "11 LLM providers — Claude, OpenAI, Gemini, DeepSeek, MiniMax, Kimi, LM Studio, Ollama, MLX, custom", .purple)
                     aboutRow("magnifyingglass", "Tavily / Exa / Brave / DuckDuckGo fallback chain", .orange)
                     aboutRow("doc.text", "Static HTML + JS-rendered SPA reader", .teal)
                     aboutRow("books.vertical.fill", "pyseekdb vector knowledge base", .indigo)

@@ -64,6 +64,10 @@ public enum KeyAccount: String, Sendable, CaseIterable {
     case anthropic = "anthropic.api"
     case openAI    = "openai.api"
     case gemini    = "gemini.api"
+    case deepseek  = "deepseek.api"
+    case minimax   = "minimax.api"
+    case moonshot  = "moonshot.api"
+    case custom    = "custom.api"
     case tavily    = "tavily.search"
     case exa       = "exa.search"
     case brave     = "brave.search"
@@ -73,6 +77,10 @@ public enum KeyAccount: String, Sendable, CaseIterable {
         case .anthropic: "Anthropic API Key"
         case .openAI:    "OpenAI API Key"
         case .gemini:    "Google Gemini API Key"
+        case .deepseek:  "DeepSeek API Key"
+        case .minimax:   "MiniMax API Key"
+        case .moonshot:  "Moonshot / Kimi API Key"
+        case .custom:    "Custom Endpoint API Key"
         case .tavily:    "Tavily Search API Key"
         case .exa:       "Exa Search API Key"
         case .brave:     "Brave Search API Key"
@@ -84,6 +92,10 @@ public enum KeyAccount: String, Sendable, CaseIterable {
         case .anthropic: URL(string: "https://console.anthropic.com/settings/keys")!
         case .openAI:    URL(string: "https://platform.openai.com/api-keys")!
         case .gemini:    URL(string: "https://aistudio.google.com/app/apikey")!
+        case .deepseek:  URL(string: "https://platform.deepseek.com/api_keys")!
+        case .minimax:   URL(string: "https://www.minimax.io/platform/user-center/basic-information")!
+        case .moonshot:  URL(string: "https://platform.moonshot.ai/console/api-keys")!
+        case .custom:    URL(string: "https://platform.openai.com/docs/api-reference")!
         case .tavily:    URL(string: "https://app.tavily.com/home")!
         case .exa:       URL(string: "https://dashboard.exa.ai/api-keys")!
         case .brave:     URL(string: "https://api.search.brave.com/app/keys")!

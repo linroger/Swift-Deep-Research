@@ -118,3 +118,61 @@ KNOWN ISSUES / TECHNICAL DEBT TO MIND
   - Do a live sidecar smoke test after installing `pyseekdb fastapi uvicorn pydantic`.
   - Consider replacing the OpenAI Chat Completions path with Responses API if the app needs hosted
     web/file/code tools rather than only local tool execution.
+
+================================================================================
+Session: 2026-06-04 — Provider expansion, config persistence, sidecar bootstrap,
+         pbxproj cleanup
+Branch: main
+--------------------------------------------------------------------------------
+Goal (user): Overhaul for robustness/performance; add model providers (DeepSeek,
+MiniMax, Kimi) + custom endpoints; make LM Studio work; auto-start SeekDB; ship-ready.
+
+Work done:
+- NEW LLM/OpenAICompatibleClient.swift: one canonical OpenAI-compatible chat
+  client (SSE + tool-call buffering). Endpoint resolver normalizes bare host,
+  /v1, or full path. requiresKey + token-parameter (max_tokens vs
+  max_completion_tokens) per provider. reasoning_content ignored (won't pollute
+  answers). HTTP + mid-stream errors surfaced as EngineFailure. Static
+  listModels(/v1/models) for discovery.
+- OpenAIClient.swift: now a thin wrapper over OpenAICompatibleClient
+  (single source of truth; uses max_completion_tokens).
+- ProviderRegistry: added ProviderID cases deepseek, minimax, kimi, lmstudio,
+  custom with displayName/defaultModel/availableModels/requiresAPIKey, plus
+  usesFreeformModel/supportsModelDiscovery. makeClient gained lmStudioHost +
+  customBaseURL params and builds the compatible client per provider.
+    DeepSeek  https://api.deepseek.com
+    MiniMax   https://api.minimax.io   (verified OpenAI-compatible)
+    Kimi      https://api.moonshot.ai  (verified OpenAI-compatible)
+    LM Studio http://localhost:1234 (no key, /v1/models discovery)
+    Custom    user base URL (+ optional key), persisted
+- KeychainStore: added KeyAccount .deepseek/.minimax/.moonshot/.custom with
+  labels + help URLs.
+- EngineConfiguration: added lmStudioHost + customEndpointBaseURL; made
+  Codable+Equatable with a tolerant decoder for forward/back compat.
+- AppEnvironment: loads persisted config (UserDefaults key engineConfiguration.v2)
+  and exposes saveConfiguration(); SettingsSheet persists on every change.
+- ResearchEngine: threads lmStudioHost + customBaseURL into all 3 makeClient calls.
+- SettingsSheet: editable model field + suggestion/discovery menu for the new
+  providers; LM Studio + Custom endpoint cards (host/base URL, Apply, Test &
+  list models); Knowledge tab gained Start/repair + Reinstall dependencies and a
+  live sidecar status line; About provider count updated.
+- SidecarSupervisor: rewritten. Auto-creates a private venv
+  (~/Library/Application Support/SwiftDeepResearch/sidecar-venv) and pip-installs
+  pyseekdb fastapi uvicorn pydantic when the system python lacks them, then
+  relaunches from the venv. Accurate Status (added .installingDependencies),
+  early-exit health polling, reinstallAndStart() for manual repair.
+- KnowledgeBase.swift: handle .installingDependencies in the status switch.
+- project.pbxproj: removed 72 stale explicit Swift refs (22 build files + 14 file
+  refs + list references) that duplicated the fileSystemSynchronizedGroups; the
+  synchronized group still compiles everything.
+
+Verification:
+- xcodebuild -scheme "Swift Deep Research" -configuration Debug clean build:
+  ** BUILD SUCCEEDED ** with 0 errors and 0 "Skipping duplicate build file"
+  warnings (only third-party MLX C++17 header notes remain). Logs in logs/.
+
+Remaining / next steps:
+- Live API smoke test per provider requires user keys (DeepSeek/MiniMax/Kimi) and
+  a running LM Studio server; wire format is OpenAI-standard and matches the
+  proven OpenAI path.
+- Live sidecar venv-bootstrap test on a machine without pyseekdb installed.

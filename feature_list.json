@@ -160,7 +160,7 @@
       "category": "orchestration",
       "description": "Actor-based orchestrator dispatches parallel worker agents",
       "steps": [
-        "ResearchOrchestrator actor decomposes query into ≥2 sub-tasks",
+        "ResearchOrchestrator actor decomposes query into \u22652 sub-tasks",
         "TaskGroup fans out worker actors in parallel",
         "Workers emit progress events through shared AsyncThrowingStream",
         "Orchestrator synthesizes final answer with citations",
@@ -263,6 +263,110 @@
         "Session persists across relaunch"
       ],
       "passes": false
+    },
+    {
+      "id": "feat_provider_deepseek",
+      "category": "providers",
+      "description": "DeepSeek (deepseek-chat / deepseek-reasoner) via OpenAI-compatible API at api.deepseek.com",
+      "steps": [
+        "ProviderID.deepseek with key from Keychain (.deepseek)",
+        "OpenAICompatibleClient targets https://api.deepseek.com/v1/chat/completions",
+        "Selectable for orchestrator/worker/synthesizer roles",
+        "SSE streaming + tool calling work end to end"
+      ],
+      "passes": true
+    },
+    {
+      "id": "feat_provider_minimax",
+      "category": "providers",
+      "description": "MiniMax (MiniMax-M2/M2.1) via OpenAI-compatible API at api.minimax.io",
+      "steps": [
+        "ProviderID.minimax with key from Keychain (.minimax)",
+        "Base https://api.minimax.io resolves to /v1/chat/completions",
+        "Editable model field with suggestions"
+      ],
+      "passes": true
+    },
+    {
+      "id": "feat_provider_kimi",
+      "category": "providers",
+      "description": "Moonshot Kimi (kimi-k2.6 etc.) via OpenAI-compatible API at api.moonshot.ai",
+      "steps": [
+        "ProviderID.kimi with key from Keychain (.moonshot)",
+        "Base https://api.moonshot.ai resolves to /v1/chat/completions",
+        "Editable model field with suggestions"
+      ],
+      "passes": true
+    },
+    {
+      "id": "feat_provider_lmstudio",
+      "category": "providers",
+      "description": "LM Studio local server as an OpenAI-compatible provider with live model discovery",
+      "steps": [
+        "ProviderID.lmstudio, no API key required",
+        "Configurable host (default http://localhost:1234) in Settings",
+        "GET /v1/models discovery populates the model menu",
+        "Test & list models button verifies connectivity"
+      ],
+      "passes": true
+    },
+    {
+      "id": "feat_provider_custom_endpoint",
+      "category": "providers",
+      "description": "User-defined custom OpenAI-compatible endpoint (any base URL + optional key)",
+      "steps": [
+        "ProviderID.custom with base URL persisted in EngineConfiguration",
+        "Base URL normalized to /v1/chat/completions (accepts bare host, /v1, or full path)",
+        "Custom Endpoint API key stored in Keychain (.custom)",
+        "Model discovery via /v1/models when supported"
+      ],
+      "passes": true
+    },
+    {
+      "id": "feat_openai_compatible_client",
+      "category": "llm",
+      "description": "Single OpenAICompatibleClient backing OpenAI, DeepSeek, MiniMax, Kimi, LM Studio, custom \u2014 one SSE/tool-call implementation",
+      "steps": [
+        "OpenAIClient is a thin wrapper selecting max_completion_tokens",
+        "Third-party providers use legacy max_tokens",
+        "reasoning_content ignored so it never contaminates answers",
+        "Mid-stream + HTTP error bodies surfaced as actionable EngineFailures"
+      ],
+      "passes": true
+    },
+    {
+      "id": "feat_config_persistence",
+      "category": "settings",
+      "description": "EngineConfiguration is Codable/Equatable and persisted to UserDefaults so provider/model/endpoint choices survive relaunch",
+      "steps": [
+        "AppEnvironment loads saved config on launch (tolerant decoder)",
+        "SettingsSheet persists on every change",
+        "Versioned key engineConfiguration.v2"
+      ],
+      "passes": true
+    },
+    {
+      "id": "feat_sidecar_auto_bootstrap",
+      "category": "knowledge",
+      "description": "SeekDB sidecar auto-starts at app launch and self-bootstraps a private Python virtualenv with dependencies if missing",
+      "steps": [
+        "ensureRunning launches at startup (MainScene.task)",
+        "On ModuleNotFoundError, creates ~/Library/Application Support/SwiftDeepResearch/sidecar-venv and pip-installs pyseekdb fastapi uvicorn pydantic",
+        "Relaunches from the venv python and polls /health",
+        "Accurate Status reporting; Settings has Start/repair + Reinstall dependencies"
+      ],
+      "passes": true
+    },
+    {
+      "id": "feat_pbxproj_dedupe",
+      "category": "build",
+      "description": "Removed 72 stale explicit Swift references duplicating the synchronized filesystem group; clean build with zero duplicate-build-file warnings",
+      "steps": [
+        "Stripped duplicate PBXBuildFile/PBXFileReference/Sources entries",
+        "Synchronized group still compiles all sources",
+        "xcodebuild clean build SUCCEEDED, 0 duplicate warnings"
+      ],
+      "passes": true
     }
   ]
 }

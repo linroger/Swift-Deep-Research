@@ -7,9 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		0A0B07F5AC4253D7026EF5ED /* SettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C27704F22A1A5FDDC06745F5 /* SettingsSheet.swift */; };
-		1477B6B9B0CAB240BAE217F7 /* SettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C27704F22A1A5FDDC06745F5 /* SettingsSheet.swift */; };
-		29C4B92A7DF697F474A04FC3 /* InlineCitationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B669BE482EBF56FA6B5916FA /* InlineCitationsView.swift */; };
 		2A6031A42D517812001E22A9 /* SwiftSoup in Frameworks */ = {isa = PBXBuildFile; productRef = 2A6031A32D517812001E22A9 /* SwiftSoup */; };
 		2A8EA9B62D515B90003DC358 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 2A8EA9B52D515B90003DC358 /* MLXLLM */; };
 		2A8EA9B82D515B90003DC358 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 2A8EA9B72D515B90003DC358 /* MLXLMCommon */; };
@@ -22,27 +19,8 @@
 		2A8EA9C72D515B9F003DC358 /* MLXLinalg in Frameworks */ = {isa = PBXBuildFile; productRef = 2A8EA9C62D515B9F003DC358 /* MLXLinalg */; };
 		2A8EA9C92D515B9F003DC358 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = 2A8EA9C82D515B9F003DC358 /* MLXNN */; };
 		2A8EA9CC2D515BAF003DC358 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = 2A8EA9CB2D515BAF003DC358 /* MarkdownUI */; };
-		2B4BB0A7E5531AEB91662ACE /* ResearchCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFF127695A40AA2FB9ED4782 /* ResearchCanvas.swift */; };
-		2E35FC5A36ABB9493AB529B1 /* MainScene.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C47245C3CA649210AD54DF0 /* MainScene.swift */; };
-		301EE7E6B14802F5F9985F04 /* DocumentUploadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE2308666F22F088B8395805 /* DocumentUploadView.swift */; };
-		43B9BEB624A7980720113364 /* ResearchCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFF127695A40AA2FB9ED4782 /* ResearchCanvas.swift */; };
-		47FC143623322FFA96384CE3 /* KnowledgeBase.swift in Sources */ = {isa = PBXBuildFile; fileRef = D304EB370B49CFB0A598BAAF /* KnowledgeBase.swift */; };
-		58232B1C3A4DE22DA06DBE68 /* SidecarSupervisor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33ADD7BB25CF8AB3F6FE11F8 /* SidecarSupervisor.swift */; };
-		5C809482F21AB90CEC16B164 /* SettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C27704F22A1A5FDDC06745F5 /* SettingsSheet.swift */; };
-		5E39CE4B01035999E60CE59D /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99EC02B785C371DF8A334542 /* ConversationView.swift */; };
-		62B3CFD6D20DC978E78B7A64 /* KnowledgeBaseTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 746E5DCD446B07790CBE11EE /* KnowledgeBaseTool.swift */; };
-		67D15246E34E9787831DA1CD /* WebReaderTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4A3414743CD518835982049 /* WebReaderTool.swift */; };
-		6CCB177470B4D196693FF64A /* WelcomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F6FA6F04D64E7FA55E73B2C /* WelcomeView.swift */; };
-		856AA0B7E20629EFE80D03EE /* KnowledgeBase.swift in Sources */ = {isa = PBXBuildFile; fileRef = D304EB370B49CFB0A598BAAF /* KnowledgeBase.swift */; };
-		86B072A5DE60C673E97EFF75 /* KnowledgeBase.swift in Sources */ = {isa = PBXBuildFile; fileRef = D304EB370B49CFB0A598BAAF /* KnowledgeBase.swift */; };
-		9A3CB77E7C4FBC664C7DAAE1 /* MainScene.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C47245C3CA649210AD54DF0 /* MainScene.swift */; };
-		9B27A8CC01D9E0758B739C3D /* DocumentUploadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE2308666F22F088B8395805 /* DocumentUploadView.swift */; };
 		A790CBDA2F8ED8DF000F1E4A /* Ollama in Frameworks */ = {isa = PBXBuildFile; productRef = A790CBD92F8ED8DF000F1E4A /* Ollama */; };
-		B2189D75BD8AA7EAA37AFCA1 /* SourcePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3407D214D822DBEF950C5AEE /* SourcePanel.swift */; };
-		C72850C76FDCDBC7710DF649 /* Composer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F3828AFCE1CEFB70828BAEE /* Composer.swift */; };
 		DECAFB10000000000000B501 /* seekdb_sidecar.py in Resources */ = {isa = PBXBuildFile; fileRef = D291438BC16BA1C93628A10C /* seekdb_sidecar.py */; };
-		DEEC6C1FEC8A07BF6E115B0E /* WebReaderTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4A3414743CD518835982049 /* WebReaderTool.swift */; };
-		F1D3300A82BCDBF829520CC7 /* OpenAIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35F79F7C70D6DC7C07A663A0 /* OpenAIClient.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -50,23 +28,17 @@
 		1D764313E164DCB57F977E30 /* Info.plist */ = {isa = PBXFileReference; explicitFileType = text.plist; lastKnownFileType = text.plist; name = Info.plist; path = "Swift Deep Research.app/Contents/Info.plist"; sourceTree = SOURCE_ROOT; };
 		1DD38B8EF16C34AF8EC5CB8C /* feature_list.json */ = {isa = PBXFileReference; explicitFileType = text.json; path = feature_list.json; sourceTree = SOURCE_ROOT; };
 		1F27B6978244BDCDDF657620 /* now.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; name = now.md; path = .remember/now.md; sourceTree = SOURCE_ROOT; };
-		1F3828AFCE1CEFB70828BAEE /* Composer.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = Composer.swift; path = "Swift Deep Research/Interface/Composer.swift"; sourceTree = SOURCE_ROOT; };
 		20D171E3CB983FD4BCCFD53C /* pre_tool_use.json */ = {isa = PBXFileReference; explicitFileType = text.json; lastKnownFileType = text.json; name = pre_tool_use.json; path = "Swift Deep Research.app/Contents/Resources/pre_tool_use.json"; sourceTree = SOURCE_ROOT; };
 		24027781C1DA419ADC55D562 /* README_zh.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; path = README_zh.md; sourceTree = SOURCE_ROOT; };
 		2A89B85D2D514ACF00EB12F9 /* Swift Deep Research.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Swift Deep Research.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		2D92FF74D6A6A5AA11C28F26 /* post_tool_use.json */ = {isa = PBXFileReference; explicitFileType = text.json; lastKnownFileType = text.json; name = post_tool_use.json; path = "Swift Deep Research.app/Contents/Resources/post_tool_use.json"; sourceTree = SOURCE_ROOT; };
-		33ADD7BB25CF8AB3F6FE11F8 /* SidecarSupervisor.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; lastKnownFileType = sourcecode.swift; name = SidecarSupervisor.swift; path = "Swift Deep Research/Knowledge/SidecarSupervisor.swift"; sourceTree = SOURCE_ROOT; };
-		3407D214D822DBEF950C5AEE /* SourcePanel.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = SourcePanel.swift; path = "Swift Deep Research/Interface/SourcePanel.swift"; sourceTree = SOURCE_ROOT; };
 		35DC20AAD76193E783A57D47 /* manifest.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = manifest.json; path = build/XCBuildData/eddd5ebc78e95320da9489cfcf0d6c8a.xcbuilddata/manifest.json; sourceTree = SOURCE_ROOT; };
-		35F79F7C70D6DC7C07A663A0 /* OpenAIClient.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = OpenAIClient.swift; path = "Swift Deep Research/LLM/OpenAIClient.swift"; sourceTree = SOURCE_ROOT; };
 		3D483DABB0CFD842A1ECA801 /* gpt2_tokenizer_config.json */ = {isa = PBXFileReference; explicitFileType = text.json; lastKnownFileType = text.json; name = gpt2_tokenizer_config.json; path = "Swift Deep Research.app/Contents/Resources/swift-transformers_Hub.bundle/Contents/Resources/gpt2_tokenizer_config.json"; sourceTree = SOURCE_ROOT; };
 		4744CCC99A7F675144DEEF70 /* PLANS.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; path = PLANS.md; sourceTree = SOURCE_ROOT; };
-		4C47245C3CA649210AD54DF0 /* MainScene.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = MainScene.swift; path = "Swift Deep Research/Interface/MainScene.swift"; sourceTree = SOURCE_ROOT; };
 		66BBA5F9BF9CB0DAE650B50C /* build-request.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = "build-request.json"; path = "build/XCBuildData/eddd5ebc78e95320da9489cfcf0d6c8a.xcbuilddata/build-request.json"; sourceTree = SOURCE_ROOT; };
 		6EEC1C6516603B8356F5B3FF /* target-graph.txt */ = {isa = PBXFileReference; explicitFileType = text; name = "target-graph.txt"; path = "build/XCBuildData/eddd5ebc78e95320da9489cfcf0d6c8a.xcbuilddata/target-graph.txt"; sourceTree = SOURCE_ROOT; };
 		70762D8E201AD9B12C0F68F5 /* user_prompt_submit.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = user_prompt_submit.json; path = logs/user_prompt_submit.json; sourceTree = SOURCE_ROOT; };
 		72A825053F245F755A535F9C /* archive.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; lastKnownFileType = net.daringfireball.markdown; name = archive.md; path = .remember/archive.md; sourceTree = SOURCE_ROOT; };
-		746E5DCD446B07790CBE11EE /* KnowledgeBaseTool.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = KnowledgeBaseTool.swift; path = "Swift Deep Research/ResearchTools/KnowledgeBaseTool.swift"; sourceTree = SOURCE_ROOT; };
 		747A49591310721DF1A907D8 /* last-save.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = "last-save.json"; path = ".remember/tmp/last-save.json"; sourceTree = SOURCE_ROOT; };
 		7AD71C1A02303611B29199D8 /* Info.plist */ = {isa = PBXFileReference; explicitFileType = text.plist; lastKnownFileType = text.plist; name = Info.plist; path = "Swift Deep Research.app/Contents/Resources/mlx-swift_Cmlx.bundle/Contents/Info.plist"; sourceTree = SOURCE_ROOT; };
 		7CE3279B714C996592325A9B /* pre_compact.json */ = {isa = PBXFileReference; explicitFileType = text.json; lastKnownFileType = text.json; name = pre_compact.json; path = logs/pre_compact.json; sourceTree = SOURCE_ROOT; };
@@ -75,16 +47,8 @@
 		861E6EA91D22EAEEB03B21AB /* today-2026-05-25.done.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; lastKnownFileType = net.daringfireball.markdown; name = "today-2026-05-25.done.md"; path = ".remember/today-2026-05-25.done.md"; sourceTree = SOURCE_ROOT; };
 		92606E599AEACB5DFD90C5B6 /* Info.plist */ = {isa = PBXFileReference; explicitFileType = text.plist; lastKnownFileType = text.plist; name = Info.plist; path = "Swift Deep Research.app/Contents/Resources/swift-transformers_Hub.bundle/Contents/Info.plist"; sourceTree = SOURCE_ROOT; };
 		978896E5F5A6EB26379F8383 /* stop.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = stop.json; path = "logs/49e88f37-4218-417c-8102-f47844b2aaa9/stop.json"; sourceTree = SOURCE_ROOT; };
-		99EC02B785C371DF8A334542 /* ConversationView.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = ConversationView.swift; path = "Swift Deep Research/Interface/ConversationView.swift"; sourceTree = SOURCE_ROOT; };
-		9F6FA6F04D64E7FA55E73B2C /* WelcomeView.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = WelcomeView.swift; path = "Swift Deep Research/Interface/WelcomeView.swift"; sourceTree = SOURCE_ROOT; };
-		B4A3414743CD518835982049 /* WebReaderTool.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = WebReaderTool.swift; path = "Swift Deep Research/ResearchTools/WebReaderTool.swift"; sourceTree = SOURCE_ROOT; };
-		B669BE482EBF56FA6B5916FA /* InlineCitationsView.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = InlineCitationsView.swift; path = "Swift Deep Research/Interface/InlineCitationsView.swift"; sourceTree = SOURCE_ROOT; };
-		BE2308666F22F088B8395805 /* DocumentUploadView.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = DocumentUploadView.swift; path = "Swift Deep Research/Interface/DocumentUploadView.swift"; sourceTree = SOURCE_ROOT; };
-		BFF127695A40AA2FB9ED4782 /* ResearchCanvas.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = ResearchCanvas.swift; path = "Swift Deep Research/Interface/ResearchCanvas.swift"; sourceTree = SOURCE_ROOT; };
-		C27704F22A1A5FDDC06745F5 /* SettingsSheet.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = SettingsSheet.swift; path = "Swift Deep Research/Interface/SettingsSheet.swift"; sourceTree = SOURCE_ROOT; };
 		C75EF9819295552714422E18 /* README.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; path = README.md; sourceTree = SOURCE_ROOT; };
 		D291438BC16BA1C93628A10C /* seekdb_sidecar.py */ = {isa = PBXFileReference; explicitFileType = text.script.python; name = seekdb_sidecar.py; path = sidecar/seekdb_sidecar.py; sourceTree = SOURCE_ROOT; };
-		D304EB370B49CFB0A598BAAF /* KnowledgeBase.swift */ = {isa = PBXFileReference; explicitFileType = sourcecode.swift; name = KnowledgeBase.swift; path = "Swift Deep Research/Knowledge/KnowledgeBase.swift"; sourceTree = SOURCE_ROOT; };
 		D3E1864782904DE8367F7E53 /* subagent_stop.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = subagent_stop.json; path = "logs/49e88f37-4218-417c-8102-f47844b2aaa9/subagent_stop.json"; sourceTree = SOURCE_ROOT; };
 		DA5A865EA4854A9384DB5FDD /* today-2026-05-24.done.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; lastKnownFileType = net.daringfireball.markdown; name = "today-2026-05-24.done.md"; path = ".remember/today-2026-05-24.done.md"; sourceTree = SOURCE_ROOT; };
 		DD0E529BF2B461B268711F8A /* last-ndc.ts */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.typescript; name = "last-ndc.ts"; path = ".remember/tmp/last-ndc.ts"; sourceTree = SOURCE_ROOT; };
@@ -148,22 +112,9 @@
 				DD0E529BF2B461B268711F8A /* last-ndc.ts */,
 				747A49591310721DF1A907D8 /* last-save.json */,
 				D3E1864782904DE8367F7E53 /* subagent_stop.json */,
-				B669BE482EBF56FA6B5916FA /* InlineCitationsView.swift */,
-				B4A3414743CD518835982049 /* WebReaderTool.swift */,
 				4744CCC99A7F675144DEEF70 /* PLANS.md */,
-				746E5DCD446B07790CBE11EE /* KnowledgeBaseTool.swift */,
-				D304EB370B49CFB0A598BAAF /* KnowledgeBase.swift */,
-				4C47245C3CA649210AD54DF0 /* MainScene.swift */,
-				3407D214D822DBEF950C5AEE /* SourcePanel.swift */,
-				35F79F7C70D6DC7C07A663A0 /* OpenAIClient.swift */,
-				C27704F22A1A5FDDC06745F5 /* SettingsSheet.swift */,
 				1DD38B8EF16C34AF8EC5CB8C /* feature_list.json */,
 				D291438BC16BA1C93628A10C /* seekdb_sidecar.py */,
-				BE2308666F22F088B8395805 /* DocumentUploadView.swift */,
-				BFF127695A40AA2FB9ED4782 /* ResearchCanvas.swift */,
-				1F3828AFCE1CEFB70828BAEE /* Composer.swift */,
-				9F6FA6F04D64E7FA55E73B2C /* WelcomeView.swift */,
-				99EC02B785C371DF8A334542 /* ConversationView.swift */,
 				3D483DABB0CFD842A1ECA801 /* gpt2_tokenizer_config.json */,
 				2D92FF74D6A6A5AA11C28F26 /* post_tool_use.json */,
 				20D171E3CB983FD4BCCFD53C /* pre_tool_use.json */,
@@ -177,7 +128,6 @@
 				72A825053F245F755A535F9C /* archive.md */,
 				861E6EA91D22EAEEB03B21AB /* today-2026-05-25.done.md */,
 				EDFEF85C471C401AB1C5262F /* recent.md */,
-				33ADD7BB25CF8AB3F6FE11F8 /* SidecarSupervisor.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -284,28 +234,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				29C4B92A7DF697F474A04FC3 /* InlineCitationsView.swift in Sources */,
-				67D15246E34E9787831DA1CD /* WebReaderTool.swift in Sources */,
-				DEEC6C1FEC8A07BF6E115B0E /* WebReaderTool.swift in Sources */,
-				62B3CFD6D20DC978E78B7A64 /* KnowledgeBaseTool.swift in Sources */,
-				47FC143623322FFA96384CE3 /* KnowledgeBase.swift in Sources */,
-				2E35FC5A36ABB9493AB529B1 /* MainScene.swift in Sources */,
-				B2189D75BD8AA7EAA37AFCA1 /* SourcePanel.swift in Sources */,
-				F1D3300A82BCDBF829520CC7 /* OpenAIClient.swift in Sources */,
-				5C809482F21AB90CEC16B164 /* SettingsSheet.swift in Sources */,
-				301EE7E6B14802F5F9985F04 /* DocumentUploadView.swift in Sources */,
-				1477B6B9B0CAB240BAE217F7 /* SettingsSheet.swift in Sources */,
-				0A0B07F5AC4253D7026EF5ED /* SettingsSheet.swift in Sources */,
-				43B9BEB624A7980720113364 /* ResearchCanvas.swift in Sources */,
-				C72850C76FDCDBC7710DF649 /* Composer.swift in Sources */,
-				6CCB177470B4D196693FF64A /* WelcomeView.swift in Sources */,
-				5E39CE4B01035999E60CE59D /* ConversationView.swift in Sources */,
-				2B4BB0A7E5531AEB91662ACE /* ResearchCanvas.swift in Sources */,
-				58232B1C3A4DE22DA06DBE68 /* SidecarSupervisor.swift in Sources */,
-				86B072A5DE60C673E97EFF75 /* KnowledgeBase.swift in Sources */,
-				9B27A8CC01D9E0758B739C3D /* DocumentUploadView.swift in Sources */,
-				856AA0B7E20629EFE80D03EE /* KnowledgeBase.swift in Sources */,
-				9A3CB77E7C4FBC664C7DAAE1 /* MainScene.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
