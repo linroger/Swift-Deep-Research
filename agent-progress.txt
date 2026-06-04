@@ -198,3 +198,19 @@ Branch: main
   SidecarSupervisor.ensureRunning and retry once before soft-failing.
 - Refreshed stale SeekDBClient/KnowledgeBaseTool guidance (auto-start, not manual).
 - Verify: xcodebuild Debug build SUCCEEDED, 0 errors / 0 dup warnings.
+
+================================================================================
+Session: 2026-06-04 (cont.) — actionable provider HTTP error messages
+Branch: main
+--------------------------------------------------------------------------------
+- Live run surfaced "DeepSeek — deepseek-reasoner HTTP 402" (the integration
+  works; 402 = account balance empty). The bare code wasn't actionable.
+- OpenAICompatibleClient.httpError(status:body:provider:) now maps 401/402/403/
+  404/422/429/5xx to plain-language guidance and extracts the provider's own
+  error message (e.g. DeepSeek "Insufficient Balance") from the JSON body. 402 ->
+  "payment required … add credit or switch providers"; 400/422 -> "model may not
+  support tools, or the model id is invalid" (covers deepseek-reasoner's tool
+  limitation).
+- ConversationView failure banner now shows failure.underlying (raw API body),
+  selectable, when not already echoed in the message.
+- Verify: xcodebuild Debug build SUCCEEDED, 0 errors / 0 dup warnings.

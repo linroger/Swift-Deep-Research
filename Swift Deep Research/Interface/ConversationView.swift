@@ -220,7 +220,18 @@ struct ConversationView: View {
                 Text(failure.message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+                if let detail = failure.underlying,
+                   !detail.isEmpty,
+                   !failure.message.contains(detail) {
+                    Text(detail)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.tertiary)
+                        .textSelection(.enabled)
+                        .lineLimit(4)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer()
         }

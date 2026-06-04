@@ -60,17 +60,16 @@ public struct OpenAICompatibleClient: LLMClient {
 
                     let (bytes, response) = try await session.bytes(for: req)
                     if let http = response as? HTTPURLResponse, !(200..<300 ~= http.statusCode) {
-                        // Drain a short body snippet for an actionable error.
-                        var snippet = ""
+                        // Drain the error body so we can extract the provider's
+                        // own message (e.g. DeepSeek's "Insufficient Balance").
+                        var body = ""
                         for try await line in bytes.lines {
-                            snippet += line + "\n"
-                            if snippet.count > 600 { break }
+                            body += line + "\n"
+                            if body.count > 1200 { break }
                         }
-                        throw EngineFailure(
-                            kind: http.statusCode == 401 || http.statusCode == 403
-                                ? .configurationMissing : .providerFailure,
-                            message: "\(identity.displayName) HTTP \(http.statusCode)",
-                            underlying: snippet.isEmpty ? nil : String(snippet.prefix(600)))
+                        throw Self.httpError(status: http.statusCode,
+                                             body: body,
+                                             provider: identity.displayName)
                     }
                     var toolBuffer: [Int: PartialToolCall] = [:]
                     for try await event in SSEParser.stream(bytes) {
@@ -91,6 +90,61 @@ public struct OpenAICompatibleClient: LLMClient {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    // MARK: - Error mapping
+
+    /// Turn a non-2xx HTTP response into an actionable `EngineFailure`. Extracts
+    /// the provider's own error message from the JSON body (OpenAI-compatible
+    /// error shape) and maps common status codes to plain-language guidance so a
+    /// bare "HTTP 402" becomes "payment required — account balance is likely
+    /// empty."
+    static func httpError(status: Int, body: String, provider: String) -> EngineFailure {
+        let detail = extractErrorMessage(from: body)
+        let suffix = detail.map { " — \($0)" } ?? ""
+        let kind: EngineFailure.Kind
+        let message: String
+        switch status {
+        case 401, 403:
+            kind = .configurationMissing
+            message = "\(provider): authentication failed (HTTP \(status)). Check the API key in Settings → API keys.\(suffix)"
+        case 402:
+            kind = .configurationMissing
+            message = "\(provider): payment required (HTTP 402). Your account balance is likely empty — add credit, or switch to another provider in Settings.\(suffix)"
+        case 429:
+            kind = .providerFailure
+            message = "\(provider): rate limited (HTTP 429). Slow down or check your plan's limits.\(suffix)"
+        case 404:
+            kind = .providerFailure
+            message = "\(provider): not found (HTTP 404). The model id may be wrong for this endpoint.\(suffix)"
+        case 400, 422:
+            kind = .providerFailure
+            message = "\(provider): request rejected (HTTP \(status)). The model may not support tools, or the model id is invalid.\(suffix)"
+        case 500...599:
+            kind = .providerFailure
+            message = "\(provider): server error (HTTP \(status)). Try again shortly.\(suffix)"
+        default:
+            kind = .providerFailure
+            message = "\(provider): HTTP \(status).\(suffix)"
+        }
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        return EngineFailure(kind: kind, message: message,
+                             underlying: trimmed.isEmpty ? nil : String(trimmed.prefix(600)))
+    }
+
+    /// Pull a human message out of an OpenAI-compatible error body:
+    /// `{"error":{"message":"…"}}` or `{"message":"…"}`.
+    private static func extractErrorMessage(from body: String) -> String? {
+        guard let data = body.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        if let err = obj["error"] as? [String: Any], let m = err["message"] as? String, !m.isEmpty {
+            return m
+        }
+        if let err = obj["error"] as? String, !err.isEmpty { return err }
+        if let m = obj["message"] as? String, !m.isEmpty { return m }
+        return nil
     }
 
     // MARK: - Endpoint resolution
