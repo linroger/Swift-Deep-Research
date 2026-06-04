@@ -26,9 +26,9 @@
 |:--|:--:|
 | **主输入区** — Spotlight 风格的输入框，可切换研究深度、开启知识库，实时显示当前 LLM 提供方与模型 | ![Composer](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2010.17.21%402x.png) |
 | **迭代研究画布** — 每一轮的规划、并行工作者状态、工具调用展开、右侧实时活动监控 | ![Canvas](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2010.17.39%402x.png) |
-| **来源检视面板** — 已发现、已抓取、已引用的来源与正文同屏对照 | ![Sources](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2010.19.44%402x.png) |
-| **知识库** — 拖入 PDF 即可通过 SeekDB sidecar 完成分块与向量化，研究过程中自动检索 | ![Knowledge Base](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2010.53.03%402x.png) |
-| **设置页** — 为规划器 / 工作者 / 综合器分别选择 LLM，配置 API Key、sidecar 主机以及预算 | ![Settings](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2011.17.46%402x.png) |
+| **来源检视面板** — 已发现、已抓取、已引用的来源与正文同屏对照，并新增「知识库」分区，按相关度评分列出检索到的文本块（点击查看完整原文） | ![Sources](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2010.19.44%402x.png) |
+| **知识库** — 拖入 PDF 即可通过自动拉起的 SeekDB sidecar 完成分块与向量化，研究过程中自动检索 | ![Knowledge Base](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2010.53.03%402x.png) |
+| **设置页** — 为规划器 / 工作者 / 综合器在 11 个提供方间分别选择 LLM，配置 API Key、LM Studio / 自定义端点、sidecar 控制以及预算 | ![Settings](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2011.17.46%402x.png) |
 
 ---
 
@@ -69,7 +69,7 @@
 
 - **不再提前退出。** 旧版反思一旦判定为 "ready" 就提前终止，导致 Fast 与 Thorough 模式效果差异不大。现在引擎承诺跑满所有配置的轮次；若反思器找不到缺口，会自动切换到**深化模式**——交叉验证关键结论、寻找反例与质疑、聚焦近 30–90 天的更新、用具体数字替换概括性描述。如果 LLM 仍然返回空，引擎会自行合成深化子任务，确保没有一轮变成空转。
 - **真正的来源多样性。** 每个工作者被要求至少发起 2 次不同表述的搜索，并抓取**至少** `sourceTarget − 2`、**最多** `sourceTarget` 个不同来源（Fast = 4 / Standard = 6 / Thorough = 12）。遇到付费墙或离题页面时自动 fallback 到下一个 URL，而不是默默放弃。
-- **跨厂商统一的工具调用协议。** 同一份 `LLMRequest(messages:, tools:, …)` 信封会自动翻译成 Anthropic 的 `tool_use`、OpenAI 的 `tools[].function`、Gemini 的 `function_declarations`，以及 Ollama 的 `/api/chat tools` 字段，并对各家的流式 `tool_call` 增量做解析。
+- **跨厂商统一的工具调用协议。** 同一份 `LLMRequest(messages:, tools:, …)` 信封会自动翻译成 Anthropic 的 `tool_use`、OpenAI 的 `tools[].function`、Gemini 的 `function_declarations`，以及 Ollama 的 `/api/chat tools` 字段，并对各家的流式 `tool_call` 增量做解析。DeepSeek、MiniMax、Kimi、LM Studio 与自定义端点通过同一个 `OpenAICompatibleClient` 复用 OpenAI 路径（推理模型的 `reasoning_content` 会被解析但绝不会混入正文答案）。
 - **硬性预算上限。** 共享的 `BudgetMeter` actor 同时控制总挂钟时间、Token 上限、每工作者工具调用次数与来源数。Fast / Standard / Thorough 三档预设按比例放大所有维度。
 
 ---
@@ -78,9 +78,11 @@
 
 绝大多数研究问题在你已有的文档里就已有答案。Swift Deep Research 把 **SeekDB**（`pyseekdb`）作为一等公民工具集成进 Agent 的工具目录，在访问公网之前**先**调用：
 
-- **内嵌向量库。** 不依赖外部服务。App 自带轻量级 FastAPI **sidecar**，首次启动时自动拉起（`SidecarSupervisor` 监听 `/health`，并自动拼接 pyenv / Homebrew 的 PATH 来定位 Python）。退出 App 时 sidecar 同步关闭。
-- **拖拽即入库。** 把 PDF 拖到知识库标签页，sidecar 自动按 NLTK 句界进行分块、向量化并持久化到本地。
-- **语义检索作为工具暴露。** 工作者的工具目录中包含 `knowledge_base(query, k)`。系统提示要求：只要私有文档可能相关，**先**调用知识库，再用网络检索做交叉印证。返回的命中结果通过相同的 `sourceDiscovered` / `sourceFetched` 事件流推送，引文抽取与检视器对它们一视同仁。
+- **内嵌向量库。** 不依赖外部服务。App 自带轻量级 FastAPI **sidecar**，应用启动时自动拉起（`SidecarSupervisor` 监听 `/health`，并自动拼接 pyenv / Homebrew 的 PATH 来定位 Python）。退出 App 时 sidecar 同步关闭。
+- **零配置依赖。** 如果系统缺少所需的 Python 包，Supervisor 会在 `~/Library/Application Support/SwiftDeepResearch/sidecar-venv` 下自动创建一个独立虚拟环境并 `pip install pyseekdb fastapi uvicorn pydantic`，随后从该环境重新拉起——首次启动知识库即开即用，无需打开终端。设置 → 知识库 提供「启动 / 修复」与「重装依赖」按钮用于恢复。
+- **拖拽即入库。** 把 PDF 拖到知识库标签页，sidecar 自动按段落 / 句界进行分块、向量化并持久化到本地。
+- **语义检索作为工具暴露。** 工作者的工具目录中包含 `knowledge_base(query, k)`。系统提示要求：只要私有文档可能相关，**先**调用知识库，再用网络检索做交叉印证。返回的命中结果通过相同的 `sourceDiscovered` / `sourceFetched` 事件流推送，引文抽取与检视器对它们一视同仁。若研究过程中 sidecar 掉线，工具会请求 Supervisor 恢复它并重试一次。
+- **查看被检索到的文本块。** 检视器中有专门的 **知识库** 分区，按语义相关度评分（带颜色标识）列出 Agent 检索到的每一个文本块。点击任意块即可在阅读弹窗中查看完整原文——最终报告里的知识库来源也会打开同一个阅读器，因为 `kb://` URL 无法在浏览器中打开。
 - **`kb://` 引文协议。** 知识库段落使用 `kb://<doc-id>/<chunk-id>` 形式的合成 URL，便于来源面板与正文 hover 区分私有命中与网页来源。
 
 举个端到端的例子：把 DeepSeek-v4 论文 PDF 入库，输入 *"research the architectural innovations of DeepSeek-v4"*，工作者会先调用 `knowledge_base` 拿到 5 段高相关度内容，再发起 `web_search` 找最新基准评测——最终的综合报告同时引用你本地的私有 PDF 与近期的外部博客。
@@ -94,12 +96,19 @@
 
 | 提供方 | 类型 | 备注 |
 |---|---|---|
-| **Ollama** | 本地服务 | 支持 qwen2.5 / llama3.3 / gpt-oss / mistral-small 等工具调用，上下文窗口自动设为 131,072 |
 | **Anthropic** | 云端 | Claude Opus 4.x、Sonnet 4.x，原生 `tool_use` 流式 |
 | **OpenAI** | 云端 | GPT-5.5 / 5.4 / 4.1 系列，SSE 流式与函数调用 |
 | **Gemini** | 云端 | 2.0 / 2.5 Flash 与 Pro，函数调用 |
+| **DeepSeek** | 云端 | `deepseek-chat`（V3）/ `deepseek-reasoner`（R1），OpenAI 兼容 |
+| **MiniMax** | 云端 | MiniMax-M2 / Text-01，OpenAI 兼容 |
+| **Moonshot Kimi** | 云端 | Kimi K2.6 / K2 系列，OpenAI 兼容 |
+| **LM Studio** | 本地服务 | 任意已加载模型，无需 API Key，支持 `/v1/models` 实时发现 |
+| **自定义端点** | 云端 / 本地 | 任意 OpenAI 兼容的 base URL（可选 Key）——配置在重启后保留 |
+| **Ollama** | 本地服务 | 支持 qwen2.5 / llama3.3 / gpt-oss / mistral-small 等工具调用，上下文窗口自动设为 131,072 |
 | **Foundation Models** | 端侧 | macOS 26 上的 Apple Intelligence（条件可用） |
 | **MLX** | 端侧 | Mistral Small 24B、Qwen 2.5 7B、DeepSeek-R1 Distill |
+
+DeepSeek、MiniMax、Kimi、LM Studio 与自定义端点都使用 OpenAI Chat Completions 协议，共用同一个经过充分测试的 `OpenAICompatibleClient`。你选择的提供方 / 模型 / 端点会在重启后自动保留。
 
 ### 多后端网络搜索（自动 fallback）
 固定优先级：**Tavily**（Agent 优化）→ **Exa**（语义）→ **Brave**（通用）→ **DuckDuckGo**（HTML，无需 Key）。每个后端在解码前先校验 HTTP 状态——遇到 401 / 429 / 422 会在检视器里显示真实错误，而不是被静默吞掉变成 "no results"。
@@ -124,15 +133,15 @@
 ### 运行环境
 - macOS 26（Tahoe），Apple Silicon
 - Xcode 26
-- Python 3.10+（用于 SeekDB sidecar — `pip install pyseekdb fastapi uvicorn`）
-- 可选：Anthropic / OpenAI / Gemini / Tavily / Exa / Brave 的 API Key（任意组合）
-- 可选：本地 Ollama（`ollama serve`）+ 至少一个支持工具调用的模型
+- PATH 中可用的 Python 3.10+（App 首次运行会自动创建虚拟环境并安装 SeekDB 依赖——手动 `pip install pyseekdb fastapi uvicorn pydantic` 为可选）
+- 可选：Anthropic / OpenAI / Gemini / DeepSeek / MiniMax / Moonshot(Kimi) / 自定义端点 / Tavily / Exa / Brave 的 API Key（任意组合）
+- 可选：本地运行的 Ollama 或 LM Studio + 至少一个支持工具调用的模型
 
 ### 构建与运行
 1. 用 Xcode 26 打开 `Swift Deep Research.xcodeproj`。
 2. 构建（⌘B）并运行（⌘R）。
-3. 首次启动时，App 会自动在 `127.0.0.1:9100` 拉起 SeekDB sidecar（`sidecar/seekdb_sidecar.py`）并等待其就绪。
-4. 打开设置，粘贴你需要使用的 API Key。
+3. 首次启动时，App 会自动在 `127.0.0.1:9100` 拉起 SeekDB sidecar（`sidecar/seekdb_sidecar.py`），并在需要时自动创建虚拟环境、安装 Python 依赖。
+4. 打开设置，粘贴你需要使用的 API Key（Anthropic、OpenAI、Gemini、DeepSeek、MiniMax、Kimi……）；在 LM Studio / 自定义端点卡片中填写本地或自托管服务地址。
 5. 把 PDF 拖入知识库标签页（如需启用私有 KB）。
 6. 在主输入区输入问题、选择研究深度，开始。
 
@@ -156,10 +165,11 @@ Swift Deep Research/
 ├── Engine/           # ResearchEngine、Planner、WorkerAgent（ReAct 循环）、
 │                     # Synthesizer、Reflector、IterationController
 ├── Interface/        # SwiftUI：MainScene、Composer、ResearchCanvas、
-│                     # SourcePanel、SettingsSheet、ConversationView
-├── Knowledge/        # SeekDBClient、SidecarSupervisor、KnowledgeBase actor
+│                     # SourcePanel、KBChunkDetail、SettingsSheet、ConversationView
+├── Knowledge/        # SeekDBClient、SidecarSupervisor（虚拟环境自举）、KnowledgeBase
 ├── LLM/              # 各家 LLM Provider 客户端（Anthropic、OpenAI、Gemini、
-│                     # Ollama、FoundationModels、MLX）统一在 LLMClient 协议之下
+│                     # Ollama、FoundationModels、MLX）+ OpenAICompatibleClient
+│                     #（DeepSeek/MiniMax/Kimi/LM Studio/自定义）统一在 LLMClient 协议之下
 ├── ResearchTools/    # 工具实现：WebSearchTool、WebReaderTool、
 │                     # KnowledgeBaseTool、ArXivTool、WikipediaTool……
 ├── Shared/           # KeychainStore、日志、HTTP 工具
