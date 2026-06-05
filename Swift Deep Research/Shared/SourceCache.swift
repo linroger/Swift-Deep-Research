@@ -15,8 +15,17 @@ import Foundation
 public actor SourceCache {
     private var cached: [String: FetchedSource] = [:]
     private var inFlight: [String: Task<FetchedSource, Error>] = [:]
+    /// Insertion order of `cached` keys, for FIFO eviction.
+    private var order: [String] = []
+    /// Cap on retained results. Each `FetchedSource` can hold tens of KB of
+    /// extracted text (≤40k chars for PDFs), so an unbounded cache could grow to
+    /// tens of MB across a long, source-heavy run. Evicting the oldest entry
+    /// only costs an occasional re-fetch.
+    private let maxEntries: Int
 
-    public init() {}
+    public init(maxEntries: Int = 300) {
+        self.maxEntries = max(16, maxEntries)
+    }
 
     /// Fetch the URL or hand back a cached/in-flight version. The closure runs
     /// at most once per normalized URL per session.
@@ -31,8 +40,17 @@ public actor SourceCache {
         inFlight[key] = task
         defer { inFlight[key] = nil }
         let result = try await task.value
-        cached[key] = result
+        store(key: key, value: result)
         return result
+    }
+
+    private func store(key: String, value: FetchedSource) {
+        if cached[key] == nil { order.append(key) }
+        cached[key] = value
+        while order.count > maxEntries {
+            let oldest = order.removeFirst()
+            cached[oldest] = nil
+        }
     }
 
     public func snapshot() -> [FetchedSource] { Array(cached.values) }

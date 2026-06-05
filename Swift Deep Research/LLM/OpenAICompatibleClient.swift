@@ -97,16 +97,39 @@ public struct OpenAICompatibleClient: LLMClient {
                                                  provider: identity.displayName)
                         }
                         var toolBuffer: [Int: PartialToolCall] = [:]
+                        var sawTerminal = false   // [DONE] or an explicit finish_reason
+                        var producedOutput = false
                         for try await event in SSEParser.stream(bytes) {
                             serverResponded = true   // past the safe-retry window
                             if event.data == "[DONE]" {
                                 for (_, call) in toolBuffer { continuation.yield(.toolCallEnd(id: call.id)) }
                                 continuation.yield(.finished(reason: .stop))
+                                sawTerminal = true
                                 break
                             }
                             try Self.parseEvent(data: event.data,
                                                 toolBuffer: &toolBuffer,
+                                                sawFinish: &sawTerminal,
+                                                producedOutput: &producedOutput,
                                                 continuation: continuation)
+                        }
+                        // The byte stream ended without a terminal marker. A
+                        // dropped connection mid-stream otherwise masquerades as a
+                        // clean finish and silently truncates the answer.
+                        if !sawTerminal {
+                            if producedOutput {
+                                // Keep the partial output (re-streaming would
+                                // duplicate it) but flag it and tell consumers it
+                                // was cut short rather than a clean stop.
+                                Log.net.warning("\(identity.displayName, privacy: .public): stream closed without a terminal event — output may be truncated.")
+                                for (_, call) in toolBuffer { continuation.yield(.toolCallEnd(id: call.id)) }
+                                continuation.yield(.finished(reason: .length))
+                            } else {
+                                // Nothing arrived before the close — a failed
+                                // stream, not an empty answer. Surface it.
+                                throw EngineFailure(kind: .providerFailure,
+                                                    message: "\(identity.displayName): the model stream ended before any output (dropped connection). Try again.")
+                            }
                         }
                         continuation.finish()
                         return
@@ -347,6 +370,8 @@ public struct OpenAICompatibleClient: LLMClient {
 
     private static func parseEvent(data: String,
                                    toolBuffer: inout [Int: PartialToolCall],
+                                   sawFinish: inout Bool,
+                                   producedOutput: inout Bool,
                                    continuation: AsyncThrowingStream<LLMStreamChunk, Error>.Continuation) throws {
         guard let bytes = data.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] else { return }
@@ -358,6 +383,7 @@ public struct OpenAICompatibleClient: LLMClient {
         guard let choices = obj["choices"] as? [[String: Any]], let first = choices.first else { return }
         let delta = first["delta"] as? [String: Any] ?? [:]
         if let text = delta["content"] as? String, !text.isEmpty {
+            producedOutput = true
             continuation.yield(.text(text))
         }
         // `reasoning_content` (DeepSeek-R1, Kimi thinking) is deliberately not
@@ -371,6 +397,7 @@ public struct OpenAICompatibleClient: LLMClient {
                 let name = (fn["name"] as? String) ?? toolBuffer[index]?.name ?? ""
                 if toolBuffer[index] == nil {
                     toolBuffer[index] = PartialToolCall(id: id, name: name, argumentsJSON: "")
+                    producedOutput = true
                     continuation.yield(.toolCallStart(id: id, name: name))
                 }
                 if let args = fn["arguments"] as? String, !args.isEmpty {
@@ -387,11 +414,13 @@ public struct OpenAICompatibleClient: LLMClient {
             case "content_filter": .contentFilter
             default: .stop
             }
+            sawFinish = true
             continuation.yield(.finished(reason: reason))
         }
         if let usage = obj["usage"] as? [String: Any] {
             let p = usage["prompt_tokens"] as? Int ?? 0
             let c = usage["completion_tokens"] as? Int ?? 0
+            producedOutput = true
             continuation.yield(.usage(promptTokens: p, completionTokens: c))
         }
     }

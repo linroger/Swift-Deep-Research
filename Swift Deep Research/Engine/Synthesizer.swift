@@ -9,15 +9,12 @@ import Foundation
 public struct Synthesizer: Sendable {
     public let llm: any LLMClient
     public let citationExtractor: CitationExtractor
-    public let retry: RetryPolicy
     public let instructions: String
 
     public init(llm: any LLMClient,
-                instructions: String = "",
-                retry: RetryPolicy = .networkDefault) {
+                instructions: String = "") {
         self.llm = llm
         self.citationExtractor = CitationExtractor(llm: llm)
-        self.retry = retry
         self.instructions = instructions
     }
 
