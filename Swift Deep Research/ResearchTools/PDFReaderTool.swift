@@ -48,14 +48,25 @@ public struct PDFReaderTool: ResearchTool {
             fetched = try await context.cache.fetch(url) { resolved in
                 var req = URLRequest(url: resolved)
                 req.setValue("application/pdf", forHTTPHeaderField: "Accept")
-                let (bytes, response) = try await session.data(for: req)
+                req.setValue(HTTPClientCommon.browserUserAgent, forHTTPHeaderField: "User-Agent")
+                let (bytes, response) = try await HTTPClientCommon.dataWithRetry(for: req, session: session, label: "read_pdf")
                 guard let http = response as? HTTPURLResponse, (200..<300) ~= http.statusCode else {
                     throw EngineFailure(kind: .toolFailure,
                                         message: "read_pdf: HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
                 }
+                // A URL that returns an HTML error page with 200 OK would feed
+                // garbage to PDFKit ("not a valid PDF"); detect that early.
+                if let mime = http.mimeType?.lowercased(),
+                   mime.contains("html") || mime.contains("xml") {
+                    throw EngineFailure(kind: .toolFailure,
+                                        message: "read_pdf: URL returned \(mime), not a PDF — use fetch_url for HTML pages.")
+                }
                 return try Self.extract(data: bytes, url: resolved, maxPages: maxPages)
             }
         } catch {
+            // Release the reserved source slot so a failed download doesn't
+            // shrink this worker's source budget.
+            await context.budget.releaseSource(for: context.workerID)
             return .failed(message: "read_pdf failed: \(error.localizedDescription)")
         }
         context.emit(.sourceFetched(context.workerID, fetched))
@@ -69,6 +80,15 @@ public struct PDFReaderTool: ResearchTool {
     private static func extract(data: Data, url: URL, maxPages: Int) throws -> FetchedSource {
         guard let doc = PDFDocument(data: data) else {
             throw EngineFailure(kind: .toolFailure, message: "read_pdf: not a valid PDF")
+        }
+        // Encrypted PDFs decode but yield nil text on every page. Try the empty
+        // password (a common "owner-locked but readable" case) and fail clearly
+        // otherwise instead of returning a silently empty source.
+        if doc.isEncrypted && doc.isLocked {
+            if !doc.unlock(withPassword: "") {
+                throw EngineFailure(kind: .toolFailure,
+                                    message: "read_pdf: PDF is password-protected and could not be opened.")
+            }
         }
         let title: String = {
             if let attr = doc.documentAttributes,
@@ -89,6 +109,12 @@ public struct PDFReaderTool: ResearchTool {
         let cleaned = combined
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        // A scanned/image-only PDF parses fine but extracts no selectable text;
+        // surface that rather than returning an empty "source".
+        guard !cleaned.isEmpty else {
+            throw EngineFailure(kind: .toolFailure,
+                                message: "read_pdf: no extractable text (likely a scanned/image-only PDF).")
+        }
         return FetchedSource(id: url.absoluteString,
                              url: url,
                              title: title,

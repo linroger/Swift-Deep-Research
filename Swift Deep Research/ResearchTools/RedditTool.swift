@@ -89,9 +89,10 @@ public struct RedditTool: ResearchTool {
 
         var req = URLRequest(url: url)
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await session.data(for: req)
+        req.setValue(HTTPClientCommon.browserUserAgent, forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await HTTPClientCommon.dataWithRetry(for: req, session: session, label: "reddit_search")
         guard let http = response as? HTTPURLResponse, (200..<300) ~= http.statusCode else {
-            return .failed(message: "reddit search: HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
+            return .failed(message: "reddit search: HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1) (Reddit rate-limits the public endpoint; try again or use web_search).")
         }
 
         struct Listing: Decodable {
@@ -146,7 +147,8 @@ public struct RedditTool: ResearchTool {
             fetched = try await context.cache.fetch(jsonURL) { resolved in
                 var req = URLRequest(url: resolved)
                 req.setValue("application/json", forHTTPHeaderField: "Accept")
-                let (data, response) = try await session.data(for: req)
+                req.setValue(HTTPClientCommon.browserUserAgent, forHTTPHeaderField: "User-Agent")
+                let (data, response) = try await HTTPClientCommon.dataWithRetry(for: req, session: session, label: "reddit_thread")
                 guard let http = response as? HTTPURLResponse, (200..<300) ~= http.statusCode else {
                     throw EngineFailure(kind: .toolFailure,
                                         message: "reddit thread: HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
@@ -154,6 +156,7 @@ public struct RedditTool: ResearchTool {
                 return try Self.flatten(data: data, url: url, limit: limit)
             }
         } catch {
+            await context.budget.releaseSource(for: context.workerID)
             return .failed(message: "reddit thread failed: \(error.localizedDescription)")
         }
         context.emit(.sourceFetched(context.workerID, fetched))

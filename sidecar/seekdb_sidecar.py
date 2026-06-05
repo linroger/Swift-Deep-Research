@@ -30,10 +30,12 @@ import datetime as _dt
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -59,6 +61,28 @@ except ImportError as exc:  # pragma: no cover
 
 LOG = logging.getLogger("seekdb_sidecar")
 LOG.setLevel(logging.INFO)
+
+
+def _distance_to_score(dist: Any) -> Optional[float]:
+    """Convert a raw vector distance into a similarity score in (0, 1].
+
+    The previous `1.0 - dist` formula assumed a cosine distance in [0, 1].
+    pyseekdb/OceanBase may return L2 or inner-product distances that exceed 1.0
+    (or are NaN on degenerate vectors), which produced negative/NaN scores that
+    mis-sorted results and rendered as "0%" in the UI. `1 / (1 + d)` is monotonic
+    decreasing in distance, always lands in (0, 1], and keeps "higher = closer".
+    """
+    if dist is None:
+        return None
+    try:
+        d = float(dist)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(d):
+        return None
+    if d < 0.0:
+        d = 0.0
+    return 1.0 / (1.0 + d)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -208,7 +232,11 @@ class KnowledgeBase:
 
     def _delete_chunks_of(self, doc_id: str) -> int:
         try:
-            results = self._collection.get(where={"doc_id": doc_id}, include=["ids"])
+            # `ids` are always returned; "ids" is NOT a valid `include` token and
+            # raises ValueError on pyseekdb/Chroma-style backends — which would
+            # leave stale chunks behind on re-upsert (duplicate retrieval hits)
+            # and make delete() a no-op. Request no extra fields.
+            results = self._collection.get(where={"doc_id": doc_id})
             ids = results.get("ids") or []
             if isinstance(ids, list) and ids and isinstance(ids[0], list):
                 ids = ids[0]
@@ -244,7 +272,7 @@ class KnowledgeBase:
                 {
                     "id": chunk_id,
                     "text": doc,
-                    "score": float(1.0 - float(dist)) if dist is not None else None,
+                    "score": _distance_to_score(dist),
                     "metadata": meta or {},
                 }
             )
@@ -416,6 +444,38 @@ def build_app(kb: KnowledgeBase) -> FastAPI:
 # ---------------------------------------------------------------------------
 
 
+def _start_parent_watchdog() -> None:
+    """Self-terminate when the launching app process dies.
+
+    The Swift app launches this sidecar as a child process but cannot reliably
+    kill it on crash, force-quit, or debugger stop — leaving an orphan that
+    keeps holding the port and blocks the next launch with "address already in
+    use". We watch the parent PID: when the app exits, this process is
+    re-parented to launchd (PID 1), so `getppid() == 1` means "parent died" and
+    we exit immediately, freeing the port. `os._exit` skips atexit/uvicorn
+    shutdown hooks deliberately — we want a prompt, unconditional exit.
+    """
+    initial_parent = os.getppid()
+    # If we were already orphaned at launch (parent == 1), there is nothing to
+    # watch; rely on normal shutdown.
+    if initial_parent <= 1:
+        return
+
+    def _watch() -> None:
+        while True:
+            try:
+                ppid = os.getppid()
+            except Exception:  # pragma: no cover
+                ppid = 1
+            if ppid == 1 or ppid != initial_parent:
+                LOG.info("parent process %s exited; sidecar shutting down", initial_parent)
+                os._exit(0)
+            time.sleep(2.0)
+
+    t = threading.Thread(target=_watch, name="parent-watchdog", daemon=True)
+    t.start()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="pyseekdb sidecar for Swift Deep Research")
     parser.add_argument("--host", default="127.0.0.1")
@@ -445,6 +505,7 @@ def main() -> int:
     )
     kb = KnowledgeBase(settings)
     app = build_app(kb)
+    _start_parent_watchdog()
     LOG.info(
         "seekdb sidecar starting on %s:%s (mode=%s, data=%s, collection=%s)",
         args.host,

@@ -51,7 +51,7 @@ public struct ArXivTool: ResearchTool {
         components.queryItems = items
         guard let url = components.url else { return .failed(message: "arxiv_search: bad URL") }
 
-        let (atom, response) = try await session.data(from: url)
+        let (atom, response) = try await HTTPClientCommon.dataWithRetry(for: URLRequest(url: url), session: session, label: "arxiv_search")
         guard let http = response as? HTTPURLResponse, (200..<300) ~= http.statusCode else {
             return .failed(message: "arxiv_search: HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
         }

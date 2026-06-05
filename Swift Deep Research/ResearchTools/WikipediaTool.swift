@@ -63,7 +63,7 @@ public struct WikipediaTool: ResearchTool {
             URLQueryItem(name: "origin", value: "*")
         ]
         guard let url = components.url else { return .failed(message: "wikipedia: bad URL") }
-        let (data, response) = try await session.data(from: url)
+        let (data, response) = try await HTTPClientCommon.dataWithRetry(for: URLRequest(url: url), session: session, label: "wikipedia_search")
         guard let http = response as? HTTPURLResponse, (200..<300) ~= http.statusCode else {
             return .failed(message: "wikipedia: HTTP \(string(of: response))")
         }
@@ -111,7 +111,7 @@ public struct WikipediaTool: ResearchTool {
             fetched = try await context.cache.fetch(url) { resolved in
                 var req = URLRequest(url: resolved)
                 req.setValue("application/json", forHTTPHeaderField: "Accept")
-                let (data, response) = try await session.data(for: req)
+                let (data, response) = try await HTTPClientCommon.dataWithRetry(for: req, session: session, label: "wikipedia_summary")
                 guard let http = response as? HTTPURLResponse, (200..<300) ~= http.statusCode else {
                     throw EngineFailure(kind: .toolFailure,
                                         message: "wikipedia summary: HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
@@ -132,6 +132,7 @@ public struct WikipediaTool: ResearchTool {
                                      strategy: .staticHTML)
             }
         } catch {
+            await context.budget.releaseSource(for: context.workerID)
             return .failed(message: "wikipedia summary failed: \(error.localizedDescription)")
         }
         context.emit(.sourceFetched(context.workerID, fetched))

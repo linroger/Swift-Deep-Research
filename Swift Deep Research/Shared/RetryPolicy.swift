@@ -62,10 +62,14 @@ public struct RetryPolicy: Sendable {
     /// Classify common errors. Anything we can't recognize is treated as
     /// non-transient — better to surface unknown errors than to retry forever.
     public static func isTransient(_ error: Error) -> Bool {
+        // A cancelled run must never be retried — it should tear down promptly.
+        if error is CancellationError { return false }
         if let urlError = error as? URLError {
+            if urlError.code == .cancelled { return false }
             switch urlError.code {
-            case .timedOut, .cannotConnectToHost, .networkConnectionLost,
-                 .dnsLookupFailed, .notConnectedToInternet, .resourceUnavailable:
+            case .timedOut, .cannotConnectToHost, .cannotFindHost, .networkConnectionLost,
+                 .dnsLookupFailed, .notConnectedToInternet, .resourceUnavailable,
+                 .secureConnectionFailed:
                 return true
             default: return false
             }

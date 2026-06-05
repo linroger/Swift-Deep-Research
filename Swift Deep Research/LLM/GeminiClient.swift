@@ -11,7 +11,7 @@ public struct GeminiClient: LLMClient {
     public init(apiKey: String,
                 model: String = "gemini-3-pro-preview",
                 baseURL: URL = URL(string: "https://generativelanguage.googleapis.com")!,
-                session: URLSession = HTTPClientCommon.defaultSession(timeout: 120)) {
+                session: URLSession = HTTPClientCommon.defaultSession(timeout: 300)) {
         self.apiKey = apiKey
         self.model = model
         self.baseURL = baseURL
@@ -36,36 +36,66 @@ public struct GeminiClient: LLMClient {
     public func stream(_ request: LLMRequest) -> AsyncThrowingStream<LLMStreamChunk, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
+                guard !apiKey.isEmpty else {
+                    continuation.yield(.finished(reason: .error))
+                    continuation.finish(throwing: EngineFailure(kind: .configurationMissing,
+                                                                message: "Gemini API key not set."))
+                    return
+                }
+                let modelID = request.model ?? model
+                let urlString = baseURL.absoluteString
+                    + "/v1beta/models/\(modelID):streamGenerateContent?alt=sse&key=\(apiKey)"
+                guard let url = URL(string: urlString) else {
+                    continuation.yield(.finished(reason: .error))
+                    continuation.finish(throwing: EngineFailure(kind: .providerFailure, message: "Bad Gemini URL"))
+                    return
+                }
+                let body: Data
                 do {
-                    guard !apiKey.isEmpty else {
-                        throw EngineFailure(kind: .configurationMissing,
-                                            message: "Gemini API key not set.")
-                    }
-                    let modelID = request.model ?? model
-                    let urlString = baseURL.absoluteString
-                        + "/v1beta/models/\(modelID):streamGenerateContent?alt=sse&key=\(apiKey)"
-                    guard let url = URL(string: urlString) else {
-                        throw EngineFailure(kind: .providerFailure, message: "Bad Gemini URL")
-                    }
-                    var req = URLRequest(url: url)
-                    req.httpMethod = "POST"
-                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    req.httpBody = try Self.encodeBody(request: request)
-
-                    let (bytes, response) = try await session.bytes(for: req)
-                    if let http = response as? HTTPURLResponse, !(200..<300 ~= http.statusCode) {
-                        throw EngineFailure(kind: .providerFailure,
-                                            message: "Gemini HTTP \(http.statusCode)")
-                    }
-
-                    for try await event in SSEParser.stream(bytes) {
-                        try Self.parseEvent(data: event.data, continuation: continuation)
-                    }
-                    continuation.yield(.finished(reason: .stop))
-                    continuation.finish()
+                    body = try Self.encodeBody(request: request)
                 } catch {
                     continuation.yield(.finished(reason: .error))
                     continuation.finish(throwing: error)
+                    return
+                }
+                // Pre-response transient retry (see AnthropicClient for rationale):
+                // retry only before the server responds so output is never dup'd.
+                let maxAttempts = 3
+                var attempt = 0
+                while true {
+                    attempt += 1
+                    var serverResponded = false
+                    do {
+                        var req = URLRequest(url: url)
+                        req.httpMethod = "POST"
+                        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                        req.httpBody = body
+
+                        let (bytes, response) = try await session.bytes(for: req)
+                        serverResponded = true
+                        if let http = response as? HTTPURLResponse, !(200..<300 ~= http.statusCode) {
+                            throw EngineFailure(kind: .providerFailure,
+                                                message: "Gemini HTTP \(http.statusCode)")
+                        }
+
+                        for try await event in SSEParser.stream(bytes) {
+                            try Self.parseEvent(data: event.data, continuation: continuation)
+                        }
+                        continuation.yield(.finished(reason: .stop))
+                        continuation.finish()
+                        return
+                    } catch is CancellationError {
+                        continuation.finish(throwing: CancellationError())
+                        return
+                    } catch {
+                        if !serverResponded, attempt < maxAttempts, RetryPolicy.isTransient(error) {
+                            try? await Task.sleep(for: .seconds(Double(attempt) * 0.7))
+                            continue
+                        }
+                        continuation.yield(.finished(reason: .error))
+                        continuation.finish(throwing: error)
+                        return
+                    }
                 }
             }
             continuation.onTermination = { _ in task.cancel() }

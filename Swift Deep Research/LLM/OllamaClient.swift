@@ -95,7 +95,7 @@ public struct OllamaClient: LLMClient {
                             buffer.removeAll(keepingCapacity: true)
                             guard !line.isEmpty,
                                   let data = line.data(using: .utf8),
-                                  let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
                             else { continue }
 
                             if let msg = obj["message"] as? [String: Any] {

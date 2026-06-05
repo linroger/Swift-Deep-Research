@@ -264,21 +264,23 @@ public struct DuckDuckGoBackend: SearchBackend {
     public init() {}
 
     public func search(query: String, limit: Int, session: URLSession) async throws -> [DiscoveredSource] {
-        let escaped = query
-            .components(separatedBy: .whitespacesAndNewlines)
-            .joined(separator: "+")
+        // Percent-encode the whole query: the old whitespace→`+` join left `&`,
+        // `#`, `?`, `/` unescaped, which broke the URL for many real queries.
+        let escaped = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+            ?? query.components(separatedBy: .whitespacesAndNewlines).joined(separator: "+")
         guard let url = URL(string: "https://html.duckduckgo.com/html/?q=\(escaped)") else { return [] }
         var req = URLRequest(url: url)
-        req.setValue("Mozilla/5.0 (Macintosh)", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await session.data(for: req)
+        req.setValue(HTTPClientCommon.browserUserAgent, forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await HTTPClientCommon.dataWithRetry(for: req, session: session, label: "ddg")
         try validate(response, data: data, provider: providerID)
-        guard let html = String(data: data, encoding: .utf8) else { return [] }
+        guard let html = String(data: data, encoding: .utf8)
+                ?? String(data: data, encoding: .isoLatin1) else { return [] }
         // Cheap regex on result links — avoids a SwiftSoup dependency in this path.
         let pattern = #"<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>"#
         let regex = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
         let range = NSRange(html.startIndex..., in: html)
         var out: [DiscoveredSource] = []
-        regex.enumerateMatches(in: html, range: range) { match, _, _ in
+        regex.enumerateMatches(in: html, range: range) { match, _, stop in
             guard let m = match, let hrefRange = Range(m.range(at: 1), in: html),
                   let titleRange = Range(m.range(at: 2), in: html) else { return }
             var href = String(html[hrefRange])
@@ -287,7 +289,9 @@ public struct DuckDuckGoBackend: SearchBackend {
             let title = stripHTML(String(html[titleRange]))
             if let u = URL(string: href) {
                 out.append(DiscoveredSource(title: title, url: u, snippet: nil, provider: "ddg"))
-                if out.count >= limit { return }
+                // Actually stop the enumeration once we have enough (the old
+                // `return` only exited the closure for one match).
+                if out.count >= limit { stop.pointee = true }
             }
         }
         return Array(out.prefix(limit))

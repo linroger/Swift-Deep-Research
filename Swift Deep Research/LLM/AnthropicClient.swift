@@ -13,7 +13,7 @@ public struct AnthropicClient: LLMClient {
     public init(apiKey: String,
                 model: String = "claude-sonnet-4-20250514",
                 baseURL: URL = URL(string: "https://api.anthropic.com")!,
-                session: URLSession = HTTPClientCommon.defaultSession(timeout: 120)) {
+                session: URLSession = HTTPClientCommon.defaultSession(timeout: 300)) {
         self.apiKey = apiKey
         self.model = model
         self.baseURL = baseURL
@@ -37,33 +37,61 @@ public struct AnthropicClient: LLMClient {
     public func stream(_ request: LLMRequest) -> AsyncThrowingStream<LLMStreamChunk, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
+                guard !apiKey.isEmpty else {
+                    continuation.yield(.finished(reason: .error))
+                    continuation.finish(throwing: EngineFailure(kind: .configurationMissing,
+                                                                message: "Anthropic API key not set."))
+                    return
+                }
+                let body: Data
                 do {
-                    guard !apiKey.isEmpty else {
-                        throw EngineFailure(kind: .configurationMissing,
-                                            message: "Anthropic API key not set.")
-                    }
-                    var url = URLRequest(url: baseURL.appending(path: "/v1/messages"))
-                    url.httpMethod = "POST"
-                    url.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    url.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-                    url.setValue(anthropicVersion, forHTTPHeaderField: "anthropic-version")
-                    url.httpBody = try Self.encodeBody(request: request,
-                                                      defaultModel: model,
-                                                      stream: true)
-
-                    let (bytes, response) = try await session.bytes(for: url)
-                    try Self.checkOK(response: response, snippet: nil)
-
-                    var toolBlockIDs: [Int: String] = [:]
-                    for try await event in SSEParser.stream(bytes) {
-                        try Self.handle(event: event,
-                                        toolBlockIDs: &toolBlockIDs,
-                                        into: continuation)
-                    }
-                    continuation.finish()
+                    body = try Self.encodeBody(request: request, defaultModel: model, stream: true)
                 } catch {
                     continuation.yield(.finished(reason: .error))
                     continuation.finish(throwing: error)
+                    return
+                }
+                // Pre-response transient retry: reasoning models can idle before
+                // the first token and drop the connection. Retry only while the
+                // server has NOT yet responded, so streamed output is never
+                // duplicated. Once any byte arrives, a drop is fatal (no retry).
+                let maxAttempts = 3
+                var attempt = 0
+                while true {
+                    attempt += 1
+                    var serverResponded = false
+                    do {
+                        var url = URLRequest(url: baseURL.appending(path: "/v1/messages"))
+                        url.httpMethod = "POST"
+                        url.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                        url.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+                        url.setValue(anthropicVersion, forHTTPHeaderField: "anthropic-version")
+                        url.httpBody = body
+
+                        let (bytes, response) = try await session.bytes(for: url)
+                        serverResponded = true   // headers arrived; HTTP errors are not retried here
+                        try Self.checkOK(response: response, snippet: nil)
+
+                        var toolBlockIDs: [Int: String] = [:]
+                        for try await event in SSEParser.stream(bytes) {
+                            try Self.handle(event: event,
+                                            toolBlockIDs: &toolBlockIDs,
+                                            into: continuation)
+                        }
+                        continuation.finish()
+                        return
+                    } catch is CancellationError {
+                        continuation.finish(throwing: CancellationError())
+                        return
+                    } catch {
+                        if !serverResponded, attempt < maxAttempts, RetryPolicy.isTransient(error) {
+                            try? await Task.sleep(for: .seconds(Double(attempt) * 0.7))
+                            continue
+                        }
+                        continuation.yield(.finished(reason: .error))
+                        continuation.finish(throwing: error)
+                        return
+                    }
                 }
             }
             continuation.onTermination = { _ in task.cancel() }

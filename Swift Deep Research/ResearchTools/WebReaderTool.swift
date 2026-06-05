@@ -71,6 +71,9 @@ public struct WebReaderTool: ResearchTool {
             return .ok(summary: "Fetched \(url.host ?? "page") (\(fetched.extractedText.count) chars, \(fetched.strategy.rawValue))",
                        payloadJSON: String(decoding: payload, as: UTF8.self))
         } catch {
+            // Hand back the source slot we reserved so a failed fetch doesn't
+            // permanently shrink this worker's source budget.
+            await context.budget.releaseSource(for: context.workerID)
             return .failed(message: "All fetch strategies failed: \(error.localizedDescription)")
         }
     }
@@ -94,11 +97,17 @@ public struct WebReaderTool: ResearchTool {
     fileprivate static func extractStatic(url: URL, session: URLSession) async throws -> Extracted? {
         var req = URLRequest(url: url)
         req.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
-        let (data, response) = try await session.data(for: req)
-        guard let http = response as? HTTPURLResponse, (200..<400) ~= http.statusCode,
-              let html = String(data: data, encoding: .utf8) else {
+        // A realistic browser UA: many sites (Cloudflare, major news outlets)
+        // serve 403/429 to non-browser agents, which silently emptied sources.
+        req.setValue(HTTPClientCommon.browserUserAgent, forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await HTTPClientCommon.dataWithRetry(for: req, session: session, label: "fetch_url")
+        guard let http = response as? HTTPURLResponse, (200..<400) ~= http.statusCode else {
             return nil
         }
+        // Decode tolerantly: a large slice of the web isn't UTF-8 (Windows-1252,
+        // ISO-8859-1, GB2312, Shift-JIS). Falling straight to `nil` on non-UTF-8
+        // both lost the page and triggered the slower JS fallback unnecessarily.
+        guard let html = Self.decodeHTML(data: data, response: http) else { return nil }
         let doc = try SwiftSoup.parse(html)
         try doc.select("script, style, nav, footer, header, aside, noscript, iframe").remove()
         let title = (try? doc.title()) ?? url.host ?? url.absoluteString
@@ -106,9 +115,36 @@ public struct WebReaderTool: ResearchTool {
         let cleaned = text
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        // If a "page" comes back with <500 chars, the real content is probably JS-rendered.
-        if cleaned.count < 500 { return nil }
+        // Only treat a near-empty body as "probably JS-rendered" and fall back.
+        // The old 500-char floor discarded many valid short pages (definitions,
+        // abstracts, doc stubs) and then failed in the fallback. 200 keeps the
+        // SPA heuristic while preserving concise real content.
+        if cleaned.count < 200 { return nil }
         return Extracted(url: url, title: title, body: cleaned)
+    }
+
+    /// Decode an HTML body using the charset from the `Content-Type` header /
+    /// `<meta charset>` when present, falling back through UTF-8 and finally
+    /// ISO-8859-1 (which never fails) so non-UTF-8 pages still yield text.
+    fileprivate static func decodeHTML(data: Data, response: HTTPURLResponse) -> String? {
+        if data.isEmpty { return nil }
+        var encodings: [String.Encoding] = []
+        if let charset = response.value(forHTTPHeaderField: "Content-Type")?
+            .lowercased()
+            .components(separatedBy: "charset=").last,
+           !charset.isEmpty {
+            let cfEnc = CFStringConvertIANACharSetNameToEncoding(charset.trimmingCharacters(in: .whitespaces) as CFString)
+            if cfEnc != kCFStringEncodingInvalidId {
+                encodings.append(String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(cfEnc)))
+            }
+        }
+        encodings.append(.utf8)
+        encodings.append(.windowsCP1252)
+        encodings.append(.isoLatin1)   // never fails — last resort
+        for enc in encodings {
+            if let s = String(data: data, encoding: enc), !s.isEmpty { return s }
+        }
+        return nil
     }
 
     // MARK: - JavaScript fallback
@@ -144,6 +180,20 @@ public struct WebReaderTool: ResearchTool {
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             continuation?.resume(throwing: error); continuation = nil
         }
+
+        /// Evaluate JS using the async API. The previous implementation blocked
+        /// a cooperative-pool thread on a `DispatchSemaphore` waiting for a
+        /// main-thread callback — a self-deadlock risk under Swift concurrency.
+        func evalString(_ js: String) async -> String {
+            do {
+                let result = try await webView.evaluateJavaScript(js)
+                return (result as? String) ?? ""
+            } catch {
+                return ""
+            }
+        }
+
+        func stop() { webView.stopLoading() }
     }
 
     fileprivate static func extractJavaScript(url: URL) async throws -> Extracted {
@@ -151,42 +201,17 @@ public struct WebReaderTool: ResearchTool {
         try await host.load(url)
         // Give late-loading scripts a beat to settle.
         try? await Task.sleep(for: .milliseconds(750))
-        let title: String = try await MainActor.run {
-            let dispatcher = WebViewJSDispatcher(webView: host.webView)
-            return try awaitJSString(dispatcher: dispatcher, js: "document.title")
-        }
-        let body: String = try await MainActor.run {
-            let dispatcher = WebViewJSDispatcher(webView: host.webView)
-            return try awaitJSString(dispatcher: dispatcher,
-                                     js: "(function(){var el=document.body.cloneNode(true);['script','style','nav','footer','header','aside','iframe','noscript'].forEach(function(t){Array.from(el.getElementsByTagName(t)).forEach(function(n){n.remove();});});return el.innerText;})();")
-        }
+        let title = await host.evalString("document.title")
+        // Cap innerText in JS so a huge/infinite-scroll DOM can't pull megabytes
+        // into a String (and then run a regex over all of it).
+        let body = await host.evalString(
+            "(function(){var b=document.body;if(!b){return '';}var el=b.cloneNode(true);['script','style','nav','footer','header','aside','iframe','noscript'].forEach(function(t){Array.from(el.getElementsByTagName(t)).forEach(function(n){n.remove();});});return (el.innerText||'').slice(0,200000);})();")
+        await host.stop()
         let cleaned = body
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return Extracted(url: url, title: title, body: cleaned)
-    }
-
-    @MainActor
-    fileprivate final class WebViewJSDispatcher {
-        let webView: WKWebView
-        init(webView: WKWebView) { self.webView = webView }
-    }
-
-    @MainActor
-    fileprivate static func awaitJSString(dispatcher: WebViewJSDispatcher, js: String) throws -> String {
-        // Synchronous bridge: we re-dispatch the evaluation on the main thread,
-        // but since `WKWebView.evaluateJavaScript` is async, we wrap it.
-        let semaphore = DispatchSemaphore(value: 0)
-        var output: String = ""
-        var caught: Error?
-        dispatcher.webView.evaluateJavaScript(js) { result, error in
-            if let error { caught = error }
-            else if let str = result as? String { output = str }
-            semaphore.signal()
-        }
-        _ = semaphore.wait(timeout: .now() + 10)
-        if let caught { throw caught }
-        return output
+        let resolvedTitle = title.isEmpty ? (url.host ?? url.absoluteString) : title
+        return Extracted(url: url, title: resolvedTitle, body: cleaned)
     }
     #endif
 }

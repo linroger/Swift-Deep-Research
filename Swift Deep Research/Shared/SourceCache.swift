@@ -52,8 +52,14 @@ public actor SourceCache {
             return !trackingPrefixes.contains(where: { lower == $0 || lower.hasPrefix($0) })
         }
         if components.queryItems?.isEmpty == true { components.queryItems = nil }
+        // Lowercase ONLY scheme + host (case-insensitive by spec). Path and
+        // query are case-sensitive on many servers — lowercasing them made
+        // `/Page` and `/page` collide, so one worker could be handed another
+        // worker's *different* page from the cache.
+        components.scheme = components.scheme?.lowercased()
+        components.host = components.host?.lowercased()
         var s = components.url?.absoluteString ?? url.absoluteString
         if s.hasSuffix("/") { s.removeLast() }
-        return s.lowercased()
+        return s
     }
 }

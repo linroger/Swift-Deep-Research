@@ -104,68 +104,94 @@ public actor WorkerAgent {
         var collectedSources: [FetchedSource] = []
         var lastText = ""
 
-        while hops < maxHops {
+        // A worker must NEVER abort the whole research run. Budget caps
+        // (per-worker tool-call / token / wall-clock limits) and transient
+        // provider/network failures are normal stopping conditions for *this*
+        // worker: we break out and return whatever evidence we have gathered so
+        // far. Only genuine cancellation (user stopped the run) propagates.
+        toolLoop: while hops < maxHops {
             hops += 1
-            try Task.checkCancellation()
-            try await budget.checkWallClock()
+            do {
+                try Task.checkCancellation()
+                try await budget.checkWallClock()
 
-            // No artificial maxTokens cap — workers may need to summarize long
-            // tool outputs, and 1500 was clipping richer responses.
-            let req = LLMRequest(messages: messages, tools: toolSpecs, temperature: 0.3)
-            let completion = try await llm.complete(req)
-            try await budget.chargeTokens(completion.totalTokens)
+                // No artificial maxTokens cap — workers may need to summarize
+                // long tool outputs, and 1500 was clipping richer responses.
+                let req = LLMRequest(messages: messages, tools: toolSpecs, temperature: 0.3)
+                let completion = try await llm.complete(req)
+                try await budget.chargeTokens(completion.totalTokens)
 
-            if !completion.text.isEmpty {
-                lastText = completion.text
-                emit(.reasoningDelta(id, completion.text))
-            }
+                if !completion.text.isEmpty {
+                    lastText = completion.text
+                    emit(.reasoningDelta(id, completion.text))
+                }
 
-            if completion.toolCalls.isEmpty {
-                break
-            }
+                if completion.toolCalls.isEmpty {
+                    break toolLoop
+                }
 
-            // Append the assistant turn (with its tool calls) and run each call.
-            messages.append(LLMMessage(role: .assistant, content: completion.toolCalls.map { call in
-                .toolCall(id: call.id, name: call.name, argumentsJSON: call.argumentsJSON)
-            } + (completion.text.isEmpty ? [] : [.text(completion.text)])))
+                // Append the assistant turn (with its tool calls) and run each call.
+                messages.append(LLMMessage(role: .assistant, content: completion.toolCalls.map { call in
+                    .toolCall(id: call.id, name: call.name, argumentsJSON: call.argumentsJSON)
+                } + (completion.text.isEmpty ? [] : [.text(completion.text)])))
 
-            for call in completion.toolCalls {
-                let invocation = ToolInvocation(id: call.id,
-                                               name: call.name,
-                                               argumentsJSON: call.argumentsJSON)
-                emit(.toolInvoked(id, invocation))
-                try await budget.registerToolCall(by: id)
-
-                let outcome: ToolOutcome
-                if let tool = tools[call.name] {
-                    let context = ToolContext(
-                        workerID: id,
-                        session: session,
-                        emit: emit,
-                        charge: { tokens in try? await self.budget.chargeTokens(tokens) },
-                        budget: budget,
-                        cache: cache
-                    )
+                for call in completion.toolCalls {
+                    let invocation = ToolInvocation(id: call.id,
+                                                   name: call.name,
+                                                   argumentsJSON: call.argumentsJSON)
+                    emit(.toolInvoked(id, invocation))
+                    // Per-worker tool-call cap. Hitting it is a normal stop for
+                    // this worker, not a fatal run error — end the loop and keep
+                    // the sources collected so far.
                     do {
-                        outcome = try await tool.call(argumentsJSON: call.argumentsJSON, context: context)
+                        try await budget.registerToolCall(by: id)
                     } catch {
-                        outcome = .failed(message: "Tool \(call.name) threw: \(error.localizedDescription)")
+                        break toolLoop
                     }
-                } else {
-                    outcome = .failed(message: "Unknown tool: \(call.name)")
-                }
-                emit(.toolResult(id, invocation, outcome))
 
-                let output: String = switch outcome {
-                case .ok(_, let payload): payload
-                case .failed(let m): "ERROR: \(m)"
-                }
-                messages.append(.toolResult(callID: call.id, name: call.name, output: output))
+                    let outcome: ToolOutcome
+                    if let tool = tools[call.name] {
+                        let context = ToolContext(
+                            workerID: id,
+                            session: session,
+                            emit: emit,
+                            charge: { tokens in try? await self.budget.chargeTokens(tokens) },
+                            budget: budget,
+                            cache: cache
+                        )
+                        do {
+                            outcome = try await tool.call(argumentsJSON: call.argumentsJSON, context: context)
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch {
+                            outcome = .failed(message: "Tool \(call.name) threw: \(error.localizedDescription)")
+                        }
+                    } else {
+                        outcome = .failed(message: "Unknown tool: \(call.name)")
+                    }
+                    emit(.toolResult(id, invocation, outcome))
 
-                for fetched in Self.fetchedSources(from: outcome)
-                    where !collectedSources.contains(where: { $0.id == fetched.id || $0.url == fetched.url }) {
-                    collectedSources.append(fetched)
+                    let output: String = switch outcome {
+                    case .ok(_, let payload): payload
+                    case .failed(let m): "ERROR: \(m)"
+                    }
+                    messages.append(.toolResult(callID: call.id, name: call.name, output: output))
+
+                    for fetched in Self.fetchedSources(from: outcome)
+                        where !collectedSources.contains(where: { $0.id == fetched.id || $0.url == fetched.url }) {
+                        collectedSources.append(fetched)
+                    }
                 }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Cancellation can surface as a provider error (e.g. URLError
+                // .cancelled) rather than CancellationError — honor it.
+                if Task.isCancelled { throw CancellationError() }
+                // Budget bust or transient provider/network failure that already
+                // exhausted client-level retries. Stop this worker gracefully.
+                emit(.warning("Worker \(id.raw) stopped early: \(error.localizedDescription)"))
+                break toolLoop
             }
         }
 

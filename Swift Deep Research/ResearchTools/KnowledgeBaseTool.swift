@@ -63,6 +63,20 @@ public struct KnowledgeBaseTool: ResearchTool {
                 """
             }.joined(separator: "\n\n")
             await context.charge(combined.count / 4)
+            // On zero hits, distinguish "the knowledge base is empty" from "the
+            // KB has documents but none matched" so the worker doesn't falsely
+            // claim it consulted private docs that don't exist — and knows to
+            // fall through to web search. The worker reads the payload JSON, so
+            // the signal must live there, not only in the UI summary.
+            var note: String? = nil
+            if hits.isEmpty {
+                let docCount = (try? await client.health().documents) ?? nil
+                if let docCount, docCount > 0 {
+                    note = "No passages matched this query, but the knowledge base has \(docCount) document(s) indexed — try rephrasing, or rely on web_search."
+                } else {
+                    note = "The knowledge base is empty (no documents indexed). Use web_search instead."
+                }
+            }
             let payload = Payload(
                 query: trimmed,
                 results: hits.map {
@@ -72,12 +86,14 @@ public struct KnowledgeBaseTool: ResearchTool {
                                score: $0.score,
                                text: $0.text)
                 },
-                fetchedSources: fetchedSources
+                fetchedSources: fetchedSources,
+                note: note
             )
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
             let payloadData = try encoder.encode(payload)
-            return .ok(summary: "Knowledge base: \(hits.count) hits for '\(Clip.clip(trimmed, to: 60))'",
+            let summarySuffix = note.map { " — \($0)" } ?? ""
+            return .ok(summary: "Knowledge base: \(hits.count) hits for '\(Clip.clip(trimmed, to: 60))'\(summarySuffix)",
                        payloadJSON: String(decoding: payloadData, as: UTF8.self))
         } catch SeekDBClient.SeekDBError.unreachable(let url) {
             return .failed(message: "Knowledge base sidecar offline at \(url.absoluteString). It auto-starts at app launch; open Settings → Knowledge → Start / repair, or disable the knowledge-base toggle.")
@@ -86,19 +102,36 @@ public struct KnowledgeBaseTool: ResearchTool {
         }
     }
 
-    /// Query the sidecar, and if it's unreachable, ask `SidecarSupervisor` to
-    /// bring it up (auto-launch / venv bootstrap) and retry once. Keeps a
-    /// research run alive when the sidecar wasn't started yet, instead of
-    /// failing the whole knowledge-base lookup.
+    /// Query the sidecar, recovering from the common cold-start failure modes:
+    /// the sidecar isn't up yet (`unreachable`), or it's up but still
+    /// initializing its collection (`HTTP 5xx`). In both cases we ask
+    /// `SidecarSupervisor` to bring it up and retry a few times with short
+    /// backoff. Crucially we do NOT require `ensureRunning` to report `.running`
+    /// before retrying — it can legitimately return `.launching` while the
+    /// server finishes binding, so the query itself is the real readiness test.
+    /// This keeps a research run alive instead of failing the whole KB lookup.
     private func queryWithRecovery(_ query: String, k: Int) async throws -> [SeekDBClient.QueryHit] {
         do {
             return try await client.query(query, k: k)
-        } catch SeekDBClient.SeekDBError.unreachable {
-            let status = await SidecarSupervisor.shared.ensureRunning(host: client.host)
-            guard status == .running else {
-                throw SeekDBClient.SeekDBError.unreachable(client.host)
+        } catch let error as SeekDBClient.SeekDBError {
+            switch error {
+            case .unreachable:
+                _ = await SidecarSupervisor.shared.ensureRunning(host: client.host)
+            case .httpStatus(let code, _) where code >= 500:
+                _ = await SidecarSupervisor.shared.ensureRunning(host: client.host)
+            default:
+                throw error   // 4xx / decode errors won't be fixed by a relaunch
             }
-            return try await client.query(query, k: k)
+            var lastError: Error = error
+            for attempt in 1...3 {
+                try? await Task.sleep(nanoseconds: UInt64(attempt) * 700_000_000)
+                do {
+                    return try await client.query(query, k: k)
+                } catch {
+                    lastError = error
+                }
+            }
+            throw lastError
         }
     }
 
@@ -118,6 +151,7 @@ public struct KnowledgeBaseTool: ResearchTool {
         let query: String
         let results: [HitPayload]
         let fetchedSources: [FetchedSource]
+        let note: String?
     }
 
     private struct HitPayload: Encodable {

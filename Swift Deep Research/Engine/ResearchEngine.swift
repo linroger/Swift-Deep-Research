@@ -239,7 +239,13 @@ public struct ResearchEngine: Sendable {
                                    instructions: String,
                                    sourceTarget: Int,
                                    emit: @escaping @Sendable (ResearchEvent) -> Void) async throws -> [WorkerOutput] {
-        try await withThrowingTaskGroup(of: WorkerOutput.self) { group in
+        // Each worker is isolated: a single worker that throws (budget bust,
+        // exhausted-retry network drop, etc.) must NOT abort its siblings or the
+        // run. Workers already degrade gracefully internally; this task group is
+        // defense-in-depth — non-cancellation throws are caught and dropped to
+        // nil so the surviving workers' findings still reach synthesis. Genuine
+        // cancellation propagates so a stopped run tears down promptly.
+        try await withThrowingTaskGroup(of: WorkerOutput?.self) { group in
             for subtask in subtasks {
                 let id = WorkerID.make(subtask.question)
                 let worker = WorkerAgent(
@@ -253,10 +259,22 @@ public struct ResearchEngine: Sendable {
                     sourceTarget: sourceTarget,
                     emit: emit
                 )
-                group.addTask { try await worker.run(subtask: subtask, parentQuery: parentQuery) }
+                group.addTask {
+                    do {
+                        return try await worker.run(subtask: subtask, parentQuery: parentQuery)
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        if Task.isCancelled { throw CancellationError() }
+                        emit(.warning("Worker \(id.raw) failed: \(error.localizedDescription)"))
+                        return nil
+                    }
+                }
             }
             var outs: [WorkerOutput] = []
-            for try await out in group { outs.append(out) }
+            for try await out in group {
+                if let out { outs.append(out) }
+            }
             return outs
         }
     }

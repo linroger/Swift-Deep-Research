@@ -88,6 +88,16 @@ public actor BudgetMeter {
         return n <= budget.maxSourcesPerWorker
     }
 
+    /// Give back a source slot reserved by `registerSource` when the fetch it
+    /// was reserved for failed. Without this, a worker that hits transient fetch
+    /// failures "spends" its whole source budget on nothing and then reports
+    /// "Source cap reached" despite having read zero sources.
+    public func releaseSource(for worker: WorkerID) {
+        if let n = sourcesByWorker[worker], n > 0 {
+            sourcesByWorker[worker] = n - 1
+        }
+    }
+
     public func checkWallClock() throws {
         let elapsed = ContinuousClock().now - startedAt
         if elapsed > budget.maxWallClock {

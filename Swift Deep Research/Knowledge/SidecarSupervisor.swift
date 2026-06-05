@@ -34,7 +34,11 @@ public actor SidecarSupervisor {
     private var lastError: String?
     private var quitObserver: NSObjectProtocol?
     private var didAttemptBootstrap = false
+    private var lastBootstrapAttempt: Date?
     private(set) var status: Status = .launching
+    /// In-flight launch, so concurrent `ensureRunning` callers join one launch
+    /// instead of each spawning a duplicate sidecar that collides on the port.
+    private var ensureTask: Task<Status, Never>?
 
     private init() {
         Task { await registerTermination() }
@@ -66,9 +70,25 @@ public actor SidecarSupervisor {
     // MARK: - Public API
 
     /// Ensure the sidecar is reachable at `host`. Returns the current status.
-    /// Safe to call repeatedly — only spawns once per process lifetime.
+    /// Safe to call repeatedly and concurrently — only one launch runs at a time.
     @discardableResult
     public func ensureRunning(host: URL, port: Int? = nil) async -> Status {
+        // Fast path: already healthy, no launch needed.
+        if await probeHealth(host: host) { status = .running; return .running }
+        // Coalesce concurrent callers. The check-and-assign below runs in a
+        // single synchronous actor step (no `await` between them), so two
+        // callers can never both start a launch — the second joins the first.
+        if let ensureTask { return await ensureTask.value }
+        let task = Task { await self.performEnsureRunning(host: host, port: port) }
+        ensureTask = task
+        let result = await task.value
+        ensureTask = nil
+        return result
+    }
+
+    private func performEnsureRunning(host: URL, port: Int?) async -> Status {
+        // Re-probe inside the launch: a sibling caller (or the startup launch)
+        // may have brought it up between our fast-path check and here.
         if await probeHealth(host: host) { status = .running; return .running }
 
         // Already supervising — just wait for it to come up.
@@ -98,10 +118,15 @@ public actor SidecarSupervisor {
             if !needsDependencies { status = result; return result }
         }
 
-        // No interpreter has the deps → build a private virtualenv once, install
-        // them, and launch from it.
-        if !didAttemptBootstrap {
+        // No interpreter has the deps → build a private virtualenv, install
+        // them, and launch from it. We don't latch this OFF forever after one
+        // failure: a transient pip/network error shouldn't permanently disable
+        // auto-recovery for the rest of the session. Instead we apply a cooldown
+        // so a later query retries without hammering pip on every call.
+        let cooldownElapsed = lastBootstrapAttempt.map { Date().timeIntervalSince($0) > 90 } ?? true
+        if !didAttemptBootstrap || cooldownElapsed {
             didAttemptBootstrap = true
+            lastBootstrapAttempt = Date()
             status = .installingDependencies
             if await installDependencies() {
                 let result = await launchAndWait(script: script, port: resolvedPort,
@@ -155,7 +180,10 @@ public actor SidecarSupervisor {
             "['pyseekdb','fastapi','uvicorn','pydantic']) else 1)"
         var seen = Set<String>()
         for candidate in pythonCandidates() where seen.insert(candidate).inserted {
-            let (code, _) = await runProcess(executable: candidate, args: ["-c", probe])
+            // Short timeout: a healthy interpreter answers `find_spec` in well
+            // under a second; anything slower is a wedged/broken candidate we
+            // should skip rather than hang on.
+            let (code, _) = await runProcess(executable: candidate, args: ["-c", probe], timeout: 8)
             if code == 0 { return candidate }
         }
         return nil
@@ -169,7 +197,7 @@ public actor SidecarSupervisor {
         for candidate in pythonCandidates()
         where candidate != venvPython.path && seen.insert(candidate).inserted {
             let (code, _) = await runProcess(executable: candidate,
-                                            args: ["-c", "import sys"])
+                                            args: ["-c", "import sys"], timeout: 8)
             if code == 0 { return candidate }
         }
         return "python3"
@@ -179,7 +207,7 @@ public actor SidecarSupervisor {
     /// "repair" action in Settings.
     @discardableResult
     public func reinstallAndStart(host: URL, port: Int? = nil) async -> Status {
-        terminate()
+        await terminate()
         didAttemptBootstrap = true
         status = .installingDependencies
         let ok = await installDependencies()
@@ -196,13 +224,16 @@ public actor SidecarSupervisor {
     public func currentStatus() -> Status { status }
     public func diagnostics() -> String? { lastError }
 
-    /// Best-effort termination. Called from app-quit notification and tests.
-    public func terminate() {
+    /// Best-effort termination. Called from app-quit notification and the
+    /// Settings repair action. Async so it yields the actor's executor while
+    /// waiting (the old `Thread.sleep` blocked every other actor caller for up
+    /// to a second).
+    public func terminate() async {
         guard let process, process.isRunning else { return }
-        process.terminate()
-        let deadline = Date().addingTimeInterval(1.0)
-        while process.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.05)
+        process.terminate()   // SIGTERM
+        for _ in 0..<20 {
+            if !process.isRunning { break }
+            try? await Task.sleep(nanoseconds: 50_000_000)
         }
         if process.isRunning {
             kill(process.processIdentifier, SIGKILL)
@@ -241,6 +272,11 @@ public actor SidecarSupervisor {
     }
 
     private func launch(script: URL, port: Int, python: String) -> Status {
+        // Tear down any prior pipe before replacing it, so a relaunch doesn't
+        // leak the old read handle / readability handler.
+        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+        stdoutPipe = nil
+
         let process = Process()
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -326,6 +362,10 @@ public actor SidecarSupervisor {
                 executable: creator,
                 args: ["-m", "venv", venvDir.path])
             if code != 0 {
+                // Don't leave a half-built venv behind — `hasVenv` only checks
+                // for bin/python3, so a partial dir would falsely look "present"
+                // on the next run and never get repaired.
+                try? fm.removeItem(at: venvDir)
                 lastError = "venv creation failed (\(creator)):\n" + String(out.suffix(1500))
                 return false
             }
@@ -342,7 +382,22 @@ public actor SidecarSupervisor {
             executable: venvPython.path,
             args: ["-m", "pip", "install", "pyseekdb", "fastapi", "uvicorn", "pydantic"])
         if code != 0 {
+            // Tear down the venv so the next attempt starts clean instead of
+            // inheriting a partially-installed environment.
+            try? fm.removeItem(at: venvDir)
             lastError = "pip install failed:\n" + String(out.suffix(2000))
+            return false
+        }
+        // Verify the venv really imports all four modules before declaring
+        // success — pip can exit 0 yet leave a broken/partial install.
+        let probe = "import importlib.util as u,sys;" +
+            "sys.exit(0 if all(u.find_spec(m) for m in " +
+            "['pyseekdb','fastapi','uvicorn','pydantic']) else 3)"
+        let (verifyCode, _) = await runProcess(executable: venvPython.path,
+                                               args: ["-c", probe], timeout: 15)
+        if verifyCode != 0 {
+            try? fm.removeItem(at: venvDir)
+            lastError = "Dependencies did not import after install (venv verification failed)."
             return false
         }
         return true
@@ -350,7 +405,14 @@ public actor SidecarSupervisor {
 
     /// Run a process to completion off the actor's thread, capturing a tail of
     /// its combined output. Used for venv/pip steps which are slow.
-    private func runProcess(executable: String, args: [String]) async -> (Int32, String) {
+    ///
+    /// `timeout` bounds the run so a wedged interpreter (e.g. a broken pyenv
+    /// shim that hangs on `import`) can't suspend `ensureRunning` forever — on
+    /// expiry the child is terminated and a non-zero code is returned. Probes
+    /// pass a short timeout; pip/venv steps pass a long one.
+    private func runProcess(executable: String,
+                            args: [String],
+                            timeout: TimeInterval = 600) async -> (Int32, String) {
         await withCheckedContinuation { (continuation: CheckedContinuation<(Int32, String), Never>) in
             let process = Process()
             let pipe = Pipe()
@@ -366,6 +428,8 @@ public actor SidecarSupervisor {
             process.environment = childEnvironment()
 
             let buffer = OutputBuffer()
+            let once = ResumeOnce()
+            let timeoutHolder = TaskHolder()
             pipe.fileHandleForReading.readabilityHandler = { handle in
                 let chunk = handle.availableData
                 if !chunk.isEmpty, let s = String(data: chunk, encoding: .utf8) {
@@ -374,14 +438,30 @@ public actor SidecarSupervisor {
             }
             process.terminationHandler = { proc in
                 pipe.fileHandleForReading.readabilityHandler = nil
-                continuation.resume(returning: (proc.terminationStatus, buffer.value()))
+                timeoutHolder.cancel()
+                once.run { continuation.resume(returning: (proc.terminationStatus, buffer.value())) }
             }
             do {
                 try process.run()
             } catch {
                 pipe.fileHandleForReading.readabilityHandler = nil
-                continuation.resume(returning: (-1, "spawn failed: \(error.localizedDescription)"))
+                once.run { continuation.resume(returning: (-1, "spawn failed: \(error.localizedDescription)")) }
+                return
             }
+            // Watchdog: kill and resume if the process overruns its budget.
+            let watchdog = Task {
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                if Task.isCancelled { return }
+                if process.isRunning {
+                    process.terminate()
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                }
+                once.run {
+                    continuation.resume(returning: (-1, "timed out after \(Int(timeout))s\n" + buffer.value()))
+                }
+            }
+            timeoutHolder.set(watchdog)
         }
     }
 
@@ -399,11 +479,16 @@ public actor SidecarSupervisor {
         }
     }
 
-    /// Poll `/health` up to ~15s, but bail out early if the child process has
-    /// already exited (e.g. ModuleNotFoundError) so we don't wait the full
-    /// window on a launch that already failed.
+    /// Poll `/health` until the sidecar answers, the child process exits, or we
+    /// hit a generous ceiling. First-run embedded-mode startup does real work
+    /// before binding (OceanBase engine init + create_database +
+    /// get_or_create_collection), which can take well over 15s on a cold disk,
+    /// so a short window produced false "unreachable" results. We keep polling
+    /// as long as the process is alive, up to ~90s, and bail out immediately if
+    /// it exits (e.g. ModuleNotFoundError) so we never wait the full window on a
+    /// launch that already failed.
     private func waitForHealthOrExit(host: URL) async -> Bool {
-        for _ in 0..<30 {
+        for _ in 0..<180 {
             try? await Task.sleep(nanoseconds: 500_000_000)
             if await probeHealth(host: host) { return true }
             if process == nil { return false }   // process exited
@@ -433,6 +518,31 @@ public actor SidecarSupervisor {
         }
         return nil
     }
+}
+
+/// Guarantees a checked continuation is resumed exactly once, even though the
+/// process `terminationHandler` and the timeout watchdog race on separate
+/// threads.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    /// Runs `body` only on the first call; subsequent calls are no-ops.
+    func run(_ body: () -> Void) {
+        lock.lock()
+        let first = !done
+        done = true
+        lock.unlock()
+        if first { body() }
+    }
+}
+
+/// Mutable holder so a `terminationHandler` closure can cancel the timeout
+/// watchdog `Task` that was created after the handler was installed.
+private final class TaskHolder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+    func set(_ t: Task<Void, Never>) { lock.lock(); task = t; lock.unlock() }
+    func cancel() { lock.lock(); let t = task; task = nil; lock.unlock(); t?.cancel() }
 }
 
 /// Tiny thread-safe text accumulator for capturing bounded process output from

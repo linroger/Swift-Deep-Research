@@ -253,3 +253,76 @@ Verification:
 - Launched the rebuilt app: sidecar came up on /usr/.pyenv/versions/3.12.6 python,
   /health ok (12 docs). KB now online.
 - xcodebuild Debug build SUCCEEDED, 0 errors / 0 dup warnings.
+
+================================================================================
+Session 2026-06-05 — Systematic resilience hardening (branch: main)
+================================================================================
+Goal: eliminate the whole class of "sidecar won't start / DB returns no sources /
+timeouts / web sources fail to read" issues. Ran four parallel subagent audits
+(sidecar startup, KB retrieval, network/timeouts, websearch) and fixed the real
+bugs they surfaced. Build SUCCEEDED after every batch; sidecar smoke-tested live.
+
+Engine resilience (the big one):
+- ResearchEngine.runWorkers used `for try await out in group`, so ANY single
+  worker that threw (per-worker tool-call cap, exhausted-retry network drop,
+  budget bust) cancelled the whole TaskGroup and ABORTED THE ENTIRE RUN. Now the
+  group element is WorkerOutput?; non-cancellation throws are caught, emit a
+  .warning, and drop to nil so surviving workers still reach synthesis. Genuine
+  CancellationError still propagates.
+- WorkerAgent.run: wrapped the hop loop in do/catch (labeled toolLoop). Budget
+  caps and transient provider failures now `break` and return partial findings
+  instead of throwing. registerToolCall cap is a normal stop, not a fatal error.
+
+Network / timeouts:
+- Logging.defaultSession: timeoutIntervalForResource was `timeout*2` (=600s for a
+  300s request) — a hard ceiling that killed long deep-research streams mid-flight
+  ("network connection lost"). Decoupled: resource defaults to 86_400s; only the
+  per-request inactivity window guards liveness. Added browserUserAgent +
+  dataWithRetry() (retries transient URLErrors + 408/425/429/5xx, honors
+  Retry-After) for the web tools.
+- Anthropic + Gemini stream(): inactivity timeout 120s -> 300s (reasoning models
+  idle before first token) AND added the pre-response transient-retry loop
+  (serverResponded guard so output never duplicates) they previously lacked.
+- OllamaClient: per-line JSON now `try?` (one malformed NDJSON line no longer
+  aborts the whole stream).
+- RetryPolicy.isTransient: added .secureConnectionFailed/.cannotFindHost, excludes
+  CancellationError + URLError.cancelled.
+
+Sidecar startup (SidecarSupervisor):
+- ensureRunning now coalesces concurrent callers onto ONE launch Task (check+assign
+  in a single synchronous actor step) — fixes duplicate launches racing on port 9100.
+- terminate() is async (no Thread.sleep blocking the actor's executor).
+- runProcess() has a cancellable timeout watchdog (ResumeOnce/TaskHolder); interpreter
+  probes use timeout:8 so a wedged pyenv shim can't hang startup forever.
+- waitForHealthOrExit polls up to ~90s while the process is alive (cold pyseekdb init
+  exceeds 15s — confirmed: live cold start took ~5-8s+).
+- installDependencies: removes a partial venv on failure and verifies all four modules
+  import before declaring success; bootstrap retries after a 90s cooldown instead of
+  latching off for the whole session. launch() tears down the old pipe (no FD leak).
+- seekdb_sidecar.py: parent-death watchdog thread self-terminates when the launching
+  app exits (getppid()==1) — frees port 9100, fixes orphan/port-conflict after crashes.
+
+KB retrieval:
+- seekdb_sidecar.py score: `1.0 - dist` could go negative/NaN (non-cosine distances) →
+  mis-sorted, 0%-badged. Now `1/(1+d)` via _distance_to_score → always (0,1], higher=closer.
+  VERIFIED live: relevant query 0.738, unrelated 0.503.
+- _delete_chunks_of: `include=["ids"]` is invalid and raised → stale/duplicate chunks on
+  re-upsert + broken delete. Now `get(where=...)` with no include.
+- KnowledgeBaseTool.queryWithRecovery: recovers from HTTP 5xx (cold init) too, retries the
+  query 3x w/ backoff, and no longer treats a still-`.launching` supervisor as fatal.
+- Zero-hit results now carry a `note` (empty-KB vs no-match, with doc count) the worker reads.
+
+Web source reading:
+- WebReaderTool: browser UA (fixes 403/429), dataWithRetry, charset-tolerant decode
+  (UTF-8→CP1252→ISO-8859-1), 500→200 char threshold, and replaced the deadlock-prone
+  DispatchSemaphore JS bridge with async evaluateJavaScript (+200k innerText cap, stopLoading).
+- PDFReaderTool: browser UA + retry, Content-Type guard (HTML-as-PDF), encrypted/locked unlock,
+  empty-text guard (scanned PDFs), releases source slot on failure.
+- WebSearchTool/DDG: percent-encode the query, actually stop enumeration at limit, browser UA + retry.
+- Reddit/Wikipedia/ArXiv: browser UA where needed + dataWithRetry; release source slot on failure.
+- SourceCache.normalize: lowercase scheme+host only (path/query are case-sensitive) — no more
+  /Page vs /page collisions handing a worker the wrong page.
+- AgentBudget.releaseSource(): failed fetches no longer permanently consume a worker's source budget.
+
+Verification: xcodebuild Debug BUILD SUCCEEDED (0 errors/0 warnings in our files) after each batch;
+sidecar smoke test confirmed health/upsert/query/score-normalization/re-upsert all work on new code.
