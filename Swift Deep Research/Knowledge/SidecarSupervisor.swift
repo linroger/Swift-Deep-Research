@@ -375,9 +375,14 @@ public actor SidecarSupervisor {
             return false
         }
 
-        // Upgrade pip (non-fatal) then install the runtime deps.
+        // Guarantee pip exists in the venv before using it. Some system pythons
+        // create venvs without a working pip; `ensurepip` repairs that so the
+        // dep install below doesn't fail with a cryptic "No module named pip".
+        // Both steps are best-effort (non-fatal).
         _ = await runProcess(executable: venvPython.path,
-                             args: ["-m", "pip", "install", "--upgrade", "pip"])
+                             args: ["-m", "ensurepip", "--upgrade"], timeout: 120)
+        _ = await runProcess(executable: venvPython.path,
+                             args: ["-m", "pip", "install", "--upgrade", "pip"], timeout: 120)
         let (code, out) = await runProcess(
             executable: venvPython.path,
             args: ["-m", "pip", "install", "pyseekdb", "fastapi", "uvicorn", "pydantic"])

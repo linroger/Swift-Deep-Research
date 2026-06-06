@@ -186,11 +186,10 @@ public struct ExaBackend: SearchBackend {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-        // Exa's /search supports two `type`s: "neural" (semantic) and
-        // "keyword". Neural is best for research-style queries but can
-        // 422 when the API key tier doesn't include semantic search. We
-        // request neural and let the validate() helper surface the real
-        // error message instead of failing silently.
+        // Exa's `type: "auto"` lets Exa choose neural vs. keyword per query.
+        // Hardcoding "neural" 422'd on key tiers without semantic search,
+        // wasting an otherwise-valid key; "auto" works across tiers and still
+        // prefers semantic where available.
         struct Body: Encodable {
             let query: String
             let numResults: Int
@@ -200,7 +199,7 @@ public struct ExaBackend: SearchBackend {
         req.httpBody = try JSONEncoder().encode(Body(query: query,
                                                      numResults: limit,
                                                      useAutoprompt: true,
-                                                     type: "neural"))
+                                                     type: "auto"))
         let (data, response) = try await session.data(for: req)
         try validate(response, data: data, provider: providerID)
         struct Resp: Decodable {
