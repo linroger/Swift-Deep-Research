@@ -151,6 +151,7 @@ struct ConversationView: View {
                 StatusPill(status: live.status)
             }
             HStack(spacing: 14) {
+                elapsedMetric(live: live)
                 metric("\(live.totalTokens.formatted())", "tokens", systemImage: "circle.hexagongrid.fill")
                 metric("\(live.fetchedSources.count)", "fetched", systemImage: "doc.text")
                 metric("\(live.citations.count)", "cited", systemImage: "quote.bubble")
@@ -163,6 +164,29 @@ struct ConversationView: View {
             .foregroundStyle(.secondary)
         }
         .padding(.bottom, 4)
+    }
+
+    /// A live-ticking clock while the run is in flight (so a multi-minute run
+    /// never looks like a hang), settling to the final elapsed on completion.
+    @ViewBuilder
+    private func elapsedMetric(live: LiveSession) -> some View {
+        let inflight: Set<LiveSession.Status> = [.planning, .working, .synthesizing, .reflecting]
+        if inflight.contains(live.status) {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let secs = max(0, Int(context.date.timeIntervalSince(live.startedAt)))
+                metric(Self.formatDuration(secs), "elapsed", systemImage: "clock")
+            }
+        } else if live.status == .complete {
+            metric(Self.formatDuration(Int(live.elapsed.components.seconds)), "elapsed", systemImage: "clock")
+        }
+    }
+
+    private static func formatDuration(_ totalSeconds: Int) -> String {
+        let s = max(0, totalSeconds)
+        let h = s / 3600, m = (s % 3600) / 60, sec = s % 60
+        return h > 0
+            ? String(format: "%d:%02d:%02d", h, m, sec)
+            : String(format: "%d:%02d", m, sec)
     }
 
     private func metric(_ value: String, _ label: String, systemImage: String) -> some View {

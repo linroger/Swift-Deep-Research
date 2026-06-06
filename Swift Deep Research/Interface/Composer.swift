@@ -140,9 +140,11 @@ struct Composer: View {
 
     private var providerSummary: some View {
         let cfg = env.configuration
+        let keyMissing = env.missingKeyHint != nil
         return HStack(spacing: 4) {
-            Image(systemName: "brain.head.profile")
+            Image(systemName: keyMissing ? "key.horizontal.fill" : "brain.head.profile")
                 .font(.caption2)
+                .foregroundStyle(keyMissing ? .orange : .secondary)
             Text(cfg.workerProvider.displayName)
                 .font(.caption2)
                 .lineLimit(1)
@@ -150,9 +152,15 @@ struct Composer: View {
                 Text("·").font(.caption2).foregroundStyle(.tertiary)
                 Text(m).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
+            if keyMissing {
+                Text("· key needed")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+            }
         }
         .foregroundStyle(.secondary)
-        .help("Worker model. Open Settings to change.")
+        .help(env.missingKeyHint ?? "Worker model. Open Settings to change.")
     }
 
     private var currentDepthLabel: String {

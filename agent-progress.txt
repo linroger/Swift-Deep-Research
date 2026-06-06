@@ -326,3 +326,47 @@ Web source reading:
 
 Verification: xcodebuild Debug BUILD SUCCEEDED (0 errors/0 warnings in our files) after each batch;
 sidecar smoke test confirmed health/upsert/query/score-normalization/re-upsert all work on new code.
+
+================================================================================
+Session 2026-06-06 — UI / ship-readiness pass (branch: main)
+================================================================================
+Ran a dedicated UI-layer audit (the backend was already hardened). Fixed the
+ship-blocker + high/medium findings. Build SUCCEEDED, 0 warnings throughout.
+
+First-run experience (was the ship-blocker):
+- New user with no API key used to fire a doomed run and only learn the problem
+  after it failed. Added AppEnvironment.missingKeyHint + refreshKeyStatus()
+  (checks Keychain for the active worker provider's key; local providers clear
+  it). WelcomeView shows an orange "Add an API key to get started" banner with
+  an Open Settings button; suggestion chips route to Settings instead of running
+  when no key. Composer provider summary shows a "key needed" indicator.
+  refreshKeyStatus runs on launch, on provider change, and when Settings closes.
+
+Knowledge-base status surfacing:
+- KnowledgeBase.Health gained .installing; refresh() now maps supervisor
+  .launching -> .launching and .installingDependencies -> .installing instead of
+  collapsing both into the scary orange "Couldn't start sidecar" alarm.
+  DocumentUploadView renders a friendly "Installing Python dependencies (first
+  run)…" progress card. SettingsSheet KB status (ping) consults
+  SidecarSupervisor.currentStatus() so it shows "Starting"/"Installing" rather
+  than "Unreachable" during bootstrap.
+
+KB citation dead links (kb:// has no browser handler):
+- CitationRow (SourcePanel), CitationChip (DraftCard), and the inline [N] chips
+  (InlineCitationsView via an OpenURLAction interceptor) now route kb:// citations
+  to the KBChunkDetail reader instead of a dead openURL. Web citations unchanged.
+
+Other polish:
+- ConversationView: live-ticking elapsed clock (TimelineView) while a run is in
+  flight so a multi-minute run never looks like a hang (F6).
+- SettingsSheet.commitHost: require http/https + host (F8) — no more silently
+  unusable seekdbHost.
+- Accessibility labels on icon-only buttons: inspector tabs, Ollama refresh,
+  copy-command, document trash (F11).
+- ForEach identity: streaming source lists and plan subtasks keyed by element id
+  instead of array offset to avoid row-identity churn (F14).
+- Stored-session inspector shows an empty state instead of a bare header (F16).
+- Removed the unused glassEffectIfAvailable() helper (dead code).
+
+Backend polish (same session): Exa type "auto" (works on all key tiers);
+ensurepip before venv pip install (repairs a broken venv pip).

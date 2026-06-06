@@ -39,6 +39,9 @@ struct WelcomeView: View {
     private var centerStack: some View {
         VStack(spacing: 28) {
             heroHeader
+            if let hint = env.missingKeyHint {
+                missingKeyBanner(hint)
+            }
             Composer(text: $query,
                     placeholder: "Ask anything…",
                     isWorking: isWorking,
@@ -51,6 +54,36 @@ struct WelcomeView: View {
                 .environment(env)
             suggestionStrip
         }
+    }
+
+    private func missingKeyBanner(_ hint: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "key.horizontal.fill")
+                .foregroundStyle(.orange)
+                .font(.title3)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Add an API key to get started")
+                    .font(.subheadline.weight(.semibold))
+                Text(hint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button("Open Settings") { env.settingsOpen = true }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.orange.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.orange.opacity(0.35), lineWidth: 0.5)
+        )
+        .accessibilityElement(children: .combine)
     }
 
     private var heroHeader: some View {
@@ -83,8 +116,14 @@ struct WelcomeView: View {
                      spacing: 10) {
                 ForEach(suggestions, id: \.self) { suggestion in
                     SuggestionChip(text: suggestion) {
-                        query = suggestion
-                        onSubmit()
+                        // If the provider has no key yet, route to Settings
+                        // instead of firing a run that will only fail.
+                        if env.missingKeyHint != nil {
+                            env.settingsOpen = true
+                        } else {
+                            query = suggestion
+                            onSubmit()
+                        }
                     }
                 }
             }

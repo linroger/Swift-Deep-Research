@@ -77,12 +77,27 @@ public struct MainScene: View {
             }
         }
         .task {
+            // Check whether the active provider has its API key so first-run
+            // guidance can appear before the user fires a doomed run.
+            await env.refreshKeyStatus()
             // Boot the embedding sidecar in the background at app launch so
             // the Knowledge Base is instant when the user opens it. No-op if
             // it's already running.
             await SidecarSupervisor.shared.ensureRunning(
                 host: env.configuration.seekdbHost
             )
+        }
+        .onChange(of: env.configuration.workerProvider) {
+            Task { await env.refreshKeyStatus() }
+        }
+        .onChange(of: env.settingsOpen) { _, open in
+            // Allow other views (e.g. the first-run banner) to request Settings.
+            if open { showSettings = true; env.settingsOpen = false }
+        }
+        .onChange(of: showSettings) { _, open in
+            // Re-check keys after the user closes Settings — they may have just
+            // added one.
+            if !open { Task { await env.refreshKeyStatus() } }
         }
         .sheet(isPresented: $showSettings) {
             SettingsSheet()
@@ -148,17 +163,5 @@ public struct MainScene: View {
         let md = SessionExporter.markdown(session: session)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(md, forType: .string)
-    }
-}
-
-extension View {
-    /// Liquid Glass on macOS 26+, plain material elsewhere.
-    @ViewBuilder
-    func glassEffectIfAvailable() -> some View {
-        if #available(macOS 26.0, *) {
-            self.glassEffect(.regular, in: .capsule)
-        } else {
-            self.background(.thinMaterial, in: Capsule())
-        }
     }
 }

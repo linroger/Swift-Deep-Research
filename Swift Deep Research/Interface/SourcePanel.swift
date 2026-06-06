@@ -56,6 +56,7 @@ struct SourcePanel: View {
                 }
                 .buttonStyle(.plain)
                 .help(tab.label)
+                .accessibilityLabel("\(tab.label) tab")
             }
         }
         .padding(.horizontal, 12)
@@ -138,7 +139,13 @@ struct SourcePanel: View {
         if !live.citations.isEmpty {
             Section("Cited (\(live.citations.count))") {
                 ForEach(live.citations) { c in
-                    CitationRow(citation: c)
+                    // KB-backed citations point at a `kb://` URL with no browser
+                    // handler — route them to the chunk reader instead of a dead
+                    // openURL. Match the cited URL to the retrieved chunk.
+                    let kbChunk = c.sourceURL.scheme == "kb"
+                        ? live.fetchedSources[c.sourceURL]
+                        : nil
+                    CitationRow(citation: c, kbChunk: kbChunk) { inspectedChunk = $0 }
                 }
             }
         }
@@ -146,9 +153,15 @@ struct SourcePanel: View {
 
     @ViewBuilder
     private func storedSources(session: StoredSession) -> some View {
-        Section("Fetched") {
-            ForEach(session.sources.sorted(by: { $0.fetchedAt > $1.fetchedAt })) { src in
-                StoredSourceRow(source: src)
+        if session.sources.isEmpty {
+            Text("No sources were saved for this session.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Section("Fetched (\(session.sources.count))") {
+                ForEach(session.sources.sorted(by: { $0.fetchedAt > $1.fetchedAt })) { src in
+                    StoredSourceRow(source: src)
+                }
             }
         }
     }
@@ -169,7 +182,7 @@ struct SourcePanel: View {
                 Text("Subtasks (\(plan.subtasks.count))")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                ForEach(Array(plan.subtasks.enumerated()), id: \.offset) { idx, sub in
+                ForEach(Array(plan.subtasks.enumerated()), id: \.element.id) { idx, sub in
                     VStack(alignment: .leading, spacing: 2) {
                         Text("\(idx + 1). \(sub.question)").font(.caption.weight(.medium))
                         Text(sub.rationale).font(.caption2).foregroundStyle(.secondary)
@@ -299,19 +312,42 @@ private struct KBChunkRow: View {
 
 private struct CitationRow: View {
     let citation: Citation
+    /// Set when this citation resolves to a knowledge-base chunk; tapping opens
+    /// the chunk reader instead of a (dead) `kb://` browser link.
+    var kbChunk: FetchedSource? = nil
+    var onOpenKB: ((FetchedSource) -> Void)? = nil
     @Environment(\.openURL) private var openURL
+
+    private var isKB: Bool { citation.sourceURL.scheme == "kb" }
+
     var body: some View {
-        Button { openURL(citation.sourceURL) } label: {
+        Button {
+            if let kbChunk, let onOpenKB {
+                onOpenKB(kbChunk)
+            } else if !isKB {
+                openURL(citation.sourceURL)
+            }
+            // KB citation with no resolvable chunk: no-op rather than a dead link.
+        } label: {
             VStack(alignment: .leading, spacing: 2) {
                 Text(citation.claim).font(.caption.weight(.medium))
                 Text("“\(citation.exactQuote)”")
                     .font(.caption2.italic())
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
-                Text(citation.sourceTitle).font(.caption2).foregroundStyle(.tertiary)
+                HStack(spacing: 4) {
+                    if isKB {
+                        Image(systemName: "text.book.closed.fill")
+                            .font(.system(size: 8))
+                            .foregroundStyle(.indigo)
+                    }
+                    Text(isKB ? "Knowledge base" : citation.sourceTitle)
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
             }
         }
         .buttonStyle(.plain)
+        .help(kbChunk != nil ? "Open knowledge-base chunk" : (isKB ? citation.sourceTitle : citation.sourceURL.absoluteString))
     }
 }
 

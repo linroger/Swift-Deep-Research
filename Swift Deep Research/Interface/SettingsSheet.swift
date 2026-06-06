@@ -364,6 +364,7 @@ private struct ProvidersTab: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Refresh from /api/tags")
+                .accessibilityLabel("Refresh Ollama models")
             }
         } else if provider.usesFreeformModel && provider != .ollama {
             freeFormModelField(provider: provider, value: value)
@@ -955,16 +956,41 @@ private struct KnowledgeTab: View {
             }
             .buttonStyle(.borderless)
             .help("Copy")
+            .accessibilityLabel("Copy command")
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
     }
 
     private func commitHost() {
-        if let url = URL(string: hostString) { env.configuration.seekdbHost = url }
+        // Require a real scheme (http/https) so a typo like "localhost:9100"
+        // can't silently point the sidecar at an unusable URL — mirror the
+        // LM Studio / custom-endpoint validation.
+        let trimmed = hostString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              url.host != nil else {
+            health = "✗ Invalid host — use http://host:port"
+            return
+        }
+        env.configuration.seekdbHost = url
     }
 
     private func ping() async {
+        // Reflect the supervisor's lifecycle so the at-rest status isn't a
+        // misleading "Unreachable" while the sidecar is starting or installing.
+        let status = await SidecarSupervisor.shared.currentStatus()
+        switch status {
+        case .launching:
+            health = "… Starting sidecar"
+            return
+        case .installingDependencies:
+            health = "… Installing dependencies (first run)"
+            return
+        default:
+            break
+        }
         let client = SeekDBClient(host: env.configuration.seekdbHost)
         do {
             let h = try await client.health()

@@ -12,7 +12,9 @@ struct InlineCitationsView: View {
     let citations: [Citation]
 
     @State private var hoveredIndex: Int?
-    @Environment(\.openURL) private var openURL
+    /// KB citation opened in the reader sheet (`kb://` links have no browser
+    /// handler, so we intercept them below).
+    @State private var inspectedChunk: FetchedSource?
 
     /// Split the markdown around `[N]` markers and render text + chips.
     var body: some View {
@@ -21,6 +23,16 @@ struct InlineCitationsView: View {
                 paragraphView(paragraph)
             }
         }
+        // Intercept inline citation taps: route `kb://` markers to the chunk
+        // reader (a dead link otherwise); let web links open in the browser.
+        .environment(\.openURL, OpenURLAction { url in
+            guard url.scheme == "kb" else { return .systemAction }
+            if let chunk = sources.first(where: { $0.url == url }) {
+                inspectedChunk = chunk
+            }
+            return .handled   // swallow the dead kb:// link even if unmatched
+        })
+        .sheet(item: $inspectedChunk) { KBChunkDetail(source: $0) }
     }
 
     // MARK: - Paragraph rendering

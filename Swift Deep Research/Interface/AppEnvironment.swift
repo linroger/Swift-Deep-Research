@@ -14,6 +14,13 @@ public final class AppEnvironment {
     public var live: LiveSession?
     public var settingsOpen: Bool = false
 
+    /// Non-nil when the active worker provider needs an API key that isn't in
+    /// the Keychain yet — drives the first-run "add a key" guidance so a new
+    /// user doesn't fire a doomed run and only learn the problem after it fails.
+    /// Refreshed via `refreshKeyStatus()` on launch and whenever the provider or
+    /// keys change.
+    public var missingKeyHint: String?
+
     /// UserDefaults key for the persisted engine configuration. Versioned so a
     /// schema change can invalidate stale blobs by bumping the suffix.
     private static let configKey = "engineConfiguration.v2"
@@ -58,6 +65,23 @@ public final class AppEnvironment {
     public func cancelLive() {
         live?.cancel()
     }
+
+    /// Refresh `missingKeyHint` by checking the Keychain for the active worker
+    /// provider's key. Local providers (Ollama / LM Studio / MLX / Apple) need
+    /// no key, so they always clear the hint.
+    public func refreshKeyStatus() async {
+        let provider = configuration.workerProvider
+        guard let account = provider.requiresAPIKey else {
+            missingKeyHint = nil
+            return
+        }
+        let key = await KeychainStore.shared.get(account) ?? ""
+        if key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            missingKeyHint = "\(provider.displayName) needs an API key. Open Settings → API keys to add one, or switch to a local model (Ollama, LM Studio, or Apple)."
+        } else {
+            missingKeyHint = nil
+        }
+    }
 }
 
 /// One in-flight research run. The orchestrator engine streams events into this
@@ -68,6 +92,8 @@ public final class LiveSession: Identifiable {
     public let sessionID: UUID
     public let query: String
     public let configuration: EngineConfiguration
+    /// Wall-clock start of this run, for the live header timer.
+    public let startedAt: Date = .now
 
     public var status: Status = .idle
     public var plan: ResearchPlan?

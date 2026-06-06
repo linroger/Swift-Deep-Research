@@ -74,7 +74,7 @@ struct DraftCard: View {
                 .foregroundStyle(.tint)
             }
             let visible = showAllSources ? orderedSources : Array(orderedSources.prefix(5))
-            ForEach(Array(visible.enumerated()), id: \.offset) { idx, src in
+            ForEach(Array(visible.enumerated()), id: \.element.id) { idx, src in
                 NumberedSourceRow(index: idx + 1, source: src)
             }
             if !showAllSources, orderedSources.count > 5 {
@@ -89,9 +89,16 @@ struct DraftCard: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Quoted evidence").font(.subheadline.weight(.semibold))
             FlowLayout(spacing: 6) {
-                ForEach(citations) { CitationChip(citation: $0) }
+                ForEach(citations) { CitationChip(citation: $0, kbChunk: kbChunk(for: $0)) }
             }
         }
+    }
+
+    /// Resolve a KB-backed citation to its retrieved chunk so the chip can open
+    /// the reader instead of a dead `kb://` link.
+    private func kbChunk(for citation: Citation) -> FetchedSource? {
+        guard citation.sourceURL.scheme == "kb" else { return nil }
+        return sources.first { $0.url == citation.sourceURL }
     }
 
     /// Synthesizer appends `## Sources` to the draft. The card renders its own
@@ -164,17 +171,27 @@ private struct NumberedSourceRow: View {
 
 struct CitationChip: View {
     let citation: Citation
+    /// Resolved KB chunk for `kb://` citations; opens the reader instead of a
+    /// dead browser link.
+    var kbChunk: FetchedSource? = nil
     @Environment(\.openURL) private var openURL
     @State private var hovered = false
+    @State private var showChunk = false
+
+    private var isKB: Bool { citation.sourceURL.scheme == "kb" }
 
     var body: some View {
         Button {
-            openURL(citation.sourceURL)
+            if kbChunk != nil {
+                showChunk = true
+            } else if !isKB {
+                openURL(citation.sourceURL)
+            }
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: "quote.bubble")
+                Image(systemName: isKB ? "text.book.closed.fill" : "quote.bubble")
                     .font(.caption2)
-                Text(citation.sourceTitle)
+                Text(isKB ? "Knowledge base" : citation.sourceTitle)
                     .font(.caption.weight(.medium))
                     .lineLimit(1)
             }
@@ -187,6 +204,9 @@ struct CitationChip: View {
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
         .help("\(citation.claim)\n\n“\(citation.exactQuote)”")
+        .sheet(isPresented: $showChunk) {
+            if let kbChunk { KBChunkDetail(source: kbChunk) }
+        }
     }
 }
 

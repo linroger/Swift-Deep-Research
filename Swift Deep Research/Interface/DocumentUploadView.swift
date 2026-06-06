@@ -99,6 +99,24 @@ struct DocumentUploadView: View {
             }
             .padding(12)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        case .installing:
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Installing Python dependencies…")
+                        .font(.caption.weight(.semibold))
+                    Spacer()
+                }
+                Text("First run only — building a private environment for the embedding engine. This can take a minute; the knowledge base will come online automatically.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Refresh status") { Task { await kb.refresh() } }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
+            .padding(12)
+            .background(.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
         case .unknown:
             HStack(spacing: 10) {
                 ProgressView().controlSize(.small)
@@ -256,6 +274,8 @@ struct DocumentUploadView: View {
                             Image(systemName: "trash")
                         }
                         .buttonStyle(.borderless)
+                        .help("Remove document")
+                        .accessibilityLabel("Remove \(doc.title)")
                     }
                     .padding(.vertical, 6)
                     .padding(.horizontal, 10)

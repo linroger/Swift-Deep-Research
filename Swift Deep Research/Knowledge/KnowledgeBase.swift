@@ -22,7 +22,8 @@ public final class KnowledgeBase {
 
     public enum Health: Sendable, Equatable {
         case unknown
-        case launching
+        case launching                 // process spawned, /health not up yet
+        case installing                // building the managed virtualenv (first run)
         case ok(docs: Int, mode: String?)
         case unreachable(String)
     }
@@ -42,10 +43,14 @@ public final class KnowledgeBase {
         switch status {
         case .running:
             _ = await tryReadHealth()
-        case .launching, .installingDependencies:
-            // Still coming up (or building its virtualenv) — mark unreachable
-            // for now; the UI shows the diagnostic and the user can retry.
-            self.health = .unreachable(host.absoluteString)
+        case .launching:
+            // Process is up but /health hasn't answered yet (cold pyseekdb init
+            // can take a bit). Show a friendly "starting…" state, not a failure.
+            self.health = .launching
+        case .installingDependencies:
+            // First run: building the private virtualenv (pip install). This is
+            // expected and can take a minute — show progress, not an alarm.
+            self.health = .installing
         case .notInstalled(let detail), .failed(let detail):
             self.lastError = detail
             self.health = .unreachable(host.absoluteString)
