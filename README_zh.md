@@ -78,7 +78,7 @@
 
 绝大多数研究问题在你已有的文档里就已有答案。Swift Deep Research 把 **SeekDB**（`pyseekdb`）作为一等公民工具集成进 Agent 的工具目录，在访问公网之前**先**调用：
 
-- **内嵌向量库。** 不依赖外部服务。App 自带轻量级 FastAPI **sidecar**，应用启动时自动拉起（`SidecarSupervisor` 监听 `/health`，并自动拼接 pyenv / Homebrew 的 PATH 来定位 Python）。退出 App 时 sidecar 同步关闭。
+- **内嵌向量库。** 不依赖外部服务。App 自带轻量级 FastAPI **sidecar**，应用启动时自动拉起（`SidecarSupervisor` 监听 `/health`，并自动拼接 pyenv / Homebrew 的 PATH 来定位 Python）。多个并发启动请求会合并为一次拉起；**父进程死亡看门狗**会在 App 退出、强制退出甚至崩溃时让 sidecar 自动结束——确保不会有残留进程占住 9100 端口、阻塞下一次启动。
 - **零配置依赖。** 如果系统缺少所需的 Python 包，Supervisor 会在 `~/Library/Application Support/SwiftDeepResearch/sidecar-venv` 下自动创建一个独立虚拟环境并 `pip install pyseekdb fastapi uvicorn pydantic`，随后从该环境重新拉起——首次启动知识库即开即用，无需打开终端。设置 → 知识库 提供「启动 / 修复」与「重装依赖」按钮用于恢复。
 - **拖拽即入库。** 把 PDF 拖到知识库标签页，sidecar 自动按段落 / 句界进行分块、向量化并持久化到本地。
 - **语义检索作为工具暴露。** 工作者的工具目录中包含 `knowledge_base(query, k)`。系统提示要求：只要私有文档可能相关，**先**调用知识库，再用网络检索做交叉印证。返回的命中结果通过相同的 `sourceDiscovered` / `sourceFetched` 事件流推送，引文抽取与检视器对它们一视同仁。若研究过程中 sidecar 掉线，工具会请求 Supervisor 恢复它并重试一次。
@@ -86,6 +86,20 @@
 - **`kb://` 引文协议。** 知识库段落使用 `kb://<doc-id>/<chunk-id>` 形式的合成 URL，便于来源面板与正文 hover 区分私有命中与网页来源。
 
 举个端到端的例子：把 DeepSeek-v4 论文 PDF 入库，输入 *"research the architectural innovations of DeepSeek-v4"*，工作者会先调用 `knowledge_base` 拿到 5 段高相关度内容，再发起 `web_search` 找最新基准评测——最终的综合报告同时引用你本地的私有 PDF 与近期的外部博客。
+
+---
+
+## 可靠性与韧性
+
+面对不稳定的网络、缓慢的推理模型与首次运行的冷启动，整套流程都能扛住而不丢任务：
+
+- **单个工作者不会拖垮整次研究。** 工作者失败——触达工具调用上限、重试耗尽后连接断开、预算用尽——会被隔离：该工作者带着已收集到的内容收尾、发出一条警告，其余工作者照常进入综合阶段。只有用户显式取消才会整体终止。
+- **每家厂商都有瞬时网络重试。** 推理模型（deepseek-reasoner、Kimi thinking）在首个 token 之前会空转，中间链路会掐断空闲连接（"the network connection was lost"）。每个流式客户端都会重试瞬时断连——但**仅在服务端开始返回之前**，因此已经流出的内容绝不会重复。流式传输以「空闲间隔」而非「整次请求硬上限」来计时，所以长篇综合不会在中途被截断。
+- **自愈 sidecar。** 在上面的启动合并与崩溃看门狗之外：冷启动的 pyseekdb 初始化拥有更宽裕的健康检查窗口；半成品的虚拟环境会被清除并重建（含 `ensurepip` 修复与安装后校验）；解释器探测带超时，避免某个卡死的 Python 拖住启动。知识库工具还会对冷启动的 `5xx` 响应重试，并把「仍在启动中」的 sidecar 视为「预热中」而非「离线」。
+- **稳健的网页抓取。** 网页 / PDF / Reddit / Wikipedia / arXiv 抓取都会发送真实的浏览器 User-Agent（不再被 403/429 拦截），对瞬时失败按退避重试（遵循 `Retry-After`），并对非 UTF-8 页面做兜底解码（UTF-8 → Windows-1252 → ISO-8859-1）。单个坏链接会被优雅跳过而非令整次研究失败；抓取失败会把占用的来源额度退还，而不是白白消耗预算。
+- **校准过的相关度评分。** 知识库相似度被归一化到稳定的 `(0, 1]` 区间（越高越相关），无论底层使用何种距离度量，检视器里带颜色的评分徽章与文本块排序都真正有意义。
+
+**有引导的首次运行。** 如果所选工作者提供方还没有配置 API Key，主页会内联显示一条「添加 Key」提示并可直接打开设置——而不是让一次好奇的点击触发一次注定深处失败的研究。本地提供方（Ollama、LM Studio、Apple Foundation Models）完全无需 Key；研究进行时还有一个实时计时器，让真正耗时数分钟的 Thorough 运行可以与「卡死」明确区分开来。
 
 ---
 

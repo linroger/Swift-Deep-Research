@@ -78,7 +78,7 @@ What this buys you over a one-shot RAG pipeline:
 
 Most research questions have *some* answer in documents you already own. Swift Deep Research integrates **SeekDB** (via `pyseekdb`) as a first-class tool the agent reaches for *before* the web:
 
-- **Embedded vector store.** No external server. A small FastAPI **sidecar** ships with the app and auto-launches at startup (`SidecarSupervisor` watches `/health` and PATH-augments for pyenv/Homebrew Python). Quit the app, the sidecar quits with it.
+- **Embedded vector store.** No external server. A small FastAPI **sidecar** ships with the app and auto-launches at startup (`SidecarSupervisor` watches `/health` and PATH-augments for pyenv/Homebrew Python). Concurrent startup calls coalesce onto a single launch, and a **parent-death watchdog** makes the sidecar self-terminate if the app quits, force-quits, *or* crashes — so a stale process never holds port 9100 and blocks the next launch.
 - **Zero-setup dependencies.** If the Python packages aren't installed, the supervisor builds a private virtualenv under `~/Library/Application Support/SwiftDeepResearch/sidecar-venv` and `pip install`s `pyseekdb fastapi uvicorn pydantic` automatically, then relaunches from it — the knowledge base just works on first run, no terminal required. Settings → Knowledge has Start/repair and Reinstall buttons for recovery.
 - **Drop-in ingestion.** Drag a PDF onto the Knowledge tab; the sidecar chunks it (paragraph/sentence-aware), embeds each chunk, and persists locally.
 - **Semantic retrieval as a tool.** Workers see a `knowledge_base(query, k)` tool in their tool catalogue. The system prompt instructs them to call it *first* whenever private documents could be relevant, then corroborate with the web. Results stream into the same `sourceDiscovered` / `sourceFetched` event channel as web hits, so the citation extractor and inspector treat them uniformly. If the sidecar is offline mid-run, the tool asks the supervisor to recover it and retries once.
@@ -86,6 +86,20 @@ Most research questions have *some* answer in documents you already own. Swift D
 - **`kb://` citation scheme.** Knowledge-base passages get synthetic URLs of the form `kb://<doc-id>/<chunk-id>` so the source panel can distinguish them from web hits and link back to the document.
 
 End-to-end this means: ingest the DeepSeek-v4 paper into the KB, ask *"research the architectural innovations of DeepSeek-v4"*, and the worker fires `knowledge_base` first, gets five high-relevance passages, then runs `web_search` to find external benchmarks — producing a synthesis that cites both your private PDF *and* recent blog posts in the same report.
+
+---
+
+## Reliability & resilience
+
+Built to survive flaky networks, slow reasoning models, and cold first-run setup without dropping the run:
+
+- **One worker can't sink the run.** A worker failure — hitting its tool-call cap, an exhausted-retry connection drop, a budget bust — is isolated: that worker ends with whatever it gathered, emits a warning, and the surviving workers still reach synthesis. Only an explicit cancel tears everything down.
+- **Transient-network retry on every provider.** Reasoning models (deepseek-reasoner, Kimi thinking) idle before the first token, and intermediaries drop the idle connection ("the network connection was lost"). Every streaming client retries transient drops — but only *before* the server starts responding, so streamed output is never duplicated. Streaming is bounded by an inactivity window rather than a hard whole-request ceiling, so a long synthesis is never cut off mid-answer.
+- **Self-healing sidecar.** Beyond launch coalescing and the crash watchdog above: cold pyseekdb initialization gets a generous health window, a partially-built virtualenv is torn down and rebuilt (with `ensurepip` repair and post-install verification), and interpreter probing is time-bounded so a wedged Python can't hang startup. The knowledge-base tool also retries cold-start `5xx` responses and treats a still-launching sidecar as "warming up," not "offline."
+- **Robust web fetching.** Page / PDF / Reddit / Wikipedia / arXiv fetches send a real browser User-Agent (no more 403/429 blocks), retry transient failures with backoff (honoring `Retry-After`), and decode non-UTF-8 pages (UTF-8 → Windows-1252 → ISO-8859-1). A single bad URL degrades gracefully instead of failing the run, and a failed fetch hands its per-worker source slot back instead of burning the budget.
+- **Calibrated relevance scores.** Knowledge-base similarity is normalized to a stable `(0, 1]` range (higher = closer) regardless of the backend's distance metric, so the inspector's colour-coded score badges and chunk ranking are actually meaningful.
+
+**Guided first run.** If the selected worker provider has no API key, the home screen shows an inline "add a key" banner that opens Settings — instead of letting a curiosity-click fire a run that only fails deep in the engine. Local providers (Ollama, LM Studio, Apple Foundation Models) need no key at all, and a live elapsed-time clock during runs makes a legitimate multi-minute Thorough run distinguishable from a hang.
 
 ---
 
