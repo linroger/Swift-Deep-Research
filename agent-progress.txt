@@ -445,3 +445,14 @@ Benefits all SSE providers (OpenAI/Anthropic/Gemini/OpenAI-compat).
 Build: ** BUILD SUCCEEDED **, 0 errors. Docs (README.md + README_zh.md) updated
 to parity (Qwen row, 12 providers, brand icons, key-testing/model-discovery,
 tool-call dual-format note).
+
+  FOLLOW-UP (same session): icons still looked too big after the 70%/40px pass.
+  Root cause refined: the macOS Picker .menu style renders each asset at its
+  NATURAL point size and ignores .resizable().frame() — so 40px@1x = 40pt was
+  huge regardless of coverage. Fix: regenerated all provider imagesets at 16pt
+  natural (16/32px), ~84% ink coverage. resizable().frame() still governs the
+  composer/inline uses (downscale from 32px@2x stays crisp).
+  Also: the blanket `Assets.xcassets` ignore had hidden the real app icon
+  (AppIcon.appiconset, magnifier+sparkle) — now tracked and shipped.
+  Pushed as c8f4ffa (amended). The mach_msg2_trap backtrace the user saw is the
+  main thread's normal idle run-loop wait (mach_msg), not a crash/deadlock.
