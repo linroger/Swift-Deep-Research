@@ -456,3 +456,27 @@ tool-call dual-format note).
   (AppIcon.appiconset, magnifier+sparkle) — now tracked and shipped.
   Pushed as c8f4ffa (amended). The mach_msg2_trap backtrace the user saw is the
   main thread's normal idle run-loop wait (mach_msg), not a crash/deadlock.
+
+  CORRECTION (same session): the Qwen tool-call failure was NOT object-form
+  arguments. That earlier diagnosis was a GUESS and was wrong — the fix shipped
+  in c8f4ffa did not resolve it (user still saw every tool call fail).
+  GROUND TRUTH: captured the real Qwen compatible-mode SSE via curl. Arguments
+  ARE streamed as normal OpenAI string fragments, BUT every CONTINUATION delta
+  carries `id:""` (empty string) instead of omitting the id field:
+    d1: id="call_039..", function.arguments="{\"query\": \"Deep"
+    d2: id="",           function.arguments="Seek V3 latest news\","
+    d3: id="",           function.arguments=" \"limit\": 5}"
+  parseEvent resolved the id as `entry["id"] as? String ?? buffered` — and ""
+  satisfies `as? String`, so continuation fragments were yielded under id "".
+  The engine accumulates argumentsJSON keyed by id (currentIndex[id]); there is
+  no entry for "", so all fragments after the first were DROPPED. Assembled args
+  = "{\"query\": \"Deep" → JSONDecoder dataCorrupted → "invalid arguments" /
+  "couldn't be read", for EVERY multi-fragment tool call (all tools).
+  FIX: nonEmpty() helper treats a present-but-empty id/name as absent, so the
+  buffered call id is reused across fragments and the engine accumulates them on
+  one call. Verified by replaying the REAL captured fragments through a faithful
+  simulation: OLD → "{\"query\": \"Deep" (decode fails, = user's error); NEW →
+  "{\"query\": \"DeepSeek V3 latest news\", \"limit\": 5}" (decodes). The
+  object-form coercion from c8f4ffa is kept purely as defensive handling for
+  other gateways; it was never the Qwen issue. DeepSeek/Kimi were unaffected
+  because they omit id on continuations (nil → buffered) rather than sending "".

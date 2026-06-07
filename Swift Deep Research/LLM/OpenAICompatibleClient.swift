@@ -368,6 +368,14 @@ public struct OpenAICompatibleClient: LLMClient {
 
     // MARK: - Event parsing
 
+    /// A non-empty `String` from a JSON value, or `nil`. Used so that a present-
+    /// but-empty field (e.g. Qwen's `id:""` on continuation deltas) is treated
+    /// the same as an absent field rather than as a distinct valid value.
+    private static func nonEmpty(_ value: Any?) -> String? {
+        guard let s = value as? String, !s.isEmpty else { return nil }
+        return s
+    }
+
     /// Normalize a streamed `function.arguments` value into a string fragment to
     /// append to the tool-call buffer.
     ///
@@ -422,20 +430,27 @@ public struct OpenAICompatibleClient: LLMClient {
                 // to 0 so the call isn't silently dropped.
                 let index = entry["index"] as? Int ?? 0
                 let fn = entry["function"] as? [String: Any] ?? [:]
-                let id = entry["id"] as? String ?? toolBuffer[index]?.id ?? "tc-\(index)"
-                let name = (fn["name"] as? String) ?? toolBuffer[index]?.name ?? ""
+                // Resolve the call id with EMPTY treated as absent. Qwen /
+                // DashScope compatible-mode sends `id:""` (empty string) on every
+                // continuation delta rather than omitting the field. A plain
+                // `as? String` accepts "" as a valid id, so the argument fragments
+                // after the first were yielded under id "" — which the engine's
+                // id-keyed accumulator (currentIndex[id]) has no entry for, so it
+                // dropped them. Result: only the first fragment survived → the
+                // assembled arguments JSON was a truncated/empty string and every
+                // tool call failed with "invalid arguments" / "couldn't be read".
+                // Falling back to the buffered id keeps all fragments on one call.
+                let id = nonEmpty(entry["id"]) ?? toolBuffer[index]?.id ?? "tc-\(index)"
+                let name = nonEmpty(fn["name"]) ?? toolBuffer[index]?.name ?? ""
                 if toolBuffer[index] == nil {
                     toolBuffer[index] = PartialToolCall(id: id, name: name, argumentsJSON: "")
                     producedOutput = true
                     continuation.yield(.toolCallStart(id: id, name: name))
                 }
-                // Coerce the `arguments` payload to a JSON string. The OpenAI spec
-                // streams it as incremental string fragments, but some compatible
-                // gateways (Alibaba DashScope / Qwen compatible-mode) deliver the
-                // *complete arguments object* in a single chunk instead. Without
-                // this, the object-form cast `as? String` failed silently, the tool
-                // received an empty argument string, and every call died with
-                // "arguments invalid / couldn't be read".
+                // Coerce the `arguments` payload to a string fragment. Qwen and
+                // the other OpenAI-compatible gateways stream it as incremental
+                // string fragments (the spec form); this also defensively handles
+                // gateways that send a complete arguments *object* in one chunk.
                 if let args = Self.argumentsFragment(from: fn["arguments"],
                                                      alreadyBuffered: toolBuffer[index]?.argumentsJSON ?? "") {
                     toolBuffer[index]?.argumentsJSON += args
