@@ -20,6 +20,22 @@
 
 ---
 
+## 演示视频
+
+一次完整的多轮研究运行——规划器分解任务、并行工作者发起工具调用、实时活动监控，以及最终带引文的综合报告。
+
+<video src="https://github.com/linroger/Swift-Deep-Research/raw/main/Screenshots/Swift%20Deep%20Research%202026-06-08%20at%2002.05.10%201.mp4" controls muted width="100%"></video>
+
+> ▶ 如果播放器未内嵌加载，可点此观看：[完整研究运行](https://github.com/linroger/Swift-Deep-Research/raw/main/Screenshots/Swift%20Deep%20Research%202026-06-08%20at%2002.05.10%201.mp4)
+
+同一流程的 **5 倍速**精简演示：
+
+<video src="https://github.com/linroger/Swift-Deep-Research/raw/main/Screenshots/SwiftDeepResearch%202026-06-08at01.42.541_5x.mp4" controls muted width="100%"></video>
+
+> ▶ 直链：[完整演示（5 倍速）](https://github.com/linroger/Swift-Deep-Research/raw/main/Screenshots/SwiftDeepResearch%202026-06-08at01.42.541_5x.mp4)
+
+---
+
 ## 截图
 
 | | |

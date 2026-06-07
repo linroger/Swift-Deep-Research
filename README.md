@@ -20,6 +20,22 @@ Built top-to-bottom in Swift 6.2 / SwiftUI for macOS 26 Tahoe with strict concur
 
 ---
 
+## Demo
+
+A full multi-round research run — planner decomposition, parallel workers issuing tool calls, the activity inspector, and the final cited synthesis.
+
+<video src="https://github.com/linroger/Swift-Deep-Research/raw/main/Screenshots/Swift%20Deep%20Research%202026-06-08%20at%2002.05.10%201.mp4" controls muted width="100%"></video>
+
+> ▶ If the player doesn't load inline, watch it here: [End-to-end research run](https://github.com/linroger/Swift-Deep-Research/raw/main/Screenshots/Swift%20Deep%20Research%202026-06-08%20at%2002.05.10%201.mp4)
+
+A condensed walkthrough of the same flow at **5× speed**:
+
+<video src="https://github.com/linroger/Swift-Deep-Research/raw/main/Screenshots/SwiftDeepResearch%202026-06-08at01.42.541_5x.mp4" controls muted width="100%"></video>
+
+> ▶ Direct link: [Full walkthrough (5× speed)](https://github.com/linroger/Swift-Deep-Research/raw/main/Screenshots/SwiftDeepResearch%202026-06-08at01.42.541_5x.mp4)
+
+---
+
 ## Screenshots
 
 | | |
