@@ -368,6 +368,32 @@ public struct OpenAICompatibleClient: LLMClient {
 
     // MARK: - Event parsing
 
+    /// Normalize a streamed `function.arguments` value into a string fragment to
+    /// append to the tool-call buffer.
+    ///
+    /// - A `String` is an incremental fragment (OpenAI spec) → returned as-is.
+    /// - A JSON object/array is the *complete* arguments (DashScope / Qwen
+    ///   compatible-mode, some Azure deployments) → serialized to a JSON string,
+    ///   but only when nothing has been buffered yet for this call. Object
+    ///   payloads are whole, not incremental, so emitting once avoids
+    ///   concatenating duplicates into invalid JSON if the gateway re-sends it.
+    /// - Anything else (nil / NSNull / empty) yields `nil` (skip).
+    private static func argumentsFragment(from value: Any?, alreadyBuffered: String) -> String? {
+        if let s = value as? String {
+            return s.isEmpty ? nil : s
+        }
+        // Object/array form: only accept it as the first payload for this call.
+        guard alreadyBuffered.isEmpty else { return nil }
+        if let value, !(value is NSNull),
+           JSONSerialization.isValidJSONObject(value),
+           let data = try? JSONSerialization.data(withJSONObject: value),
+           let json = String(data: data, encoding: .utf8),
+           json != "{}", json != "[]" {
+            return json
+        }
+        return nil
+    }
+
     private static func parseEvent(data: String,
                                    toolBuffer: inout [Int: PartialToolCall],
                                    sawFinish: inout Bool,
@@ -391,7 +417,10 @@ public struct OpenAICompatibleClient: LLMClient {
         // the final synthesis. The model's `content` carries the real answer.
         if let toolCalls = delta["tool_calls"] as? [[String: Any]] {
             for entry in toolCalls {
-                guard let index = entry["index"] as? Int else { continue }
+                // Most servers always include `index` when streaming tool calls.
+                // Some (notably non-streaming-style single calls) omit it; default
+                // to 0 so the call isn't silently dropped.
+                let index = entry["index"] as? Int ?? 0
                 let fn = entry["function"] as? [String: Any] ?? [:]
                 let id = entry["id"] as? String ?? toolBuffer[index]?.id ?? "tc-\(index)"
                 let name = (fn["name"] as? String) ?? toolBuffer[index]?.name ?? ""
@@ -400,7 +429,15 @@ public struct OpenAICompatibleClient: LLMClient {
                     producedOutput = true
                     continuation.yield(.toolCallStart(id: id, name: name))
                 }
-                if let args = fn["arguments"] as? String, !args.isEmpty {
+                // Coerce the `arguments` payload to a JSON string. The OpenAI spec
+                // streams it as incremental string fragments, but some compatible
+                // gateways (Alibaba DashScope / Qwen compatible-mode) deliver the
+                // *complete arguments object* in a single chunk instead. Without
+                // this, the object-form cast `as? String` failed silently, the tool
+                // received an empty argument string, and every call died with
+                // "arguments invalid / couldn't be read".
+                if let args = Self.argumentsFragment(from: fn["arguments"],
+                                                     alreadyBuffered: toolBuffer[index]?.argumentsJSON ?? "") {
                     toolBuffer[index]?.argumentsJSON += args
                     continuation.yield(.toolCallArgumentsDelta(id: id, delta: args))
                 }

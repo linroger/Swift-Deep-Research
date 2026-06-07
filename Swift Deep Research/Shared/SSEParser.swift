@@ -24,7 +24,11 @@ public struct SSEParser: Sendable {
                 do {
                     for try await byte in bytes {
                         if byte == 0x0A { // newline
-                            let line = String(decoding: lineBuffer, as: UTF8.self)
+                            var line = String(decoding: lineBuffer, as: UTF8.self)
+                            // Tolerate CRLF endings: strip the trailing carriage
+                            // return so `data: [DONE]\r` still matches "[DONE]" and
+                            // JSON payloads carry no stray control character.
+                            if line.hasSuffix("\r") { line.removeLast() }
                             lineBuffer.removeAll(keepingCapacity: true)
                             if line.isEmpty {
                                 if hasData {

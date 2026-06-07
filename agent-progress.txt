@@ -370,3 +370,78 @@ Other polish:
 
 Backend polish (same session): Exa type "auto" (works on all key tiers);
 ensurepip before venv pip install (repairs a broken venv pip).
+
+================================================================================
+SESSION 2026-06-08 — Qwen provider, brand icons, key-testing/model discovery,
+                      icon-size normalization, and a critical Qwen tool-call fix
+branch: main
+================================================================================
+
+Feature: Qwen (Alibaba Cloud Model Studio / MaaS) provider
+- ProviderRegistry: added .qwen (displayName "Qwen (Alibaba Cloud)", defaultModel
+  qwen-max, availableModels qwen-max/plus/turbo + qwen3 family, requiresAPIKey
+  .qwen, usesFreeformModel, supportsModelDiscovery). Routes through the shared
+  OpenAICompatibleClient.
+- Endpoint: defaultQwenBaseURL = https://ws-tadf5kfijdfuj988.ap-southeast-1.maas
+  .aliyuncs.com/compatible-mode/v1 . VERIFIED via curl probing that the MaaS
+  OpenAI-compatible routes live under /compatible-mode/v1 (a bare /v1 404s;
+  /compatible-mode/v1/models and /chat/completions return 401 = present, auth-
+  gated). Overridable per-config via EngineConfiguration.qwenBaseURL (tolerant
+  decoder default) and the new "Qwen endpoint" settings card.
+- KeychainStore: added .qwen account ("qwen.api"), humanLabel, helpURL.
+
+Feature: brand provider icons (Assets.xcassets)
+- 10 provider-*.imageset images generated from /Users/rogerlin/Downloads/ai-icons
+  SVGs via rsvg-convert (PNG @1x/@2x), wrapped by ProviderIcon (SwiftUI) with an
+  SF Symbol fallback for .custom. Color logos render as-is; monochrome ones
+  (openai/lmstudio/ollama/apple) are template assets.
+- .gitignore FIX: the catalogue was matched by a blanket `Assets.xcassets` ignore
+  → the shipped brand icons were never tracked. Replaced with scoped ignores for
+  only the hook-generated .claude/ and logs/ dirs that the agent runtime writes
+  into the cwd; the imagesets are now tracked.
+
+Fix: provider icons rendered too big / inconsistently sized (user report + shots)
+- Root cause: each brand glyph fills a different fraction of its 24x24 viewBox
+  (OpenAI/Gemini/Anthropic 100%, Qwen 92%, DeepSeek only 74% tall). scaledToFit
+  fits the bounding box, so full-bleed glyphs dominated and short ones shrank;
+  macOS's Picker scaling amplified it.
+- Fix: regenerated every PNG normalized to a uniform 70% ink coverage — trim to
+  content bounds, resize the ink to 70% of the tile, centre on a transparent
+  canvas. All icons now read at the same optical weight; the oversized ones
+  shrank. Verified @2x ink max-dim = 56px (=70% of 80) across all providers.
+
+Feature: test API keys + pull latest models from each provider
+- New ModelDiscovery service: fetchModels(provider:config:) dispatches per
+  provider — Anthropic GET /v1/models, OpenAI /v1/models, Gemini
+  /v1beta/models?key= (filtered to generateContent), OpenAI-compat /v1/models,
+  Ollama /api/tags. Success = key valid AND model list refreshed.
+- SettingsSheet: "Test key & fetch" row per role in Providers; "Test" button per
+  key in API keys; brand icons in the provider Picker and Composer summary.
+
+CRITICAL FIX: every Qwen tool call failed ("knowledge_base: invalid arguments",
+"web_search arguments invalid: The data couldn't be read because it isn't in the
+correct format"). See screenshots — 0 successful tool calls on Qwen.
+- Root cause: OpenAICompatibleClient.parseEvent only accepted streamed
+  function.arguments when it was a String (OpenAI spec: incremental string
+  fragments). Alibaba DashScope / Qwen compatible-mode delivers the COMPLETE
+  arguments as a JSON *object* in one chunk. The `as? String` cast failed
+  silently → no argument delta yielded → the engine assembled an empty string →
+  JSONDecoder dataCorrupted ("isn't in the correct format"). Name still came
+  through (first delta), so the UI showed the tool firing with empty args.
+- Fix: new argumentsFragment(from:alreadyBuffered:) coerces the arguments value —
+  String → fragment as-is; JSON object/array → serialize to a JSON string, but
+  only as the FIRST payload for that call (object payloads are complete, so this
+  avoids double-concatenation if a gateway re-sends). Also default a missing
+  tool-call `index` to 0 so single non-streaming-style calls aren't dropped.
+- Verified with a standalone Swift harness (/tmp/argtest.swift): string-fragments
+  ✅, Qwen object-form ✅ (decodes to valid query), object-resent-twice ✅ (no
+  corruption), and the OLD path reproduced the EXACT screenshot error. Both
+  web_search and knowledge_base (same empty-args victim) now receive valid args.
+
+Robustness: SSEParser now strips a trailing \r so CRLF gateways still match
+"[DONE]" (terminal detection) and JSON payloads carry no stray control char.
+Benefits all SSE providers (OpenAI/Anthropic/Gemini/OpenAI-compat).
+
+Build: ** BUILD SUCCEEDED **, 0 errors. Docs (README.md + README_zh.md) updated
+to parity (Qwen row, 12 providers, brand icons, key-testing/model-discovery,
+tool-call dual-format note).

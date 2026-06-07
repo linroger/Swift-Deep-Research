@@ -5,7 +5,7 @@ import Foundation
 public struct ProviderRegistry: Sendable {
     public enum ProviderID: String, Sendable, CaseIterable, Codable {
         case anthropic, openai, gemini
-        case deepseek, minimax, kimi
+        case deepseek, minimax, kimi, qwen
         case lmstudio, custom
         case ollama, mlx, foundationmodels
 
@@ -17,6 +17,7 @@ public struct ProviderRegistry: Sendable {
             case .deepseek: "DeepSeek"
             case .minimax: "MiniMax"
             case .kimi: "Moonshot Kimi"
+            case .qwen: "Qwen (Alibaba Cloud)"
             case .lmstudio: "LM Studio (local)"
             case .custom: "Custom endpoint"
             case .ollama: "Ollama (local)"
@@ -33,6 +34,7 @@ public struct ProviderRegistry: Sendable {
             case .deepseek: "deepseek-chat"
             case .minimax: "MiniMax-M2"
             case .kimi: "kimi-k2.6"
+            case .qwen: "qwen-max"
             case .lmstudio: "local-model"
             case .custom: "gpt-4o-mini"
             case .ollama: "qwen3:8b"
@@ -64,6 +66,14 @@ public struct ProviderRegistry: Sendable {
                          "moonshot-v1-128k",
                          "moonshot-v1-32k",
                          "moonshot-v1-8k"]
+            case .qwen: ["qwen-max",
+                         "qwen-plus",
+                         "qwen-turbo",
+                         "qwen3-max",
+                         "qwen3-235b-a22b",
+                         "qwq-32b",
+                         "qwen2.5-72b-instruct",
+                         "qwen2.5-32b-instruct"]
             case .lmstudio: []      // discovered live from /v1/models
             case .custom: []        // user-defined
             case .ollama: ["qwen3:8b", "qwen2.5:7b", "deepseek-r1:14b", "mistral-small:24b"]
@@ -82,6 +92,7 @@ public struct ProviderRegistry: Sendable {
             case .deepseek: .deepseek
             case .minimax: .minimax
             case .kimi: .moonshot
+            case .qwen: .qwen
             case .custom: .custom
             default: nil      // lmstudio / ollama / mlx / foundationmodels: no key
             }
@@ -91,16 +102,22 @@ public struct ProviderRegistry: Sendable {
         /// discovered live) rather than chosen from a fixed list.
         public var usesFreeformModel: Bool {
             switch self {
-            case .deepseek, .minimax, .kimi, .lmstudio, .custom, .ollama: true
+            case .deepseek, .minimax, .kimi, .qwen, .lmstudio, .custom, .ollama: true
             default: false
             }
         }
 
-        /// True for OpenAI-compatible endpoints that expose `GET /v1/models`.
+        /// True for endpoints that expose a live model list we can fetch:
+        /// OpenAI-standard `GET /v1/models`, Anthropic/Gemini model APIs, or
+        /// Ollama's `/api/tags`. Drives the "Test & fetch models" affordance.
         public var supportsModelDiscovery: Bool {
             switch self {
-            case .lmstudio, .custom: true
-            default: false
+            case .anthropic, .openai, .gemini,
+                 .deepseek, .minimax, .kimi, .qwen,
+                 .lmstudio, .custom, .ollama:
+                return true
+            case .mlx, .foundationmodels:
+                return false   // on-device, no remote catalogue
             }
         }
     }
@@ -108,11 +125,20 @@ public struct ProviderRegistry: Sendable {
     public init() {}
 
     /// Build a client for the given provider/model, reading the relevant key from Keychain.
+    /// Default Qwen / Alibaba Cloud Model Studio (MaaS) OpenAI-compatible host.
+    /// The MaaS gateway exposes OpenAI-compatible routes under `/compatible-mode/v1`
+    /// (verified: `/compatible-mode/v1/models` and `/compatible-mode/v1/chat/completions`
+    /// authenticate, whereas a bare `/v1/...` 404s). Overridable per-config for a
+    /// user's own dedicated deployment.
+    public static let defaultQwenBaseURL =
+        URL(string: "https://ws-tadf5kfijdfuj988.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1")!
+
     public func makeClient(provider: ProviderID,
                           model: String? = nil,
                           ollamaHost: URL = URL(string: "http://localhost:11434")!,
                           lmStudioHost: URL = URL(string: "http://localhost:1234")!,
-                          customBaseURL: URL? = nil) async throws -> any LLMClient {
+                          customBaseURL: URL? = nil,
+                          qwenBaseURL: URL? = nil) async throws -> any LLMClient {
         let chosenModel = model ?? provider.defaultModel
         switch provider {
         case .anthropic:
@@ -139,6 +165,13 @@ public struct ProviderRegistry: Sendable {
                 provider: provider, model: chosenModel,
                 baseURL: URL(string: "https://api.moonshot.ai")!,
                 key: .moonshot, contextWindow: 200_000)
+        case .qwen:
+            // Alibaba Cloud Model Studio (MaaS) — OpenAI-compatible. The MaaS
+            // dedicated endpoint exposes /v1/chat/completions and /v1/models.
+            return try await makeOpenAICompatible(
+                provider: provider, model: chosenModel,
+                baseURL: qwenBaseURL ?? Self.defaultQwenBaseURL,
+                key: .qwen, contextWindow: 256_000)
         case .lmstudio:
             // Local server — no key required.
             return OpenAICompatibleClient(

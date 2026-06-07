@@ -272,12 +272,14 @@ private struct ProvidersTab: View {
     @Environment(AppEnvironment.self) private var env
     @State private var ollamaModels: [String] = []
     @State private var ollamaState: OllamaFetchState = .idle
-    /// Live `/v1/models` discovery results for LM Studio / custom endpoints.
+    /// Live model-discovery results per provider (Anthropic/OpenAI/Gemini model
+    /// APIs, OpenAI-compatible `/v1/models`, LM Studio / custom endpoints).
     @State private var discovered: [ProviderRegistry.ProviderID: [String]] = [:]
+    /// Per-provider discovery / key-test status.
+    @State private var discoveryStates: [ProviderRegistry.ProviderID: OllamaFetchState] = [:]
     @State private var lmStudioHostString: String = ""
     @State private var customHostString: String = ""
-    @State private var lmStudioState: OllamaFetchState = .idle
-    @State private var customState: OllamaFetchState = .idle
+    @State private var qwenHostString: String = ""
 
     enum OllamaFetchState: Equatable { case idle, loading, ok, error(String) }
 
@@ -305,6 +307,7 @@ private struct ProvidersTab: View {
             if usesOllama { ollamaCard }
             if uses(.lmstudio) { lmStudioCard }
             if uses(.custom) { customCard }
+            if uses(.qwen) { qwenCard }
         }
         .task(id: env.configuration.ollamaHost) {
             if usesOllama { await fetchOllamaModels() }
@@ -312,6 +315,7 @@ private struct ProvidersTab: View {
         .onAppear {
             lmStudioHostString = env.configuration.lmStudioHost.absoluteString
             customHostString = env.configuration.customEndpointBaseURL?.absoluteString ?? ""
+            qwenHostString = env.configuration.qwenBaseURL.absoluteString
         }
         .onChange(of: env.configuration.orchestratorProvider) { _, _ in
             Task { if usesOllama { await fetchOllamaModels() } }
@@ -332,7 +336,11 @@ private struct ProvidersTab: View {
             SettingsRow("Provider", icon: "cpu") {
                 Picker("", selection: provider) {
                     ForEach(ProviderRegistry.ProviderID.allCases, id: \.self) { p in
-                        Text(p.displayName).tag(p)
+                        HStack(spacing: 6) {
+                            ProviderIcon(provider: p, size: 14)
+                            Text(p.displayName)
+                        }
+                        .tag(p)
                     }
                 }
                 .labelsHidden()
@@ -343,6 +351,34 @@ private struct ProvidersTab: View {
             SettingsRow("Model", icon: "cube") {
                 modelField(provider: provider.wrappedValue, value: model)
             }
+            // Cloud, key-based providers get an inline "test key + fetch models"
+            // affordance. Local/custom providers (ollama, lmstudio, custom) use
+            // their dedicated host cards below.
+            if cloudDiscoverable(provider.wrappedValue) {
+                SettingsRow("Models", icon: "arrow.triangle.2.circlepath") {
+                    HStack(spacing: 8) {
+                        Button("Test key & fetch") {
+                            Task { await discoverModels(for: provider.wrappedValue) }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        discoveryStatusLabel(discoveryStates[provider.wrappedValue] ?? .idle,
+                                            count: discovered[provider.wrappedValue]?.count ?? 0)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Cloud providers that authenticate with a key and expose a model list we
+    /// fetch inline (everything except the local/custom-host ones, which have
+    /// their own cards).
+    private func cloudDiscoverable(_ provider: ProviderRegistry.ProviderID) -> Bool {
+        switch provider {
+        case .anthropic, .openai, .gemini, .deepseek, .minimax, .kimi, .qwen:
+            return true
+        default:
+            return false
         }
     }
 
@@ -426,27 +462,39 @@ private struct ProvidersTab: View {
         return all
     }
 
+    /// Test the provider's API key and pull its live model list. Works for every
+    /// discoverable provider via `ModelDiscovery`; a success proves the key
+    /// authenticates and refreshes the model suggestions.
     @MainActor
     private func discoverModels(for provider: ProviderRegistry.ProviderID) async {
-        let base: URL?
-        switch provider {
-        case .lmstudio: base = env.configuration.lmStudioHost
-        case .custom: base = env.configuration.customEndpointBaseURL
-        default: base = nil
-        }
-        guard let base else { return }
-        if provider == .lmstudio { lmStudioState = .loading } else { customState = .loading }
-        let key = provider == .custom ? (await KeychainStore.shared.get(.custom) ?? "") : ""
+        discoveryStates[provider] = .loading
         do {
-            let models = try await OpenAICompatibleClient.listModels(baseURL: base, apiKey: key)
+            let models = try await ModelDiscovery.fetchModels(provider: provider,
+                                                              config: env.configuration)
             discovered[provider] = models
-            if provider == .lmstudio { lmStudioState = .ok } else { customState = .ok }
+            discoveryStates[provider] = .ok
+            commitDiscoveredDefault(provider: provider, models: models)
         } catch {
-            if provider == .lmstudio {
-                lmStudioState = .error(error.localizedDescription)
-            } else {
-                customState = .error(error.localizedDescription)
-            }
+            discoveryStates[provider] = .error(error.localizedDescription)
+        }
+    }
+
+    /// If a role uses `provider` but has no model selected yet, adopt the first
+    /// discovered model so the engine runs what the UI just listed.
+    @MainActor
+    private func commitDiscoveredDefault(provider: ProviderRegistry.ProviderID, models: [String]) {
+        guard let first = models.first else { return }
+        if env.configuration.orchestratorProvider == provider,
+           (env.configuration.orchestratorModel ?? "").isEmpty {
+            env.configuration.orchestratorModel = first
+        }
+        if env.configuration.workerProvider == provider,
+           (env.configuration.workerModel ?? "").isEmpty {
+            env.configuration.workerModel = first
+        }
+        if env.configuration.synthesisProvider == provider,
+           (env.configuration.synthesisModel ?? "").isEmpty {
+            env.configuration.synthesisModel = first
         }
     }
 
@@ -541,7 +589,15 @@ private struct ProvidersTab: View {
     }
 
     private func liveModels(for provider: ProviderRegistry.ProviderID) -> [String] {
-        provider == .ollama ? ollamaModels : provider.availableModels
+        if provider == .ollama { return ollamaModels }
+        // Prefer the freshly-fetched catalogue when present; otherwise fall back
+        // to the curated static list. Merge so a user's current pick never
+        // vanishes from the picker.
+        var base = provider.availableModels
+        if let live = discovered[provider], !live.isEmpty {
+            base = live + base.filter { !live.contains($0) }
+        }
+        return base
     }
 
     // MARK: - LM Studio
@@ -556,7 +612,7 @@ private struct ProvidersTab: View {
                     .onSubmit { commitLMStudioHost() }
             }
             SettingsRow("Status", icon: "wave.3.right") {
-                discoveryStatusLabel(lmStudioState, count: discovered[.lmstudio]?.count ?? 0)
+                discoveryStatusLabel(discoveryStates[.lmstudio] ?? .idle, count: discovered[.lmstudio]?.count ?? 0)
             }
             HStack {
                 Spacer()
@@ -584,7 +640,7 @@ private struct ProvidersTab: View {
                     .onSubmit { commitCustomHost() }
             }
             SettingsRow("Status", icon: "wave.3.right") {
-                discoveryStatusLabel(customState, count: discovered[.custom]?.count ?? 0)
+                discoveryStatusLabel(discoveryStates[.custom] ?? .idle, count: discovered[.custom]?.count ?? 0)
             }
             HStack {
                 Spacer()
@@ -616,7 +672,7 @@ private struct ProvidersTab: View {
                 .foregroundStyle(.green)
                 .labelStyle(.titleAndIcon)
         case .error(let msg):
-            Label("Unreachable", systemImage: "exclamationmark.triangle.fill")
+            Label("Failed", systemImage: "exclamationmark.triangle.fill")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.orange)
                 .help(msg)
@@ -638,13 +694,53 @@ private struct ProvidersTab: View {
             env.configuration.customEndpointBaseURL = url
         }
     }
+
+    // MARK: - Qwen (Alibaba Cloud Model Studio)
+
+    private var qwenCard: some View {
+        SettingsGroup("Qwen endpoint",
+                     footer: "Alibaba Cloud Model Studio (MaaS), OpenAI-compatible. Paste your dedicated host (…/v1 optional). Set the key under API keys → Qwen.") {
+            SettingsRow("Base URL", icon: "link") {
+                TextField("https://….maas.aliyuncs.com", text: $qwenHostString)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 320)
+                    .onSubmit { commitQwenHost() }
+            }
+            SettingsRow("Status", icon: "wave.3.right") {
+                discoveryStatusLabel(discoveryStates[.qwen] ?? .idle, count: discovered[.qwen]?.count ?? 0)
+            }
+            HStack {
+                Spacer()
+                Button("Apply") { commitQwenHost() }
+                    .buttonStyle(.bordered).controlSize(.small)
+                Button("Test & list models") {
+                    commitQwenHost()
+                    Task { await discoverModels(for: .qwen) }
+                }
+                .buttonStyle(.borderedProminent).controlSize(.small)
+            }
+            .padding(12)
+        }
+    }
+
+    private func commitQwenHost() {
+        let trimmed = qwenHostString.trimmingCharacters(in: .whitespaces)
+        if let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(),
+           scheme == "http" || scheme == "https", url.host != nil {
+            env.configuration.qwenBaseURL = url
+        }
+    }
 }
 
 // MARK: - API Keys
 
 private struct APIKeysTab: View {
+    @Environment(AppEnvironment.self) private var env
     @State private var keys: [KeyAccount: String] = [:]
     @State private var saved: KeyAccount?
+    @State private var testStates: [KeyAccount: TestState] = [:]
+
+    enum TestState: Equatable { case idle, testing, ok(Int), fail(String) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -658,16 +754,26 @@ private struct APIKeysTab: View {
                                 .textFieldStyle(.roundedBorder)
                                 .frame(maxWidth: 320)
                         }
-                        HStack {
+                        HStack(spacing: 10) {
                             Link(destination: account.helpURL) {
                                 Label("Get a key", systemImage: "arrow.up.right.square")
                                     .font(.caption)
                             }
+                            testResultLabel(for: account)
                             Spacer()
                             if saved == account {
                                 Label("Saved", systemImage: "checkmark.circle.fill")
                                     .foregroundStyle(.green)
                                     .font(.caption)
+                            }
+                            // Only LLM-provider keys can be validated against a
+                            // model endpoint; search keys (Tavily/Exa/Brave) have
+                            // no such check.
+                            if Self.provider(for: account) != nil {
+                                Button("Test") { test(account) }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    .disabled((keys[account] ?? "").isEmpty || testStates[account] == .testing)
                             }
                             Button("Save") {
                                 let value = keys[account] ?? ""
@@ -694,6 +800,63 @@ private struct APIKeysTab: View {
             for account in KeyAccount.allCases {
                 keys[account] = await KeychainStore.shared.get(account) ?? ""
             }
+        }
+    }
+
+    @ViewBuilder
+    private func testResultLabel(for account: KeyAccount) -> some View {
+        switch testStates[account] ?? .idle {
+        case .idle:
+            EmptyView()
+        case .testing:
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text("Testing…").font(.caption).foregroundStyle(.secondary)
+            }
+        case .ok(let n):
+            Label("Valid · \(n) models", systemImage: "checkmark.seal.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.green)
+                .labelStyle(.titleAndIcon)
+        case .fail(let msg):
+            Label("Invalid", systemImage: "xmark.octagon.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.red)
+                .labelStyle(.titleAndIcon)
+                .help(msg)
+        }
+    }
+
+    /// Validate the typed key: save it, then hit the provider's model endpoint.
+    private func test(_ account: KeyAccount) {
+        guard let provider = Self.provider(for: account) else { return }
+        let value = keys[account] ?? ""
+        testStates[account] = .testing
+        Task {
+            // Persist first so ModelDiscovery (which reads the Keychain) sees it.
+            await KeychainStore.shared.set(value, for: account)
+            do {
+                let models = try await ModelDiscovery.fetchModels(provider: provider,
+                                                                  config: env.configuration)
+                testStates[account] = .ok(models.count)
+            } catch {
+                testStates[account] = .fail(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Map a key account to the LLM provider it authenticates (nil for search keys).
+    static func provider(for account: KeyAccount) -> ProviderRegistry.ProviderID? {
+        switch account {
+        case .anthropic: .anthropic
+        case .openAI:    .openai
+        case .gemini:    .gemini
+        case .deepseek:  .deepseek
+        case .minimax:   .minimax
+        case .moonshot:  .kimi
+        case .qwen:      .qwen
+        case .custom:    .custom
+        case .tavily, .exa, .brave: nil
         }
     }
 }

@@ -142,9 +142,14 @@ struct Composer: View {
         let cfg = env.configuration
         let keyMissing = env.missingKeyHint != nil
         return HStack(spacing: 4) {
-            Image(systemName: keyMissing ? "key.horizontal.fill" : "brain.head.profile")
-                .font(.caption2)
-                .foregroundStyle(keyMissing ? .orange : .secondary)
+            if keyMissing {
+                Image(systemName: "key.horizontal.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            } else {
+                ProviderIcon(provider: cfg.workerProvider, size: 12)
+                    .foregroundStyle(.secondary)
+            }
             Text(cfg.workerProvider.displayName)
                 .font(.caption2)
                 .lineLimit(1)

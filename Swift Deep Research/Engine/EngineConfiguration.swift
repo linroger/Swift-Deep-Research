@@ -20,6 +20,9 @@ public struct EngineConfiguration: Sendable, Codable, Equatable {
     /// Base URL for the user-defined "Custom endpoint" provider. Resolved to
     /// `/v1/chat/completions` at call time. `nil` until the user sets one.
     public var customEndpointBaseURL: URL?
+    /// Base URL for the Qwen / Alibaba Cloud Model Studio (MaaS) provider.
+    /// Defaults to the bundled dedicated endpoint; editable in Settings.
+    public var qwenBaseURL: URL
     public var seekdbHost: URL
     /// When true the engine exposes the `knowledge_base` tool to workers so
     /// they can search the user's uploaded documents alongside the web.
@@ -39,6 +42,7 @@ public struct EngineConfiguration: Sendable, Codable, Equatable {
                 ollamaHost: URL = URL(string: "http://localhost:11434")!,
                 lmStudioHost: URL = URL(string: "http://localhost:1234")!,
                 customEndpointBaseURL: URL? = nil,
+                qwenBaseURL: URL = ProviderRegistry.defaultQwenBaseURL,
                 seekdbHost: URL = URL(string: "http://127.0.0.1:9100")!,
                 useKnowledgeBase: Bool = false,
                 systemPromptAddendum: String = "") {
@@ -53,6 +57,7 @@ public struct EngineConfiguration: Sendable, Codable, Equatable {
         self.ollamaHost = ollamaHost
         self.lmStudioHost = lmStudioHost
         self.customEndpointBaseURL = customEndpointBaseURL
+        self.qwenBaseURL = qwenBaseURL
         self.seekdbHost = seekdbHost
         self.useKnowledgeBase = useKnowledgeBase
         self.systemPromptAddendum = systemPromptAddendum
@@ -75,6 +80,8 @@ public struct EngineConfiguration: Sendable, Codable, Equatable {
         lmStudioHost = try c.decodeIfPresent(URL.self, forKey: .lmStudioHost)
             ?? URL(string: "http://localhost:1234")!
         customEndpointBaseURL = try c.decodeIfPresent(URL.self, forKey: .customEndpointBaseURL)
+        qwenBaseURL = try c.decodeIfPresent(URL.self, forKey: .qwenBaseURL)
+            ?? ProviderRegistry.defaultQwenBaseURL
         seekdbHost = try c.decodeIfPresent(URL.self, forKey: .seekdbHost)
             ?? URL(string: "http://127.0.0.1:9100")!
         useKnowledgeBase = try c.decodeIfPresent(Bool.self, forKey: .useKnowledgeBase) ?? false

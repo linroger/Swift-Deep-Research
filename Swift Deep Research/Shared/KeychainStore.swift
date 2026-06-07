@@ -67,6 +67,7 @@ public enum KeyAccount: String, Sendable, CaseIterable {
     case deepseek  = "deepseek.api"
     case minimax   = "minimax.api"
     case moonshot  = "moonshot.api"
+    case qwen      = "qwen.api"
     case custom    = "custom.api"
     case tavily    = "tavily.search"
     case exa       = "exa.search"
@@ -80,6 +81,7 @@ public enum KeyAccount: String, Sendable, CaseIterable {
         case .deepseek:  "DeepSeek API Key"
         case .minimax:   "MiniMax API Key"
         case .moonshot:  "Moonshot / Kimi API Key"
+        case .qwen:      "Qwen (Alibaba Cloud) API Key"
         case .custom:    "Custom Endpoint API Key"
         case .tavily:    "Tavily Search API Key"
         case .exa:       "Exa Search API Key"
@@ -95,6 +97,7 @@ public enum KeyAccount: String, Sendable, CaseIterable {
         case .deepseek:  URL(string: "https://platform.deepseek.com/api_keys")!
         case .minimax:   URL(string: "https://www.minimax.io/platform/user-center/basic-information")!
         case .moonshot:  URL(string: "https://platform.moonshot.ai/console/api-keys")!
+        case .qwen:      URL(string: "https://bailian.console.aliyun.com/?apiKey=1")!
         case .custom:    URL(string: "https://platform.openai.com/docs/api-reference")!
         case .tavily:    URL(string: "https://app.tavily.com/home")!
         case .exa:       URL(string: "https://dashboard.exa.ai/api-keys")!

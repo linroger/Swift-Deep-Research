@@ -72,5 +72,10 @@ Preview Content/
 .aidigestignore
 .cursorrules
 
-codebase.md 
-Assets.xcassets
+codebase.md
+
+# The brand-icon asset catalogue (provider-*.imageset) IS a shipped deliverable
+# and must be tracked. Only exclude the hook-generated log noise that the agent
+# runtime writes into the current working directory (the catalogue folder).
+Swift Deep Research/Assets.xcassets/.claude/
+Swift Deep Research/Assets.xcassets/logs/

@@ -28,7 +28,7 @@ Built top-to-bottom in Swift 6.2 / SwiftUI for macOS 26 Tahoe with strict concur
 | **Iterative research canvas** — Round-by-round plan, parallel workers, tool-call drill-down, live activity inspector | ![Canvas](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2010.17.39%402x.png) |
 | **Sources inspector** — Discovered, fetched, and cited sources beside the draft, plus a Knowledge base section listing retrieved chunks by relevance score (click to read the full chunk) | ![Sources](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2010.19.44%402x.png) |
 | **Knowledge base** — Drop PDFs to chunk + embed via the auto-launched SeekDB sidecar; queried automatically during research | ![Knowledge Base](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2010.53.03%402x.png) |
-| **Settings** — Provider routing for orchestrator / worker / synthesizer across 11 providers, API keys, LM Studio / custom endpoints, sidecar controls, budget tuning | ![Settings](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2011.17.46%402x.png) |
+| **Settings** — Provider routing for orchestrator / worker / synthesizer across 12 providers (brand-iconed), one-click API-key testing + live model discovery, API keys, LM Studio / custom / Qwen endpoints, sidecar controls, budget tuning | ![Settings](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2011.17.46%402x.png) |
 
 ---
 
@@ -69,7 +69,7 @@ What this buys you over a one-shot RAG pipeline:
 
 - **No early termination.** Earlier "ready" verdicts used to collapse the difference between Fast and Thorough modes. The engine now commits to running every configured round; when the reflector finds no gaps, it switches to **deepening mode** — cross-verifying load-bearing claims, hunting for counter-evidence, surfacing 30–90-day updates, replacing generic prose with hard numbers. If the LLM still produces nothing, the engine synthesizes deepening subtasks itself so no round is a no-op.
 - **Real source diversity.** Each worker is told to issue 2+ search queries with different phrasings, then fetch *at least* `sourceTarget − 2` and *up to* `sourceTarget` distinct URLs (4 fast / 6 standard / 12 thorough). Paywalled or off-topic pages trigger a fallback fetch rather than a quiet skip.
-- **Provider-agnostic tool calling.** A unified `LLMRequest(messages:, tools:, …)` envelope is translated into Anthropic's `tool_use`, OpenAI's `tools[].function`, Gemini's `function_declarations`, *and* Ollama's `/api/chat tools` field — including streaming `tool_call` parsing for each. DeepSeek, MiniMax, Kimi, LM Studio, and custom endpoints reuse the OpenAI path through one shared `OpenAICompatibleClient` (reasoning-model `reasoning_content` is parsed but never leaks into answers).
+- **Provider-agnostic tool calling.** A unified `LLMRequest(messages:, tools:, …)` envelope is translated into Anthropic's `tool_use`, OpenAI's `tools[].function`, Gemini's `function_declarations`, *and* Ollama's `/api/chat tools` field — including streaming `tool_call` parsing for each. DeepSeek, MiniMax, Kimi, Qwen, LM Studio, and custom endpoints reuse the OpenAI path through one shared `OpenAICompatibleClient` (reasoning-model `reasoning_content` is parsed but never leaks into answers). Tool-call argument parsing accepts both wire formats: the OpenAI-spec incremental string fragments *and* the complete `arguments` JSON object that some gateways (Alibaba DashScope / Qwen compatible-mode) emit in a single chunk — the latter was previously dropped, which made every tool call on those providers fail with "invalid arguments".
 - **Hard budget envelope.** A shared `BudgetMeter` actor enforces wall-clock, token, per-worker tool-call, and per-worker source caps. Fast / Standard / Thorough presets scale every dimension together.
 
 ---
@@ -116,13 +116,16 @@ Pick a different provider for the planner, workers, and synthesizer — keep pla
 | **DeepSeek** | Cloud | `deepseek-chat` (V3) / `deepseek-reasoner` (R1), OpenAI-compatible |
 | **MiniMax** | Cloud | MiniMax-M2 / Text-01, OpenAI-compatible |
 | **Moonshot Kimi** | Cloud | Kimi K2.6 / K2 series, OpenAI-compatible |
+| **Qwen (Alibaba)** | Cloud | Qwen-Max / Plus / Turbo, Qwen3, QwQ — Alibaba Cloud Model Studio (MaaS), OpenAI-compatible via `/compatible-mode/v1` |
 | **LM Studio** | Local server | Any loaded model, no API key, live `/v1/models` discovery |
 | **Custom endpoint** | Cloud / Local | Any OpenAI-compatible base URL (+ optional key) — persisted across launches |
 | **Ollama** | Local server | Tool calling on qwen2.5 / llama3.3 / gpt-oss / mistral-small; context window auto-set to 131 072 |
 | **Foundation Models** | On-device | Apple Intelligence FM, when available on macOS 26 |
 | **MLX** | On-device | Mistral Small 24B, Qwen 2.5 7B, DeepSeek-R1 Distill |
 
-DeepSeek, MiniMax, Kimi, LM Studio, and custom endpoints all speak the OpenAI Chat Completions wire format and share a single, well-tested `OpenAICompatibleClient`. Your provider/model/endpoint choices persist across relaunches.
+DeepSeek, MiniMax, Kimi, Qwen, LM Studio, and custom endpoints all speak the OpenAI Chat Completions wire format and share a single, well-tested `OpenAICompatibleClient`. Provider rows carry brand icons, and your provider/model/endpoint choices persist across relaunches.
+
+**Test keys & pull models from the provider.** Each cloud provider has a one-click **Test key & fetch** button (and every API key a **Test** button) that calls the provider's own model API — Anthropic `/v1/models`, OpenAI `/v1/models`, Gemini `/v1beta/models`, the OpenAI-compatible `/v1/models` for DeepSeek / MiniMax / Kimi / Qwen / LM Studio / custom, and Ollama `/api/tags`. A success both **validates the API key** (auth proven against a live endpoint) and **refreshes the model picker with the latest model ids** straight from the source, so you're never stuck with a stale hardcoded list.
 
 ### Multi-backend web search with fallback
 Configured priority order: **Tavily** (agent-optimised) → **Exa** (semantic) → **Brave** (general) → **DuckDuckGo** (HTML, no key). Each backend validates HTTP status before decoding, so a 401 / 429 / 422 surfaces in the inspector instead of silently disappearing as "no results."
@@ -148,7 +151,7 @@ After synthesis, a dedicated `CitationExtractor` re-reads the draft and maps eve
 - macOS 26 (Tahoe) on Apple Silicon
 - Xcode 26
 - Python 3.10+ on `PATH` (the app auto-creates a virtualenv and installs the SeekDB deps on first run — manual `pip install pyseekdb fastapi uvicorn pydantic` is optional)
-- Optional: API keys for any combination of Anthropic, OpenAI, Gemini, DeepSeek, MiniMax, Moonshot/Kimi, a custom endpoint, Tavily, Exa, Brave
+- Optional: API keys for any combination of Anthropic, OpenAI, Gemini, DeepSeek, MiniMax, Moonshot/Kimi, Qwen (Alibaba Cloud Model Studio), a custom endpoint, Tavily, Exa, Brave
 - Optional: Ollama or LM Studio running locally with at least one tool-capable model loaded
 
 ### Build & run
