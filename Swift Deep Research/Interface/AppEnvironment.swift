@@ -21,9 +21,27 @@ public final class AppEnvironment {
     /// keys change.
     public var missingKeyHint: String?
 
+    // MARK: Forecast workspace (DeerFlow × MiroFish prediction pipeline)
+
+    /// Which workspace the main window is showing.
+    public enum Workspace: String, Sendable, CaseIterable, Identifiable {
+        case research, forecast
+        public var id: String { rawValue }
+        public var title: String { self == .research ? "Research" : "Forecast" }
+        public var systemImage: String { self == .research ? "magnifyingglass" : "chart.line.uptrend.xyaxis" }
+    }
+    public var workspace: Workspace = .research
+    /// The active (or restored) forecast pipeline, if any.
+    public var forecast: ForecastRun?
+    /// MiroFish backend location + launch preferences.
+    public var forecastConfig: ForecastConfiguration = .suggestedDefault()
+    /// Last-known MiroFish backend status, surfaced in the Forecast UI.
+    public var forecastBackendStatus: MiroFishSupervisor.Status = .stopped
+
     /// UserDefaults key for the persisted engine configuration. Versioned so a
     /// schema change can invalidate stale blobs by bumping the suffix.
     private static let configKey = "engineConfiguration.v2"
+    private static let forecastConfigKey = "forecastConfiguration.v1"
 
     public init(store: ResearchStore) {
         self.store = store
@@ -33,6 +51,10 @@ public final class AppEnvironment {
         } else {
             self.configuration = EngineConfiguration.suggestedDefault()
         }
+        if let data = UserDefaults.standard.data(forKey: Self.forecastConfigKey),
+           let saved = try? JSONDecoder().decode(ForecastConfiguration.self, from: data) {
+            self.forecastConfig = saved
+        }
     }
 
     /// Persist the current configuration so provider/model/endpoint choices
@@ -40,6 +62,78 @@ public final class AppEnvironment {
     public func saveConfiguration() {
         if let data = try? JSONEncoder().encode(configuration) {
             UserDefaults.standard.set(data, forKey: Self.configKey)
+        }
+    }
+
+    public func saveForecastConfiguration() {
+        if let data = try? JSONEncoder().encode(forecastConfig) {
+            UserDefaults.standard.set(data, forKey: Self.forecastConfigKey)
+        }
+    }
+
+    private func makeMiroFishClient() -> MiroFishClient {
+        MiroFishClient(host: forecastConfig.host)
+    }
+
+    /// Begin a new forecast pipeline. Ensures the MiroFish backend is up first so
+    /// the run doesn't fire a doomed `POST /api/research/run`.
+    public func startForecast(prompt: String, mode: ForecastRun.Mode, depth: String, maxRounds: Int?) {
+        forecast?.cancel()
+        let run = ForecastRun(prompt: prompt, mode: mode, depth: depth, maxRounds: maxRounds,
+                              client: makeMiroFishClient(), store: store)
+        forecast = run
+        Task { @MainActor in
+            let status = await ensureForecastBackend()
+            if case .running = status {
+                run.start()
+            } else {
+                run.reportBackendUnavailable(Self.backendMessage(status))
+            }
+        }
+    }
+
+    /// Re-open a stored forecast as a read-only snapshot (resume if still live).
+    public func openForecast(record: ForecastRecord) {
+        forecast?.cancel()
+        forecast = ForecastRun.restored(from: record, client: makeMiroFishClient(), store: store)
+    }
+
+    public func newForecast() {
+        forecast?.cancel()
+        forecast = nil
+    }
+
+    /// Make sure the MiroFish backend is reachable, launching it if auto-launch is
+    /// on. Also syncs the user's Zep key into MiroFish's `.env` so the graph stage
+    /// can authenticate (MiroFish reads `.env` with override, so env injection
+    /// alone wouldn't stick).
+    @discardableResult
+    public func ensureForecastBackend() async -> MiroFishSupervisor.Status {
+        await syncMiroFishEnv()
+        let status: MiroFishSupervisor.Status
+        if forecastConfig.autoLaunchBackend {
+            status = await MiroFishSupervisor.shared.ensureRunning(host: forecastConfig.host,
+                                                                   repoRoot: forecastConfig.repoRoot)
+        } else {
+            status = await MiroFishSupervisor.shared.checkHealth(host: forecastConfig.host)
+        }
+        forecastBackendStatus = status
+        return status
+    }
+
+    /// Write the Zep key (entered under Settings → API keys) into MiroFish's `.env`.
+    public func syncMiroFishEnv() async {
+        let zep = await KeychainStore.shared.get(.zep) ?? ""
+        guard !zep.isEmpty else { return }
+        await MiroFishSupervisor.shared.syncEnv(["ZEP_API_KEY": zep], repoRoot: forecastConfig.repoRoot)
+    }
+
+    static func backendMessage(_ status: MiroFishSupervisor.Status) -> String {
+        switch status {
+        case .running: "MiroFish backend ready."
+        case .launching: "The MiroFish backend is still starting — try again in a moment."
+        case .stopped: "The MiroFish backend isn't running. Enable auto-launch in Settings → Forecast, or start it manually (`npm run dev`)."
+        case .backendMissing(let m), .interpreterMissing(let m), .failed(let m): m
         }
     }
 

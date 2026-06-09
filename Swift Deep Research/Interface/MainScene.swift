@@ -10,6 +10,7 @@ public struct MainScene: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \StoredSession.updatedAt, order: .reverse) private var sessions: [StoredSession]
+    @Query(sort: \ForecastRecord.updatedAt, order: .reverse) private var forecastRecords: [ForecastRecord]
     @State private var query: String = ""
     @State private var showSettings: Bool = false
     @State private var showDocuments: Bool = false
@@ -19,50 +20,78 @@ public struct MainScene: View {
     public init() {}
 
     public var body: some View {
+        @Bindable var env = env
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            SessionSidebar(sessions: sessions)
-                .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
-        } detail: {
-            HStack(spacing: 0) {
-                ResearchCanvas(query: $query)
-
-                if showInspector && (env.live != nil || env.selectedSessionID != nil) {
-                    Divider().opacity(0.4)
-                    SourcePanel()
-                        .frame(width: 340)
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
+            VStack(spacing: 0) {
+                Picker("Workspace", selection: $env.workspace) {
+                    ForEach(AppEnvironment.Workspace.allCases) { ws in
+                        Label(ws.title, systemImage: ws.systemImage).tag(ws)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.horizontal, 10)
+                .padding(.top, 8)
+                .padding(.bottom, 6)
+                Divider()
+                switch env.workspace {
+                case .research:
+                    SessionSidebar(sessions: sessions)
+                case .forecast:
+                    ForecastSidebar(records: forecastRecords)
                 }
             }
-            .animation(.easeInOut(duration: 0.2), value: showInspector)
+            .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
+        } detail: {
+            switch env.workspace {
+            case .research:
+                HStack(spacing: 0) {
+                    ResearchCanvas(query: $query)
+
+                    if showInspector && (env.live != nil || env.selectedSessionID != nil) {
+                        Divider().opacity(0.4)
+                        SourcePanel()
+                            .frame(width: 340)
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                    }
+                }
+                .animation(.easeInOut(duration: 0.2), value: showInspector)
+            case .forecast:
+                ForecastWorkspaceView()
+            }
         }
         .navigationSplitViewStyle(.balanced)
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Button {
-                    env.live = nil
-                    env.selectedSessionID = nil
-                    query = ""
-                } label: {
-                    Label("New Research", systemImage: "square.and.pencil")
+            if env.workspace == .research {
+                ToolbarItem(placement: .navigation) {
+                    Button {
+                        env.live = nil
+                        env.selectedSessionID = nil
+                        query = ""
+                    } label: {
+                        Label("New Research", systemImage: "square.and.pencil")
+                    }
+                    .keyboardShortcut("n", modifiers: .command)
+                    .help("New research (⌘N)")
                 }
-                .keyboardShortcut("n", modifiers: .command)
-                .help("New research (⌘N)")
             }
             ToolbarItemGroup(placement: .primaryAction) {
-                if env.live != nil || env.selectedSessionID != nil {
-                    Toggle(isOn: $showInspector) {
-                        Label("Inspector", systemImage: "sidebar.right")
+                if env.workspace == .research {
+                    if env.live != nil || env.selectedSessionID != nil {
+                        Toggle(isOn: $showInspector) {
+                            Label("Inspector", systemImage: "sidebar.right")
+                        }
+                        .toggleStyle(.button)
+                        .help("Toggle inspector (⌥⌘I)")
+                        .keyboardShortcut("i", modifiers: [.option, .command])
                     }
-                    .toggleStyle(.button)
-                    .help("Toggle inspector (⌥⌘I)")
-                    .keyboardShortcut("i", modifiers: [.option, .command])
+                    exportMenu
+                    Button { showDocuments = true } label: {
+                        Label("Knowledge base", systemImage: "books.vertical.fill")
+                    }
+                    .help("Knowledge base (⌘⇧K)")
+                    .keyboardShortcut("k", modifiers: [.command, .shift])
                 }
-                exportMenu
-                Button { showDocuments = true } label: {
-                    Label("Knowledge base", systemImage: "books.vertical.fill")
-                }
-                .help("Knowledge base (⌘⇧K)")
-                .keyboardShortcut("k", modifiers: [.command, .shift])
                 Button { showSettings = true } label: {
                     Label("Settings", systemImage: "gearshape")
                 }

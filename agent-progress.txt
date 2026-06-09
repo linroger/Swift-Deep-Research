@@ -480,3 +480,43 @@ tool-call dual-format note).
   object-form coercion from c8f4ffa is kept purely as defensive handling for
   other gateways; it was never the Qwen issue. DeepSeek/Kimi were unaffected
   because they omit id on continuations (nil → buffered) rather than sending "".
+
+================================================================================
+Session 2026-06-09 (Forecast × MiroFish integration) — branch v2-deep-research-forecast
+================================================================================
+Feature: new "Forecast" workspace that runs the DeerFlow → MiroFish prediction
+pipeline (deep research → Zep knowledge graph → OASIS multi-agent simulation →
+prediction report) and renders the knowledge graph natively with the Grape SPM
+package. Architecture: "MiroFish-as-sidecar, Swift-as-cockpit" — the macOS app
+supervises the MiroFish Flask backend (:5001) and drives POST /api/research/run,
+polling /status and fanning out to graph/sim/report/dossier/ontology endpoints.
+
+New files:
+  Forecast/MiroFishClient.swift       — actor HTTP client + Codable wire types
+  Forecast/MiroFishSupervisor.swift   — actor backend launcher (mirrors SidecarSupervisor)
+  Forecast/ForecastModels.swift       — stage/graph view-models, ForecastConfiguration,
+                                         @Model ForecastRecord
+  Forecast/ForecastRun.swift          — @MainActor @Observable pipeline controller
+  Interface/Forecast/*.swift          — 9 SwiftUI views (KnowledgeGraphView uses Grape
+                                         ForceDirectedGraph; SimulationStageView uses Swift
+                                         Charts; composer, console+dossier, report, stepper,
+                                         ontology, agent-setup, workspace router, sidebar)
+Edits: ResearchSchema/ResearchStore (register+CRUD ForecastRecord), AppEnvironment
+  (Workspace mode + forecast state + start/open/ensure-backend), MainScene (segmented
+  workspace picker + sidebar/detail switch + toolbar gating), KeychainStore (.zep case),
+  SettingsSheet (Forecast tab: backend status/path/host/auto-launch/depth + Zep sync).
+
+Build: macOS 26 / Swift 6 strict concurrency — BUILD SUCCEEDED, 0 errors, 0 warnings
+  in new code (only pre-existing MLX/asset/AppIntents warnings remain).
+Smoke test: app launched, SwiftData ForecastRecord migration OK, Forecast workspace
+  renders (composer + suggestions + graceful "backend needs setup" banner). Screenshot
+  confirms working UI.
+Build hygiene fix: Xcode synced group bundled transient hook logs
+  (logs/<session>/{pre,post}_tool_use.json) → "Multiple commands produce" collision with
+  2+ session folders. Fixed via EXCLUDED_SOURCE_FILE_NAMES (hook-log filenames) in both
+  target build configs (membershipExceptions does NOT exclude dynamic subfolders).
+
+To run a full forecast (env prerequisites, not code): MiroFish backend venv on Python
+  ≤3.12 (default is 3.13, breaks camel-ai/OASIS), DeerFlow venv, ZEP_API_KEY, Claude/
+  coding-plan login. Without them the Forecast UI degrades gracefully.
+Not committed (no commit requested).

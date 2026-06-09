@@ -10,7 +10,7 @@ struct SettingsSheet: View {
     @State private var section: Section = .providers
 
     enum Section: String, CaseIterable, Identifiable {
-        case providers, apiKeys, knowledge, budget, iteration, instructions, about
+        case providers, apiKeys, knowledge, forecast, budget, iteration, instructions, about
         var id: String { rawValue }
 
         var title: String {
@@ -18,6 +18,7 @@ struct SettingsSheet: View {
             case .providers: "Providers"
             case .apiKeys: "API keys"
             case .knowledge: "Knowledge base"
+            case .forecast: "Forecast"
             case .budget: "Budget"
             case .iteration: "Iteration"
             case .instructions: "Instructions"
@@ -29,6 +30,7 @@ struct SettingsSheet: View {
             case .providers: "cpu"
             case .apiKeys: "key.fill"
             case .knowledge: "books.vertical.fill"
+            case .forecast: "chart.line.uptrend.xyaxis"
             case .budget: "gauge.with.dots.needle.50percent"
             case .iteration: "arrow.triangle.2.circlepath"
             case .instructions: "text.alignleft"
@@ -40,6 +42,7 @@ struct SettingsSheet: View {
             case .providers: .blue
             case .apiKeys: .yellow
             case .knowledge: .indigo
+            case .forecast: .purple
             case .budget: .green
             case .iteration: .purple
             case .instructions: .pink
@@ -171,6 +174,7 @@ struct SettingsSheet: View {
         case .providers: "Pick the LLMs that plan, research, and synthesize."
         case .apiKeys: "Keys are stored in Keychain — never on disk."
         case .knowledge: "Connect to the local pyseekdb sidecar."
+        case .forecast: "The MiroFish prediction backend for forecasts."
         case .budget: "Hard caps on tokens, workers, sources, and wall-clock."
         case .iteration: "How many reflection rounds each run gets."
         case .instructions: "House-style guidance appended to every prompt."
@@ -184,6 +188,7 @@ struct SettingsSheet: View {
         case .providers: ProvidersTab().environment(env)
         case .apiKeys: APIKeysTab()
         case .knowledge: KnowledgeTab().environment(env)
+        case .forecast: ForecastTab().environment(env)
         case .budget: BudgetTab().environment(env)
         case .iteration: IterationTab().environment(env)
         case .instructions: InstructionsTab().environment(env)
@@ -856,7 +861,7 @@ private struct APIKeysTab: View {
         case .moonshot:  .kimi
         case .qwen:      .qwen
         case .custom:    .custom
-        case .tavily, .exa, .brave: nil
+        case .tavily, .exa, .brave, .zep: nil
         }
     }
 }
@@ -1163,6 +1168,153 @@ private struct KnowledgeTab: View {
             health = "✗ Unreachable"
         } catch {
             health = "✗ \(error.localizedDescription)"
+        }
+    }
+}
+
+// MARK: - Forecast (MiroFish backend)
+
+private struct ForecastTab: View {
+    @Environment(AppEnvironment.self) private var env
+    @State private var repoPath: String = ""
+    @State private var hostString: String = ""
+    @State private var checking = false
+
+    var body: some View {
+        @Bindable var env = env
+        VStack(alignment: .leading, spacing: 20) {
+            SettingsGroup("Backend status",
+                         footer: "The MiroFish prediction engine runs DeerFlow deep-research, builds the Zep knowledge graph, runs the OASIS multi-agent simulation, and writes the report.") {
+                SettingsRow("Status", icon: "wave.3.right") {
+                    HStack(spacing: 6) {
+                        if checking { ProgressView().controlSize(.mini) }
+                        Circle().fill(statusColor).frame(width: 7, height: 7)
+                        Text(statusText).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                            .lineLimit(2).truncationMode(.middle)
+                    }
+                }
+                HStack {
+                    Spacer()
+                    Button("Check") { Task { await check() } }
+                        .buttonStyle(.bordered).controlSize(.small).disabled(checking)
+                    Button("Start backend") { Task { await start() } }
+                        .buttonStyle(.borderedProminent).controlSize(.small).disabled(checking)
+                }
+                .padding(12)
+            }
+
+            SettingsGroup("MiroFish location",
+                         footer: "The MiroFish repository folder (contains `backend/run.py`). The backend launches from its own Python ≤3.12 virtualenv (`backend/.venv`) or via `uv`.") {
+                SettingsRow("Folder", icon: "folder") {
+                    HStack(spacing: 6) {
+                        TextField("~/Downloads/mirofish/MiroFish-0.1.2", text: $repoPath)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 300)
+                            .onSubmit { commitRepoPath() }
+                        Button("Choose…") { chooseFolder() }
+                            .controlSize(.small)
+                    }
+                }
+                SettingsRow("Host URL", icon: "network") {
+                    TextField("http://127.0.0.1:5001", text: $hostString)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 220)
+                        .onSubmit { commitHost() }
+                }
+                SettingsRow("Auto-launch on demand", icon: "bolt.fill") {
+                    Toggle("", isOn: $env.forecastConfig.autoLaunchBackend)
+                        .toggleStyle(.switch).labelsHidden()
+                }
+                SettingsRow("Default research depth", icon: "slider.horizontal.3") {
+                    Picker("", selection: $env.forecastConfig.defaultDepth) {
+                        Text("Quick").tag("quick")
+                        Text("Standard").tag("standard")
+                        Text("Deep").tag("deep")
+                    }
+                    .labelsHidden()
+                    .frame(width: 220)
+                }
+            }
+
+            SettingsGroup("Zep knowledge graph",
+                         footer: "MiroFish stores the knowledge graph in Zep Cloud, which always needs an API key. Enter it under API keys → Zep; it is written into MiroFish's .env so the graph stage can authenticate.") {
+                HStack {
+                    Label("Zep key syncs to MiroFish's .env on launch", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Sync now") { Task { await env.syncMiroFishEnv() } }
+                        .buttonStyle(.bordered).controlSize(.small)
+                }
+                .padding(12)
+            }
+        }
+        .onChange(of: env.forecastConfig) { _, _ in env.saveForecastConfiguration() }
+        .onAppear {
+            repoPath = env.forecastConfig.repoRootPath
+            hostString = env.forecastConfig.hostString
+        }
+        .task { await check() }
+    }
+
+    private var statusColor: Color {
+        switch env.forecastBackendStatus {
+        case .running: .green
+        case .launching: .blue
+        case .stopped: .secondary
+        case .backendMissing, .interpreterMissing: .orange
+        case .failed: .red
+        }
+    }
+
+    private var statusText: String {
+        switch env.forecastBackendStatus {
+        case .running: "Running — connected at \(env.forecastConfig.hostString)"
+        case .launching: "Launching…"
+        case .stopped: "Stopped"
+        case .backendMissing(let m), .interpreterMissing(let m), .failed(let m): m
+        }
+    }
+
+    private func check() async {
+        checking = true
+        _ = await MiroFishSupervisor.shared.checkHealth(host: env.forecastConfig.host)
+        env.forecastBackendStatus = await MiroFishSupervisor.shared.currentStatus()
+        checking = false
+    }
+
+    private func start() async {
+        checking = true
+        commitRepoPath(); commitHost()
+        env.forecastBackendStatus = await MiroFishSupervisor.shared.ensureRunning(
+            host: env.forecastConfig.host, repoRoot: env.forecastConfig.repoRoot)
+        checking = false
+    }
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Select"
+        if panel.runModal() == .OK, let url = panel.url {
+            repoPath = url.path
+            commitRepoPath()
+        }
+    }
+
+    private func commitRepoPath() {
+        let trimmed = repoPath.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        env.forecastConfig.repoRootPath = (trimmed as NSString).expandingTildeInPath
+        env.saveForecastConfiguration()
+    }
+
+    private func commitHost() {
+        let trimmed = hostString.trimmingCharacters(in: .whitespaces)
+        if let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(),
+           scheme == "http" || scheme == "https", url.host != nil {
+            env.forecastConfig.hostString = trimmed
+            env.saveForecastConfiguration()
         }
     }
 }

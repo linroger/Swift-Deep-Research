@@ -120,6 +120,36 @@ public final class ResearchStore {
         try context.save()
     }
 
+    // MARK: - Forecasts (DeerFlow × MiroFish pipeline runs)
+
+    @discardableResult
+    public func createForecast(pipelineID: String,
+                               prompt: String,
+                               mode: String,
+                               depth: String) throws -> ForecastRecord {
+        let record = ForecastRecord(pipelineID: pipelineID, prompt: prompt, mode: mode, depth: depth)
+        context.insert(record)
+        try context.save()
+        return record
+    }
+
+    /// Persist mutations the caller made directly on `@Model` objects.
+    public func saveChanges() throws {
+        try context.save()
+    }
+
+    public func deleteForecast(_ record: ForecastRecord) throws {
+        context.delete(record)
+        try context.save()
+    }
+
+    public func allForecasts() throws -> [ForecastRecord] {
+        let descriptor = FetchDescriptor<ForecastRecord>(
+            sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
+        )
+        return try context.fetch(descriptor)
+    }
+
     // MARK: - Events
 
     public func appendEvent(kind: String,
