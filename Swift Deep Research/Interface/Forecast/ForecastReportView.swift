@@ -21,6 +21,9 @@ struct ForecastReportView: View {
                 if !run.agentLog.isEmpty {
                     agentLogView
                 }
+                if run.canChat {
+                    ForecastChatView(run: run)
+                }
             }
             .padding(16)
         }
@@ -153,6 +156,101 @@ struct ForecastReportView: View {
         case let a where a.contains("complete"): .green
         case let a where a.contains("error"): .red
         default: .secondary
+        }
+    }
+}
+
+// MARK: - Follow-up chat with the report agent
+
+/// Q&A thread riding on the finished simulation: the report agent re-queries the
+/// post-simulation knowledge graph (and can interview live agents) to answer.
+struct ForecastChatView: View {
+    let run: ForecastRun
+    @State private var draft: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Ask the report agent", systemImage: "bubble.left.and.text.bubble.right")
+                .font(.subheadline.weight(.semibold))
+            Text("Follow-up questions are answered from the simulation's knowledge graph — why a faction flipped, what drove a sentiment spike, how confident a claim is.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ForEach(run.chatMessages) { message in
+                messageRow(message)
+            }
+
+            if run.chatBusy {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("The agent is querying the graph — this can take a minute or two…")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 2)
+            }
+            if let error = run.chatError {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 8) {
+                TextField("Ask about the forecast…", text: $draft, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1...4)
+                    .onSubmit(send)
+                    .disabled(run.chatBusy)
+                Button(action: send) {
+                    Image(systemName: "arrow.up.circle.fill").font(.title3)
+                }
+                .buttonStyle(.borderless)
+                .disabled(run.chatBusy || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(14)
+        .glassCard()
+    }
+
+    private func send() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !run.chatBusy else { return }
+        draft = ""
+        run.sendChat(text)
+    }
+
+    @ViewBuilder
+    private func messageRow(_ message: ForecastRun.ChatMessage) -> some View {
+        switch message.role {
+        case .user:
+            HStack {
+                Spacer(minLength: 40)
+                Text(message.text)
+                    .font(.callout)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(Color.accentColor.opacity(0.14),
+                                in: RoundedRectangle(cornerRadius: 12))
+            }
+        case .assistant:
+            VStack(alignment: .leading, spacing: 6) {
+                Markdown(message.text)
+                    .textSelection(.enabled)
+                if !message.toolNames.isEmpty {
+                    FlowLayout(spacing: 6) {
+                        ForEach(Array(Set(message.toolNames)).sorted(), id: \.self) { tool in
+                            Label(tool, systemImage: "wrench.and.screwdriver")
+                                .font(.caption2)
+                                .foregroundStyle(.cyan)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(.cyan.opacity(0.1), in: Capsule())
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
         }
     }
 }

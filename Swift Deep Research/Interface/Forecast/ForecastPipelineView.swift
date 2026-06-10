@@ -16,6 +16,11 @@ struct ForecastPipelineView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if run.phase == .failed || run.phase == .cancelled {
+                errorBanner(run.errorMessage ?? (run.phase == .cancelled
+                    ? "The pipeline was stopped before it finished."
+                    : "The MiroFish pipeline failed."))
+            }
             Divider()
             stepper
             Divider()
@@ -26,6 +31,37 @@ struct ForecastPipelineView: View {
             // Resume auto-follow whenever the pipeline advances to a new stage.
             manualSelection = nil
         }
+    }
+
+    /// Why the run stopped — including MiroFish's preflight bullet lists (missing
+    /// Zep key, missing provider key, …), which arrive as multi-line messages.
+    private func errorBanner(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(run.phase == .cancelled ? "Forecast cancelled" : "Forecast stopped")
+                    .font(.subheadline.weight(.semibold))
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            if run.pipelineID != nil {
+                Button { run.resume() } label: {
+                    Label("Resume", systemImage: "arrow.clockwise")
+                }
+                .controlSize(.small)
+                .help("Restart from the first incomplete stage — finished research, graph, and simulation artifacts are reused.")
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.08))
     }
 
     // MARK: - Header

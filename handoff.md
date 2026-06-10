@@ -208,3 +208,93 @@ Remaining (needs user-supplied secrets / live services, not code):
 
 Evidence: build logs `logs/build-kbshared-*.log`, `logs/build-kbrecover-*.log`
 (SUCCEEDED, 0 dup warnings); live sidecar transcript captured in session.
+
+---
+
+## 2026-06-10 — Forecast workspace robustness + deeper MiroFish integration
+
+**Request:** "Make the app more robust, integrating more closely the deep research
+forecast workflow from `~/Downloads/mirofish`."
+
+**Backend ground truth verified first.** The Swift Forecast layer was written
+against an older partial copy of MiroFish; every route the client uses (and every
+route added this session) was re-verified against the live code in
+`~/Downloads/mirofish/MiroFish-0.1.2/backend/app/api/*.py`. That backend's venv is
+healthy (Python 3.12.6, camel imports cleanly) — the screenshot's "venv needs
+re-provisioning" banner was a supervisor misclassification path, now improved.
+The backend gained (upstream) preflight checks on `POST /run` & `/resume` that
+return 400 + bullet list — the app now surfaces those verbatim.
+
+**Changes (all in `Swift Deep Research/`):**
+- `Forecast/MiroFishClient.swift`: added `cancelPipeline` (404/409 tolerated),
+  `resumePipeline`, `deletePipeline`, `reportChat` (300 s per-request timeout —
+  ReAct loop is slow), `setProvider` (`POST /api/settings/llm`); new wire types
+  `MFChatTurn`/`MFChatReply` (+`toolNames` extraction), `MFRunResponse.resumed`;
+  `rawData`/`request` accept a per-call timeout.
+- `Forecast/ForecastRun.swift`:
+  - `cancel()` now also fires backend `POST /cancel` (was poll-stop only → the
+    pipeline kept burning tokens server-side).
+  - New `resume()` → backend `POST /resume`, reuses completed stage artifacts.
+  - New `detach()` — stop following without cancelling (used when the UI switches
+    runs; record stays "running" for later reattach).
+  - `restored(from:)` keeps the SwiftData record attached (was nil → restored runs
+    never persisted updates) and restores `errorText`.
+  - New `hydrateFromBackend()` — restored runs re-fetch dossier/ontology/graph/
+    report live, adopt backend status drift, and reattach if still running.
+  - Poll loop handles backend `cancelled` status; failures persist `errorText`.
+  - Report-agent chat: `chatMessages`/`chatBusy`/`chatError`, `canChat`,
+    `sendChat(_:)` with prior-turn history.
+- `Forecast/ForecastModels.swift`: `ForecastRecord.errorText: String?` (additive,
+  lightweight SwiftData migration).
+- `Forecast/MiroFishSupervisor.swift`: exit-classification now distinguishes
+  import errors / port-in-use (Errno 48) / `.env` validation failures (run.py
+  prints `配置错误:` bullets — Zep key and LLM key get targeted English guidance);
+  new `repairEnvironment(repoRoot:)` (stops supervised child, `uv venv --python
+  3.12` when venv missing/wrong, `uv sync`, 15-min cap per step, off-actor pipe
+  drain) + `RepairError`.
+- `Interface/AppEnvironment.swift`: `openForecast` auto-reattaches records stored
+  as "running" (ensures backend, `resumePolling`) and hydrates finished ones;
+  new `deleteForecast` (SwiftData + best-effort backend `DELETE`); private
+  `detachForecast()` so switching/new runs never kill a live pipeline;
+  `startForecast` uses it.
+- `Interface/Forecast/ForecastPipelineView.swift`: failure/cancel banner showing
+  `errorMessage` (incl. multi-line preflight bullets, text-selectable) with a
+  **Resume** button wired to `run.resume()`.
+- `Interface/Forecast/ForecastReportView.swift`: new `ForecastChatView` — Q&A
+  thread with the report agent (markdown replies, tool-name chips, busy/error
+  states), shown once `run.canChat`.
+- `Interface/Forecast/ForecastSidebar.swift`: delete routes through
+  `env.deleteForecast`.
+- `Interface/Forecast/ForecastComposer.swift`: depth picker seeds from
+  `forecastConfig.defaultDepth`.
+- `Interface/SettingsSheet.swift` (Forecast tab): **Repair environment** button
+  (drives `repairEnvironment`, then relaunches + reports), and an **LLM provider**
+  group (GET/POST `/api/settings/llm`: picker from backend metadata, conditional
+  API-key field, applies to new forecasts).
+
+**Verification:** full `xcodebuild` Debug build (log `logs/forecast-robust-build-*.log`).
+Backend routes/shapes verified by reading `research.py`, `report.py`, `settings.py`,
+`simulation.py`, `config.py`, `pipeline_orchestrator.py` in the Downloads copy.
+Live end-to-end run not executed this session (forecast pipelines take 30+ min and
+spend LLM tokens); scenario checks to run next: cancel-mid-research (verify child
+process dies server-side), resume-after-preflight-failure, relaunch-during-run
+(auto-reattach), report chat round-trip.
+
+**Note:** repo-root `MiroFish-0.1.2/` and `deer-flow/` (untracked) are stale,
+incomplete copies of the Downloads originals (missing `backend/app/api`,
+`config.py`, bridge). The app defaults to `~/Downloads/mirofish/MiroFish-0.1.2`,
+so they're unused — candidates for deletion, left in place pending user say-so.
+
+**2026-06-10 verification evidence (appended post-build):**
+- `xcodebuild` Debug build SUCCEEDED, 0 errors / 0 project warnings
+  (`logs/forecast-robust-build-20260610-170321.log`).
+- All edited Swift files pass `swiftc -parse`.
+- Live endpoint smoke test against the user's running backend at :5001:
+  `/health` ✓, `GET /api/settings/llm` ✓ (envelope + provider metadata decode
+  into `MFProviderInfo` shape), `GET /api/research/list` ✓, cancel/resume/delete
+  on unknown id → 404 as the client expects, `POST /api/report/chat` with bad
+  simulation id → `{"success": false, "error": …}` ✓.
+- Caution learned: launching a second backend instance while one is live runs
+  MiroFish's orphan-pipeline reclaim *before* the port-bind failure — it can kill
+  stale child pids. `MiroFishSupervisor` already probes `/health` first and
+  attaches instead of double-launching, which avoids this; keep it that way.

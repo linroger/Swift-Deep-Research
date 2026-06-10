@@ -42,6 +42,24 @@ public actor MiroFishClient {
         try await request("/api/settings/llm", method: "GET")
     }
 
+    /// Switch the backend's LLM provider at runtime (affects newly started
+    /// pipelines only). `apiKey` is required by providers whose `needs_key` is
+    /// true unless the backend already holds one for that provider.
+    public func setProvider(_ provider: String,
+                            apiKey: String? = nil,
+                            baseURL: String? = nil,
+                            model: String? = nil) async throws -> MFProviderInfo {
+        struct Body: Encodable {
+            let provider: String
+            let api_key: String?
+            let base_url: String?
+            let model: String?
+        }
+        return try await request("/api/settings/llm", method: "POST",
+                                 body: Body(provider: provider, api_key: apiKey,
+                                            base_url: baseURL, model: model))
+    }
+
     // MARK: - Pipeline
 
     public func runPipeline(prompt: String,
@@ -76,6 +94,36 @@ public actor MiroFishClient {
     public func listPipelines() async throws -> [MFPipelineSummary] {
         let wrap: MFPipelineList = try await request("/api/research/list", method: "GET")
         return wrap.pipelines
+    }
+
+    /// Cancel an in-flight pipeline. The backend kills the DeerFlow/OASIS child
+    /// process groups, so this is the only way to actually stop token spend —
+    /// dropping the poll loop alone leaves the pipeline running server-side.
+    /// 404 (unknown) and 409 (already finished) are swallowed: in both cases the
+    /// pipeline is not running, which is what the caller wanted.
+    public func cancelPipeline(_ pipelineID: String) async throws {
+        struct CancelResult: Decodable, Sendable { let status: String? }
+        do {
+            let _: CancelResult = try await request("/api/research/\(pipelineID)/cancel", method: "POST")
+        } catch MiroFishError.httpStatus(let code, _) where code == 404 || code == 409 {
+            return
+        }
+    }
+
+    /// Resume a failed/cancelled pipeline. The backend reuses completed stage
+    /// artifacts (research report, graph, …) so this skips the expensive re-runs.
+    public func resumePipeline(_ pipelineID: String) async throws -> MFRunResponse {
+        try await request("/api/research/\(pipelineID)/resume", method: "POST")
+    }
+
+    /// Delete a terminal pipeline record (and its handoff artifacts) on the backend.
+    public func deletePipeline(_ pipelineID: String) async throws {
+        struct DeleteResult: Decodable, Sendable { let status: String? }
+        do {
+            let _: DeleteResult = try await request("/api/research/\(pipelineID)", method: "DELETE")
+        } catch MiroFishError.httpStatus(let code, _) where code == 404 {
+            return  // already gone
+        }
     }
 
     // MARK: - Project / ontology
@@ -127,13 +175,32 @@ public actor MiroFishClient {
         try await request("/api/report/\(reportID)/agent-log?from_line=\(fromLine)", method: "GET")
     }
 
+    /// Ask the report agent a follow-up question. The agent runs a short ReAct
+    /// loop with graph-retrieval tools, so responses can take a couple of minutes
+    /// — the request gets a generous per-call timeout instead of the default.
+    public func reportChat(simulationID: String,
+                           message: String,
+                           history: [MFChatTurn]) async throws -> MFChatReply {
+        struct Body: Encodable {
+            let simulation_id: String
+            let message: String
+            let chat_history: [MFChatTurn]
+        }
+        return try await request("/api/report/chat", method: "POST",
+                                 body: Body(simulation_id: simulationID,
+                                            message: message,
+                                            chat_history: history),
+                                 timeout: 300)
+    }
+
     // MARK: - Request plumbing
 
     /// Unwraps the `{success, data}` envelope and returns the decoded `data`.
     private func request<R: Decodable & Sendable>(_ path: String,
                                                   method: String,
-                                                  body: (any Encodable & Sendable)? = nil) async throws -> R {
-        let data = try await rawData(path, method: method, body: body)
+                                                  body: (any Encodable & Sendable)? = nil,
+                                                  timeout: TimeInterval? = nil) async throws -> R {
+        let data = try await rawData(path, method: method, body: body, timeout: timeout)
         let envelope: MFEnvelope<R>
         do {
             envelope = try decoder.decode(MFEnvelope<R>.self, from: data)
@@ -162,12 +229,14 @@ public actor MiroFishClient {
 
     private func rawData(_ path: String,
                          method: String,
-                         body: (any Encodable & Sendable)?) async throws -> Data {
+                         body: (any Encodable & Sendable)?,
+                         timeout: TimeInterval? = nil) async throws -> Data {
         guard let url = URL(string: path, relativeTo: host) else {
             throw MiroFishError.unreachable(host)
         }
         var req = URLRequest(url: url)
         req.httpMethod = method
+        if let timeout { req.timeoutInterval = timeout }
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -271,6 +340,8 @@ public struct MFRunResponse: Decodable, Sendable {
     public let task_id: String?
     public let mode: String?
     public let status: String?
+    /// True on `POST /<id>/resume` responses.
+    public let resumed: Bool?
 }
 
 public struct MFStageState: Decodable, Sendable, Identifiable, Equatable {
@@ -582,6 +653,37 @@ public struct MFReportProgress: Decodable, Sendable {
     public let current_section: String?
     public let completed_sections: [String]?
     public let updated_at: String?
+}
+
+/// One prior exchange sent back to `POST /api/report/chat` as context.
+public struct MFChatTurn: Codable, Sendable {
+    public let role: String       // "user" | "assistant"
+    public let content: String
+    public init(role: String, content: String) {
+        self.role = role
+        self.content = content
+    }
+}
+
+/// Reply from the report agent. `tool_calls`/`sources` are free-form JSON whose
+/// shape varies by tool, so they stay `AnyJSON` and the UI summarises them.
+public struct MFChatReply: Decodable, Sendable {
+    public let response: String?
+    public let tool_calls: AnyJSON?
+    public let sources: AnyJSON?
+
+    /// Names of the retrieval tools the agent invoked, when reported.
+    public var toolNames: [String] {
+        guard case .array(let arr)? = tool_calls else { return [] }
+        return arr.compactMap {
+            if case .object(let o) = $0 {
+                if case .string(let name)? = o["tool_name"] { return name }
+                if case .string(let name)? = o["name"] { return name }
+            }
+            if case .string(let s) = $0 { return s }
+            return nil
+        }
+    }
 }
 
 public struct MFAgentLog: Decodable, Sendable {

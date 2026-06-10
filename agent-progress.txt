@@ -520,3 +520,22 @@ To run a full forecast (env prerequisites, not code): MiroFish backend venv on P
   ≤3.12 (default is 3.13, breaks camel-ai/OASIS), DeerFlow venv, ZEP_API_KEY, Claude/
   coding-plan login. Without them the Forecast UI degrades gracefully.
 Not committed (no commit requested).
+
+=== Session 2026-06-10 (branch v2-deep-research-forecast) ===
+Forecast workspace robustness + closer MiroFish integration (commit 2ccf117).
+- MiroFishClient: cancel/resume/delete pipeline, report chat (300s timeout),
+  runtime LLM provider switching; all routes verified against
+  ~/Downloads/mirofish/MiroFish-0.1.2/backend/app/api/*.py.
+- ForecastRun: backend-side cancel, resume(), detach(), hydrateFromBackend(),
+  record attached on restore, errorText persisted, 'cancelled' status handled.
+- AppEnvironment: auto-reattach running forecasts on open, deleteForecast
+  (local + backend), detach semantics so switching runs never kills pipelines.
+- UI: failure banner w/ preflight errors + Resume; report-agent chat thread;
+  Settings -> Forecast gains Repair environment + LLM provider picker.
+- Supervisor: classifies import / port-in-use / .env validation failures;
+  repairEnvironment() rebuilds venv on Python 3.12 via uv.
+Tests: xcodebuild Debug SUCCEEDED (0 errors/warnings); live endpoint smoke
+tests against the user's running backend on :5001 (a real pipeline was mid-run
+at graph stage — left untouched).
+Next: scenario tests that need a full run — cancel-mid-research, resume after
+preflight failure, relaunch-during-run reattach, chat round-trip after report.

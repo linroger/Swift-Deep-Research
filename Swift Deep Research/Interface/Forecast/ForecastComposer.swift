@@ -31,7 +31,10 @@ struct ForecastComposer: View {
                 .frame(minHeight: proxy.size.height)
             }
         }
-        .onAppear { promptFocused = true }
+        .onAppear {
+            promptFocused = true
+            depth = env.forecastConfig.defaultDepth
+        }
     }
 
     private var center: some View {

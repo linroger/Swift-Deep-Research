@@ -206,6 +206,9 @@ public final class ForecastRecord {
     public var graphID: String?
     public var simulationID: String?
     public var reportID: String?
+    /// Last pipeline error, kept so a failed run still explains itself after
+    /// relaunch. Optional for lightweight migration of pre-existing stores.
+    public var errorText: String?
 
     public init(id: UUID = UUID(),
                 pipelineID: String,

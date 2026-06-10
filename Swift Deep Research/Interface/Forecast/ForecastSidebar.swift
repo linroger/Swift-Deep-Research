@@ -5,7 +5,6 @@ import SwiftData
 struct ForecastSidebar: View {
     let records: [ForecastRecord]
     @Environment(AppEnvironment.self) private var env
-    @Environment(\.modelContext) private var modelContext
 
     var body: some View {
         List(selection: Binding(
@@ -49,9 +48,9 @@ struct ForecastSidebar: View {
     }
 
     private func delete(_ record: ForecastRecord) {
-        if env.forecast?.pipelineID == record.pipelineID { env.newForecast() }
-        modelContext.delete(record)
-        try? modelContext.save()
+        // Routes through AppEnvironment so the backend pipeline record (and its
+        // handoff artifacts) is removed too, not just the local row.
+        env.deleteForecast(record: record)
     }
 }
 

@@ -78,7 +78,7 @@ public final class AppEnvironment {
     /// Begin a new forecast pipeline. Ensures the MiroFish backend is up first so
     /// the run doesn't fire a doomed `POST /api/research/run`.
     public func startForecast(prompt: String, mode: ForecastRun.Mode, depth: String, maxRounds: Int?) {
-        forecast?.cancel()
+        detachForecast()   // don't kill a still-running pipeline; just stop following it
         let run = ForecastRun(prompt: prompt, mode: mode, depth: depth, maxRounds: maxRounds,
                               client: makeMiroFishClient(), store: store)
         forecast = run
@@ -92,15 +92,59 @@ public final class AppEnvironment {
         }
     }
 
-    /// Re-open a stored forecast as a read-only snapshot (resume if still live).
+    /// Re-open a stored forecast. Runs that were live when the app last quit
+    /// reattach to their pipeline automatically; finished runs re-hydrate their
+    /// full artifacts (dossier, ontology, outline, …) from the backend when it's
+    /// reachable, falling back to the stored snapshot offline.
     public func openForecast(record: ForecastRecord) {
-        forecast?.cancel()
-        forecast = ForecastRun.restored(from: record, client: makeMiroFishClient(), store: store)
+        detachForecast()
+        let run = ForecastRun.restored(from: record, client: makeMiroFishClient(), store: store)
+        forecast = run
+        if record.status == "running" {
+            // The pipeline may still be live server-side — reconnect and follow.
+            Task { @MainActor in
+                let status = await ensureForecastBackend()
+                if case .running = status {
+                    run.resumePolling()
+                } else {
+                    run.hydrateFromBackend()   // no-op offline; keeps snapshot
+                }
+            }
+        } else {
+            run.hydrateFromBackend()
+        }
     }
 
     public func newForecast() {
-        forecast?.cancel()
+        detachForecast()
         forecast = nil
+    }
+
+    /// Delete a stored forecast, and best-effort remove the matching pipeline
+    /// (with its handoff artifacts) on the MiroFish backend so the two sides
+    /// don't drift apart.
+    public func deleteForecast(record: ForecastRecord) {
+        if forecast?.pipelineID == record.pipelineID {
+            forecast?.cancel()
+            forecast = nil
+        }
+        let pipelineID = record.pipelineID
+        try? store.deleteForecast(record)
+        let client = makeMiroFishClient()
+        Task.detached {
+            try? await client.deletePipeline(pipelineID)
+        }
+    }
+
+    /// Stop following the current run in the UI *without* cancelling it on the
+    /// backend — switching to another forecast shouldn't kill a live pipeline.
+    private func detachForecast() {
+        guard let forecast else { return }
+        if forecast.phase.isActive {
+            forecast.detach()
+        } else {
+            forecast.cancel()
+        }
     }
 
     /// Make sure the MiroFish backend is reachable, launching it if auto-launch is

@@ -61,6 +61,19 @@ public final class ForecastRun: Identifiable {
     public var agentLog: [MFAgentLogEntry] = []
     public var reportID: String?
 
+    // Follow-up chat with the report agent (needs a finished simulation).
+    public var chatMessages: [ChatMessage] = []
+    public var chatBusy: Bool = false
+    public var chatError: String?
+
+    public struct ChatMessage: Sendable, Identifiable {
+        public let id = UUID()
+        public let role: Role
+        public let text: String
+        public let toolNames: [String]
+        public enum Role: String, Sendable { case user, assistant }
+    }
+
     private let client: MiroFishClient
     private let store: ResearchStore
     private var record: ForecastRecord?
@@ -92,13 +105,61 @@ public final class ForecastRun: Identifiable {
         pollTask = Task { @MainActor [weak self] in await self?.launch() }
     }
 
+    /// Stop following this run locally without touching the backend pipeline —
+    /// used when the UI switches to another forecast. The record stays "running"
+    /// so re-opening it reattaches via `resumePolling`/`hydrateFromBackend`.
+    public func detach() {
+        pollTask?.cancel()
+        pollTask = nil
+        persist(force: true)
+    }
+
     public func cancel() {
         pollTask?.cancel()
         pollTask = nil
-        if phase.isActive {
+        let wasActive = phase.isActive
+        if wasActive {
             phase = .cancelled
             record?.status = "cancelled"
             persist(force: true)
+        }
+        // Stopping the poll loop alone leaves the pipeline burning tokens
+        // server-side — tell MiroFish to kill the DeerFlow/OASIS children too.
+        if wasActive, let pid = pipelineID {
+            let client = self.client
+            Task.detached {
+                do {
+                    try await client.cancelPipeline(pid)
+                    Log.engine.info("Forecast pipeline cancelled on backend: \(pid, privacy: .public)")
+                } catch {
+                    Log.engine.error("Backend cancel failed for \(pid, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+    }
+
+    /// Resume a failed/cancelled pipeline. MiroFish reuses completed stage
+    /// artifacts (research dossier, graph, …), so this skips straight to the
+    /// first incomplete stage instead of re-running everything.
+    public func resume() {
+        guard phase == .failed || phase == .cancelled, let pid = pipelineID else { return }
+        guard pollTask == nil else { return }
+        isRestored = false
+        errorMessage = nil
+        phase = .starting
+        pollTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.client.resumePipeline(pid)
+                guard !Task.isCancelled else { return }
+                self.phase = .running
+                self.record?.status = "running"
+                self.persist(force: true)
+                Log.engine.info("Forecast pipeline resumed: \(pid, privacy: .public)")
+                await self.pollLoop(pipelineID: pid)
+            } catch {
+                self.failWith(error)
+            }
         }
     }
 
@@ -149,6 +210,16 @@ public final class ForecastRun: Identifiable {
                     errorMessage = state.error ?? "The MiroFish pipeline failed."
                     await finalFetches(state)   // still pull whatever was produced
                     phase = .failed
+                    record?.status = "failed"
+                    persist(force: true)
+                    return
+                }
+                if state.status == "cancelled" {
+                    // Cancelled out-of-band (another client, backend restart, …).
+                    errorMessage = state.error
+                    await finalFetches(state)
+                    phase = .cancelled
+                    record?.status = "cancelled"
                     persist(force: true)
                     return
                 }
@@ -261,6 +332,41 @@ public final class ForecastRun: Identifiable {
         stages.first(where: { $0.kind == kind })?.status ?? .pending
     }
 
+    // MARK: - Report agent chat
+
+    /// True once the run can answer follow-up questions (the chat rides on the
+    /// simulation's graph, so it needs a simulation id and a finished report).
+    public var canChat: Bool {
+        simulationID != nil && (report?.markdown_content?.isEmpty == false)
+    }
+
+    /// Ask the report agent a follow-up question. The agent re-queries the
+    /// knowledge graph (and can interview live simulation agents), so a reply
+    /// can take a minute or two — `chatBusy` drives the UI spinner.
+    public func sendChat(_ message: String) {
+        let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !chatBusy, let sid = simulationID else { return }
+        chatError = nil
+        chatBusy = true
+        let history = chatMessages.map { MFChatTurn(role: $0.role.rawValue, content: $0.text) }
+        chatMessages.append(ChatMessage(role: .user, text: text, toolNames: []))
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.chatBusy = false }
+            do {
+                let reply = try await self.client.reportChat(simulationID: sid,
+                                                             message: text,
+                                                             history: history)
+                let body = reply.response?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                self.chatMessages.append(ChatMessage(role: .assistant,
+                                                     text: body.isEmpty ? "(no answer)" : body,
+                                                     toolNames: reply.toolNames))
+            } catch {
+                self.chatError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
     // MARK: - Persistence
 
     private func persist(force: Bool) {
@@ -275,6 +381,7 @@ public final class ForecastRun: Identifiable {
         record.graphID = graphID
         record.simulationID = simulationID
         record.reportID = reportID
+        record.errorText = errorMessage
         if !reportMarkdown.isEmpty {
             record.reportMarkdown = reportMarkdown
             lastPersistedReportLength = reportMarkdown.count
@@ -296,7 +403,9 @@ public final class ForecastRun: Identifiable {
         let run = ForecastRun(prompt: record.prompt, mode: mode, depth: record.depth,
                               maxRounds: nil, client: client, store: store)
         run.isRestored = true
+        run.record = record         // keep persisting resume/cancel/report updates
         run.pipelineID = record.pipelineID
+        run.errorMessage = record.errorText
         run.globalProgress = record.globalProgress
         run.graphID = record.graphID
         run.simulationID = record.simulationID
@@ -319,10 +428,46 @@ public final class ForecastRun: Identifiable {
 
     /// Re-attach a restored run to its still-live pipeline and resume polling.
     public func resumePolling() {
-        guard isRestored, let pid = pipelineID, !phase.isTerminal || phase == .completed else { return }
+        guard isRestored, let pid = pipelineID, !phase.isTerminal else { return }
         guard pollTask == nil else { return }
         isRestored = false
         phase = .running
         pollTask = Task { @MainActor [weak self] in await self?.pollLoop(pipelineID: pid) }
+    }
+
+    /// Best-effort re-fetch of a restored run's full artifacts (dossier, ontology,
+    /// graph, report outline, …) from the backend. The stored snapshot only keeps
+    /// the report markdown + graph; everything else comes back live when the
+    /// backend is reachable. Never changes `phase` and fails silently offline.
+    public func hydrateFromBackend() {
+        guard isRestored, let pid = pipelineID else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard let state = try? await self.client.pipelineStatus(pid) else { return }
+            self.ingest(state)
+            await self.finalFetches(state)
+            // If the stored status drifted from the backend's truth (e.g. the app
+            // quit mid-run and the pipeline finished on its own), adopt it.
+            if self.phase.isTerminal || self.phase == .idle {
+                switch state.status {
+                case "completed": self.phase = .completed
+                case "failed":
+                    self.phase = .failed
+                    self.errorMessage = self.errorMessage ?? state.error
+                case "cancelled": self.phase = .cancelled
+                case "running", "pending":
+                    // Still live on the backend — reattach and follow it.
+                    self.isRestored = false
+                    self.phase = .running
+                    if self.pollTask == nil {
+                        self.pollTask = Task { @MainActor [weak self] in
+                            await self?.pollLoop(pipelineID: pid)
+                        }
+                    }
+                default: break
+                }
+                self.persist(force: true)
+            }
+        }
     }
 }

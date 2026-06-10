@@ -1180,6 +1180,18 @@ private struct ForecastTab: View {
     @State private var hostString: String = ""
     @State private var checking = false
 
+    // Backend environment repair (uv venv --python 3.12 + uv sync)
+    @State private var repairing = false
+    @State private var repairMessage: String?
+    @State private var repairFailed = false
+
+    // Runtime LLM provider (backend /api/settings/llm)
+    @State private var providerInfo: MFProviderInfo?
+    @State private var selectedProvider: String = ""
+    @State private var providerKey: String = ""
+    @State private var providerBusy = false
+    @State private var providerMessage: String?
+
     var body: some View {
         @Bindable var env = env
         VStack(alignment: .leading, spacing: 20) {
@@ -1201,6 +1213,74 @@ private struct ForecastTab: View {
                         .buttonStyle(.borderedProminent).controlSize(.small).disabled(checking)
                 }
                 .padding(12)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Label("Python environment", systemImage: "stethoscope")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        if repairing { ProgressView().controlSize(.mini) }
+                        Button(repairing ? "Repairing…" : "Repair environment") {
+                            Task { await repair() }
+                        }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .disabled(repairing)
+                        .help("Rebuilds backend/.venv on Python 3.12 and reinstalls dependencies with uv. Use this when the backend fails with import errors. Takes a few minutes.")
+                    }
+                    if let repairMessage {
+                        Text(repairMessage)
+                            .font(.caption2)
+                            .foregroundStyle(repairFailed ? Color.orange : Color.secondary)
+                            .textSelection(.enabled)
+                            .lineLimit(6)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(12)
+            }
+
+            SettingsGroup("LLM provider (simulation + report)",
+                         footer: "Which model MiroFish uses for ontology, personas, the simulation agents, and the report. Switching applies to newly started forecasts; CLI providers (claude-cli, codex-cli) use your local subscription and need no key.") {
+                if let info = providerInfo {
+                    SettingsRow("Provider", icon: "cpu") {
+                        Picker("", selection: $selectedProvider) {
+                            ForEach(info.providers ?? []) { p in
+                                Text(p.label ?? p.id).tag(p.id)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 220)
+                    }
+                    if selectedProviderNeedsKey(info) {
+                        SettingsRow("API key", icon: "key") {
+                            SecureField(keyPlaceholder(info), text: $providerKey)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: 300)
+                        }
+                    }
+                    HStack {
+                        if let providerMessage {
+                            Text(providerMessage)
+                                .font(.caption2).foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                        Spacer()
+                        if providerBusy { ProgressView().controlSize(.mini) }
+                        Button("Apply") { Task { await applyProvider() } }
+                            .buttonStyle(.bordered).controlSize(.small)
+                            .disabled(providerBusy || selectedProvider.isEmpty
+                                      || selectedProvider == info.current && providerKey.isEmpty)
+                    }
+                    .padding(12)
+                } else {
+                    HStack {
+                        Text("Start the backend to view and switch its LLM provider.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Load") { Task { await loadProviderInfo() } }
+                            .buttonStyle(.bordered).controlSize(.small)
+                    }
+                    .padding(12)
+                }
             }
 
             SettingsGroup("MiroFish location",
@@ -1280,6 +1360,9 @@ private struct ForecastTab: View {
         _ = await MiroFishSupervisor.shared.checkHealth(host: env.forecastConfig.host)
         env.forecastBackendStatus = await MiroFishSupervisor.shared.currentStatus()
         checking = false
+        if case .running = env.forecastBackendStatus, providerInfo == nil {
+            await loadProviderInfo()
+        }
     }
 
     private func start() async {
@@ -1288,6 +1371,69 @@ private struct ForecastTab: View {
         env.forecastBackendStatus = await MiroFishSupervisor.shared.ensureRunning(
             host: env.forecastConfig.host, repoRoot: env.forecastConfig.repoRoot)
         checking = false
+        if case .running = env.forecastBackendStatus { await loadProviderInfo() }
+    }
+
+    private func repair() async {
+        commitRepoPath()
+        repairing = true
+        repairFailed = false
+        repairMessage = "Rebuilding backend/.venv on Python 3.12 — this can take a few minutes…"
+        do {
+            _ = try await MiroFishSupervisor.shared.repairEnvironment(repoRoot: env.forecastConfig.repoRoot)
+            repairMessage = "Environment rebuilt. Starting the backend…"
+            env.forecastBackendStatus = await MiroFishSupervisor.shared.ensureRunning(
+                host: env.forecastConfig.host, repoRoot: env.forecastConfig.repoRoot)
+            if case .running = env.forecastBackendStatus {
+                repairMessage = "Environment rebuilt — backend is running."
+                await loadProviderInfo()
+            } else {
+                repairFailed = true
+                repairMessage = AppEnvironment.backendMessage(env.forecastBackendStatus)
+            }
+        } catch {
+            repairFailed = true
+            repairMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+        repairing = false
+    }
+
+    // MARK: LLM provider
+
+    private func loadProviderInfo() async {
+        let client = MiroFishClient(host: env.forecastConfig.host)
+        guard let info = try? await client.providerInfo() else { return }
+        providerInfo = info
+        if selectedProvider.isEmpty { selectedProvider = info.current ?? "" }
+    }
+
+    private func selectedProviderNeedsKey(_ info: MFProviderInfo) -> Bool {
+        (info.providers ?? []).first(where: { $0.id == selectedProvider })?.needs_key == true
+    }
+
+    private func keyPlaceholder(_ info: MFProviderInfo) -> String {
+        if selectedProvider == info.current, info.has_api_key == true {
+            return "configured — leave blank to keep"
+        }
+        return "API key"
+    }
+
+    private func applyProvider() async {
+        guard !selectedProvider.isEmpty else { return }
+        providerBusy = true
+        providerMessage = nil
+        let client = MiroFishClient(host: env.forecastConfig.host)
+        do {
+            let key = providerKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            let info = try await client.setProvider(selectedProvider,
+                                                    apiKey: key.isEmpty ? nil : key)
+            providerInfo = info
+            providerKey = ""
+            providerMessage = "Switched to \(info.current ?? selectedProvider) (research model: \(info.deerflow_model ?? "—")). Applies to new forecasts."
+        } catch {
+            providerMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+        providerBusy = false
     }
 
     private func chooseFolder() {
