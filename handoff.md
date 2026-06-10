@@ -298,3 +298,40 @@ so they're unused — candidates for deletion, left in place pending user say-so
   MiroFish's orphan-pipeline reclaim *before* the port-bind failure — it can kill
   stale child pids. `MiroFishSupervisor` already probes `/health` first and
   attaches instead of double-launching, which avoids this; keep it that way.
+
+### 2026-06-10 (later) — Forecast onboarding assistant
+
+**Request:** "create an onboarding phase that runs the startup script and gets
+everything started up."
+
+- `Forecast/ForecastOnboarding.swift` (new): @Observable model for the setup
+  flow — environment checks (MiroFish folder, uv, git, claude/codex CLI or API
+  provider in .env, Zep key in Keychain/.env, backend venv `python3.12` shim,
+  DeerFlow checkout incl. `DEERFLOW_DIR` override), Zep key capture (Keychain +
+  `syncEnv` into .env), `setup.sh` execution with live console (600-line cap,
+  \r-progress collapsed), backend launch + health wait. Persists completion in
+  UserDefaults (`forecastOnboardingCompleted.v1`).
+- `MiroFishSupervisor.setupScriptStream(repoRoot:)` (new): nonisolated
+  AsyncThrowingStream running `bash setup.sh` with stdin=/dev/null (the script's
+  interactive Zep prompt self-skips — verified by reading setup.sh:229-247),
+  augmented PATH, line-buffered output, cancellation → SIGTERM, non-zero exit →
+  typed error.
+- `Interface/Forecast/ForecastOnboardingView.swift` (new): 4-step sheet
+  (checks → Zep key → setup console → start backend) with auto-scrolling
+  console and skip hint when everything is already provisioned.
+- Wiring: auto-presents once per session on first visit to the Forecast
+  workspace when the backend isn't running and onboarding never completed;
+  "Set up…" button on the backend-needs-setup banner; "Setup assistant…" in
+  Settings → Forecast (switches to the Forecast workspace first since the sheet
+  hangs off it).
+- Known upstream behavior (accepted): re-running setup.sh on a configured
+  machine re-detects the CLI provider and may flip LLM_PROVIDER in .env (e.g.
+  minimax → claude-cli); the onboarding marks the step skippable when
+  provisioned, and the provider can be switched back in Settings → Forecast.
+
+**Evidence:** two `xcodebuild` Debug builds SUCCEEDED, 0 warnings
+(`logs/forecast-onboarding-build*.log`); all check predicates validated against
+the real machine (venv shim, deerflow_research.py, tool discovery incl. claude
+at `~/.local/bin`); setup.sh non-interactive path verified by source read. Live
+setup.sh run intentionally NOT performed — the user's backend is mid-pipeline
+and the script would mutate `.env`'s LLM_PROVIDER.

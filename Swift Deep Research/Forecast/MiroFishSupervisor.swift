@@ -163,6 +163,110 @@ public actor MiroFishSupervisor {
         }
     }
 
+    // MARK: - Setup script (onboarding)
+
+    public enum SetupScriptError: Error, LocalizedError {
+        case scriptMissing(String)
+        case launchFailed(String)
+        case exited(Int32)
+
+        public var errorDescription: String? {
+            switch self {
+            case .scriptMissing(let path):
+                return "setup.sh not found at \(path). Point Settings → Forecast at the MiroFish folder that contains it."
+            case .launchFailed(let message):
+                return "Couldn't launch setup.sh: \(message)"
+            case .exited(let code):
+                return "setup.sh exited with status \(code) — see the log above for the failing step."
+            }
+        }
+    }
+
+    /// Run MiroFish's `setup.sh` (idempotent installer: .env scaffold, backend
+    /// venv on Python 3.12, DeerFlow clone + bridge overlay + venv) and stream
+    /// its output line by line. stdin is /dev/null, so the script's interactive
+    /// Zep prompt self-skips — the app injects the key via `syncEnv` instead.
+    /// Cancelling the consuming task terminates the script.
+    nonisolated public static func setupScriptStream(repoRoot: URL) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let script = repoRoot.appendingPathComponent("setup.sh")
+            guard FileManager.default.fileExists(atPath: script.path) else {
+                continuation.finish(throwing: SetupScriptError.scriptMissing(script.path))
+                return
+            }
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = [script.path]
+            process.currentDirectoryURL = repoRoot
+            var env = ProcessInfo.processInfo.environment
+            let home = env["HOME"] ?? NSHomeDirectory()
+            env["PATH"] = ["/opt/homebrew/bin", "/usr/local/bin", home + "/.local/bin", home + "/.cargo/bin"]
+                .joined(separator: ":") + ":" + (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+            env["PYTHONUNBUFFERED"] = "1"
+            process.environment = env
+            process.standardInput = FileHandle.nullDevice
+
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
+            let buffer = LineBuffer()
+            pipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty else { return }
+                for line in buffer.append(data) { continuation.yield(line) }
+            }
+            process.terminationHandler = { proc in
+                pipe.fileHandleForReading.readabilityHandler = nil
+                if let rest = try? pipe.fileHandleForReading.readToEnd(), !rest.isEmpty {
+                    for line in buffer.append(rest) { continuation.yield(line) }
+                }
+                if let tail = buffer.flush() { continuation.yield(tail) }
+                if proc.terminationStatus == 0 {
+                    continuation.finish()
+                } else {
+                    continuation.finish(throwing: SetupScriptError.exited(proc.terminationStatus))
+                }
+            }
+            continuation.onTermination = { reason in
+                if case .cancelled = reason, process.isRunning { process.terminate() }
+            }
+            do {
+                try process.run()
+            } catch {
+                pipe.fileHandleForReading.readabilityHandler = nil
+                continuation.finish(throwing: SetupScriptError.launchFailed(error.localizedDescription))
+            }
+        }
+    }
+
+    /// Splits a byte stream into text lines across chunk boundaries. The pipe's
+    /// readability handler is serial per file handle, but the termination
+    /// handler can race it, hence the lock.
+    private final class LineBuffer: @unchecked Sendable {
+        private var pending = ""
+        private let lock = NSLock()
+
+        func append(_ data: Data) -> [String] {
+            guard let text = String(data: data, encoding: .utf8) else { return [] }
+            lock.lock(); defer { lock.unlock() }
+            pending += text
+            var lines: [String] = []
+            while let nl = pending.firstIndex(of: "\n") {
+                lines.append(String(pending[..<nl]))
+                pending = String(pending[pending.index(after: nl)...])
+            }
+            return lines
+        }
+
+        func flush() -> String? {
+            lock.lock(); defer { lock.unlock() }
+            guard !pending.isEmpty else { return nil }
+            let tail = pending
+            pending = ""
+            return tail
+        }
+    }
+
     // MARK: - Environment repair
 
     public enum RepairError: Error, LocalizedError {

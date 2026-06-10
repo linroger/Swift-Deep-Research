@@ -539,3 +539,10 @@ tests against the user's running backend on :5001 (a real pipeline was mid-run
 at graph stage — left untouched).
 Next: scenario tests that need a full run — cancel-mid-research, resume after
 preflight failure, relaunch-during-run reattach, chat round-trip after report.
+
+=== Session 2026-06-10b (branch v2-deep-research-forecast) ===
+Forecast onboarding assistant: 4-step sheet (env checks, Zep key, live
+setup.sh console, backend launch). New ForecastOnboarding model +
+ForecastOnboardingView + MiroFishSupervisor.setupScriptStream. Auto-presents
+once when the backend isn't provisioned; entry points on the banner and in
+Settings -> Forecast. Two clean builds; checks validated on-machine.

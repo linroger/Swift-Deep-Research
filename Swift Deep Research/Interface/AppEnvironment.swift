@@ -37,6 +37,22 @@ public final class AppEnvironment {
     public var forecastConfig: ForecastConfiguration = .suggestedDefault()
     /// Last-known MiroFish backend status, surfaced in the Forecast UI.
     public var forecastBackendStatus: MiroFishSupervisor.Status = .stopped
+    /// Presents the Forecast setup assistant (first run, or via banner/Settings).
+    public var forecastOnboardingOpen: Bool = false
+    /// Auto-present the assistant at most once per app session.
+    private var forecastOnboardingAutoShown = false
+
+    /// Pop the setup assistant when the Forecast workspace first opens on a
+    /// machine where the backend isn't ready and onboarding never completed.
+    public func maybeAutoPresentForecastOnboarding() {
+        guard !forecastOnboardingAutoShown, !ForecastOnboarding.hasCompletedOnce else { return }
+        switch forecastBackendStatus {
+        case .running, .launching: return
+        case .stopped, .backendMissing, .interpreterMissing, .failed:
+            forecastOnboardingAutoShown = true
+            forecastOnboardingOpen = true
+        }
+    }
 
     /// UserDefaults key for the persisted engine configuration. Versioned so a
     /// schema change can invalidate stale blobs by bumping the suffix.

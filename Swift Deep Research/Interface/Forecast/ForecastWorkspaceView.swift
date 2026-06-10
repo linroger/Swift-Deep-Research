@@ -7,6 +7,7 @@ struct ForecastWorkspaceView: View {
     @Environment(AppEnvironment.self) private var env
 
     var body: some View {
+        @Bindable var env = env
         Group {
             if let run = env.forecast {
                 ForecastPipelineView(run: run, onNewForecast: { env.newForecast() })
@@ -16,7 +17,13 @@ struct ForecastWorkspaceView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(canvasBackground)
-        .task { await env.ensureForecastBackend() }
+        .sheet(isPresented: $env.forecastOnboardingOpen) {
+            ForecastOnboardingView()
+        }
+        .task {
+            await env.ensureForecastBackend()
+            env.maybeAutoPresentForecastOnboarding()
+        }
     }
 
     @ViewBuilder

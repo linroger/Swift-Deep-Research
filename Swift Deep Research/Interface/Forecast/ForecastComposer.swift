@@ -188,13 +188,13 @@ struct ForecastBackendBanner: View {
             case .backendMissing(let m), .interpreterMissing(let m), .failed(let m):
                 banner(icon: "exclamationmark.triangle.fill", tint: .orange,
                        title: "MiroFish backend needs setup",
-                       message: m, showsSettings: true)
+                       message: m, showsSetup: true)
             }
         }
     }
 
     private func banner(icon: String, tint: Color, title: String, message: String,
-                        showsSpinner: Bool = false, showsSettings: Bool = false) -> some View {
+                        showsSpinner: Bool = false, showsSetup: Bool = false) -> some View {
         HStack(alignment: .top, spacing: 10) {
             if showsSpinner {
                 ProgressView().controlSize(.small).frame(width: 20)
@@ -207,7 +207,9 @@ struct ForecastBackendBanner: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
-            if showsSettings {
+            if showsSetup {
+                Button("Set up…") { env.forecastOnboardingOpen = true }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
                 Button("Settings") { env.settingsOpen = true }
                     .buttonStyle(.bordered).controlSize(.small)
             }

@@ -1206,6 +1206,13 @@ private struct ForecastTab: View {
                     }
                 }
                 HStack {
+                    Button("Setup assistant…") {
+                        env.settingsOpen = false
+                        env.workspace = .forecast   // the sheet hangs off the Forecast workspace
+                        env.forecastOnboardingOpen = true
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .help("Guided first-run setup: dependency checks, Zep key, setup.sh, and backend launch.")
                     Spacer()
                     Button("Check") { Task { await check() } }
                         .buttonStyle(.bordered).controlSize(.small).disabled(checking)
