@@ -45,7 +45,7 @@ public enum ModelDiscovery {
                                      config: EngineConfiguration) -> URL? {
         switch provider {
         case .deepseek: return URL(string: "https://api.deepseek.com")
-        case .minimax:  return URL(string: "https://api.minimax.io")
+        case .minimax:  return URL(string: "https://api.minimaxi.com")   // domestic (国内) host
         case .kimi:     return URL(string: "https://api.moonshot.ai")
         case .qwen:     return config.qwenBaseURL
         case .lmstudio: return config.lmStudioHost

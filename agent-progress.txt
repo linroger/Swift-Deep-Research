@@ -546,3 +546,13 @@ setup.sh console, backend launch). New ForecastOnboarding model +
 ForecastOnboardingView + MiroFishSupervisor.setupScriptStream. Auto-presents
 once when the backend isn't provisioned; entry points on the banner and in
 Settings -> Forecast. Two clean builds; checks validated on-machine.
+
+=== Session 2026-06-10c (branch v2-deep-research-forecast) ===
+MiniMax provider switched to the domestic (国内) platform: base URL
+api.minimax.io -> api.minimaxi.com in ProviderRegistry + ModelDiscovery; key
+console URL -> platform.minimaxi.com; default model MiniMax-M3; fallback model
+list refreshed from the live domestic catalogue (M3/M2.7/M2.5/+highspeed).
+Verified live with the user's sk-cp coding-plan key: /v1/models lists 8 models,
+chat completion + SSE streaming both work on api.minimaxi.com (the key 401s on
+the international host, confirming domestic-only). Key upserted into the app's
+Keychain entry (minimax.api). Build green.

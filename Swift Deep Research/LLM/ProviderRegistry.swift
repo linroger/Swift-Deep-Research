@@ -32,7 +32,7 @@ public struct ProviderRegistry: Sendable {
             case .openai: "gpt-5.5"
             case .gemini: "gemini-3-pro-preview"
             case .deepseek: "deepseek-chat"
-            case .minimax: "MiniMax-M2"
+            case .minimax: "MiniMax-M3"
             case .kimi: "kimi-k2.6"
             case .qwen: "qwen-max"
             case .lmstudio: "local-model"
@@ -58,7 +58,15 @@ public struct ProviderRegistry: Sendable {
                            "gemini-2.5-flash-lite",
                            "gemini-2.0-flash"]
             case .deepseek: ["deepseek-chat", "deepseek-reasoner"]
-            case .minimax: ["MiniMax-M2.1", "MiniMax-M2", "MiniMax-Text-01", "abab6.5s-chat"]
+            // Domestic (api.minimaxi.com) catalogue as of 2026-06; the
+            // -highspeed variants trade quality for latency.
+            case .minimax: ["MiniMax-M3",
+                            "MiniMax-M2.7",
+                            "MiniMax-M2.7-highspeed",
+                            "MiniMax-M2.5",
+                            "MiniMax-M2.5-highspeed",
+                            "MiniMax-M2.1",
+                            "MiniMax-M2"]
             case .kimi: ["kimi-k2.6",
                          "kimi-k2.5",
                          "kimi-k2-turbo-preview",
@@ -156,9 +164,11 @@ public struct ProviderRegistry: Sendable {
                 baseURL: URL(string: "https://api.deepseek.com")!,
                 key: .deepseek, contextWindow: 128_000)
         case .minimax:
+            // Domestic (国内) MiniMax platform — coding-plan `sk-cp-…` keys only
+            // authenticate here, not on the international api.minimax.io host.
             return try await makeOpenAICompatible(
                 provider: provider, model: chosenModel,
-                baseURL: URL(string: "https://api.minimax.io")!,
+                baseURL: URL(string: "https://api.minimaxi.com")!,
                 key: .minimax, contextWindow: 1_000_000)
         case .kimi:
             return try await makeOpenAICompatible(

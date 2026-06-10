@@ -97,7 +97,7 @@ public enum KeyAccount: String, Sendable, CaseIterable {
         case .openAI:    URL(string: "https://platform.openai.com/api-keys")!
         case .gemini:    URL(string: "https://aistudio.google.com/app/apikey")!
         case .deepseek:  URL(string: "https://platform.deepseek.com/api_keys")!
-        case .minimax:   URL(string: "https://www.minimax.io/platform/user-center/basic-information")!
+        case .minimax:   URL(string: "https://platform.minimaxi.com/user-center/basic-information/interface-key")!
         case .moonshot:  URL(string: "https://platform.moonshot.ai/console/api-keys")!
         case .qwen:      URL(string: "https://bailian.console.aliyun.com/?apiKey=1")!
         case .custom:    URL(string: "https://platform.openai.com/docs/api-reference")!
