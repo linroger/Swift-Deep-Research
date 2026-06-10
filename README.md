@@ -16,11 +16,23 @@
 
 Private documents live in **SeekDB**, an embedded vector knowledge base wired through a Python FastAPI sidecar that the app launches on first run. PDFs are chunked, embedded, and queried semantically — the worker calls `knowledge_base` *before* the web so your own notes get priority.
 
+Alongside research, a **Forecast** workspace answers questions about the *future*: it drives a local **MiroFish** prediction backend through a six-stage pipeline — deep research (DeerFlow) → actor ontology → temporal knowledge graph (Zep) → agent personas → a multi-agent social simulation (OASIS) with hundreds of LLM agents posting on simulated Twitter/Reddit → a final prediction report you can chat with. Every stage renders natively in SwiftUI, including an interactive force-directed knowledge graph.
+
 Built top-to-bottom in Swift 6.2 / SwiftUI for macOS 26 Tahoe with strict concurrency, structured tool calling across every provider, and a Liquid Glass UI.
 
 ---
 
 ## Demo
+
+### Forecast: simulate a society, read out the prediction
+
+A complete forecast of the 2030 semiconductor industry — the DeerFlow research console and actor dossier, the six-stage pipeline stepper, the OASIS social simulation (40 rounds, 1,600+ agent actions across simulated Twitter and Reddit with live per-round telemetry), and the final prediction report.
+
+<video src="https://github.com/linroger/Swift-Deep-Research/raw/main/Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2021.11.33.mp4" controls muted width="100%"></video>
+
+> ▶ Direct link: [Forecast pipeline walkthrough](https://github.com/linroger/Swift-Deep-Research/raw/main/Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2021.11.33.mp4)
+
+### Deep research
 
 A full multi-round research run — planner decomposition, parallel workers issuing tool calls, the activity inspector, and the final cited synthesis.
 
@@ -45,6 +57,11 @@ A condensed walkthrough of the same flow at **5× speed**:
 | **Sources inspector** — Discovered, fetched, and cited sources beside the draft, plus a Knowledge base section listing retrieved chunks by relevance score (click to read the full chunk) | ![Sources](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2010.19.44%402x.png) |
 | **Knowledge base** — Drop PDFs to chunk + embed via the auto-launched SeekDB sidecar; queried automatically during research | ![Knowledge Base](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2010.53.03%402x.png) |
 | **Settings** — Provider routing for orchestrator / worker / synthesizer across 12 providers (brand-iconed), one-click API-key testing + live model discovery, API keys, LM Studio / custom / Qwen endpoints, sidecar controls, budget tuning | ![Settings](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2011.17.46%402x.png) |
+| **Forecast workspace** — Ask how a society reacts to an event; depth presets (Quick / Standard / Deep), full-forecast vs research-only mode, a live backend-ready banner, and past + on-backend forecasts in the sidebar | ![Forecast composer](./Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2021.15.22%402x.png) |
+| **Forecast settings** — MiroFish backend status with one-click start, the guided setup assistant, environment repair, simulation/report LLM provider switching (incl. MiniMax 国内), backend folder + host URL, auto-launch, default research depth | ![Forecast settings](./Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2021.15.06%402x.png) |
+| **Provider routing** — Orchestrator, workers, and synthesizer each get their own provider + model; one-click *Test key & fetch* validates the key against the live API and pulls the latest model ids | ![Providers](./Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2021.13.45%402x.png) |
+| **Budget presets** — Fast / Standard / Thorough scale max tokens, workers, sources per worker, and tool calls per worker together — or tune each cap individually | ![Budget](./Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2021.14.57%402x.png) |
+| **About** — The architecture at a glance: orchestrator–worker pattern, the full LLM provider roster, search fallback chain, SeekDB knowledge base, Keychain-backed keys | ![About](./Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2021.14.35%402x.png) |
 
 ---
 
@@ -90,6 +107,37 @@ What this buys you over a one-shot RAG pipeline:
 
 ---
 
+## Forecast — predict how a society reacts
+
+The **Forecast** workspace (toolbar toggle: Research ⇄ Forecast) answers a different kind of question: not *"what is true?"* but *"what will happen?"*. Type an event — *"How will US chip-export policy reshape the semiconductor industry by 2030?"* — and the app drives a local **MiroFish** prediction backend through a six-stage pipeline, rendering every stage natively:
+
+```
+ prompt ─▶ ① Deep Research (DeerFlow) ─▶ ② Ontology ─▶ ③ Knowledge Graph (Zep)
+                                                              │
+ ⑥ Prediction Report ◀─ ⑤ Simulation (OASIS) ◀─ ④ Agent Setup ◀┘
+```
+
+1. **Deep Research** — DeerFlow runs a multi-pass background investigation and produces a research dossier plus a cast of real-world actors (people, companies, institutions) with roles, stances, and influence. A live console streams research lines as they happen.
+2. **Ontology** — the pipeline decides which entity and relationship types matter for this question.
+3. **Knowledge Graph** — entities are extracted into a Zep temporal knowledge graph, rendered as a **native interactive force-directed graph** (the [Grape](https://github.com/li3zhen1/Grape) package): pan, zoom, drag nodes, toggle labels, and tap any node for an inspector with its type, summary, and relationships.
+4. **Agent Setup** — each graph actor becomes an autonomous LLM agent with a persona, memory, and posting behaviour.
+5. **Simulation** — OASIS runs the agent society on simulated **Twitter and Reddit** for dozens of rounds. The stage view shows per-platform telemetry, an actions-per-round chart, and a live feed of every post, comment, and like as agents react to the event and to each other.
+6. **Prediction Report** — a ReAct report agent reads the simulation back out (it can interview individual agents as a tool call) and writes the forecast. You can then **chat with the report**: follow-up questions run against the full simulation context.
+
+### Built to survive real pipelines
+
+Forecasts run for tens of minutes against a local Python backend, so the lifecycle is hardened end-to-end:
+
+- **Onboarding assistant.** A guided first-run flow checks the environment, captures your Zep key, streams MiroFish's `setup.sh` into a live console, and launches the backend — no terminal needed.
+- **Supervised backend.** The app launches and health-checks the Flask backend itself, classifies failures (port conflicts, broken venv, missing `.env` config) into actionable messages, and offers one-click **environment repair**.
+- **Cancel / resume / reattach.** Stop a run mid-flight; resume restarts from the first incomplete stage, reusing finished research, graph, and simulation artifacts. Quit the app mid-run and reopening the forecast reattaches to the still-running pipeline.
+- **Backend browser.** The sidebar's *On backend* section lists pipelines that exist on MiroFish but weren't started from this app (web UI, CLI, another machine). One click imports them with full hydration — research lines, dossier, ontology, graph, simulation telemetry, and report.
+- **Provider switching.** The simulation/report LLM is switchable from Settings → Forecast — including the **MiniMax domestic (国内) platform** (`api.minimaxi.com`, MiniMax-M3), DeepSeek, Qwen, and more — with keys pulled from the same Keychain the research side uses.
+
+The backend (MiroFish + a vendored DeerFlow) lives outside the app; point Settings → Forecast at its folder and the app handles launch, health, and shutdown.
+
+---
+
 ## SeekDB — your private knowledge base, embedded
 
 Most research questions have *some* answer in documents you already own. Swift Deep Research integrates **SeekDB** (via `pyseekdb`) as a first-class tool the agent reaches for *before* the web:
@@ -130,7 +178,7 @@ Pick a different provider for the planner, workers, and synthesizer — keep pla
 | **OpenAI** | Cloud | GPT-5.5 / 5.4 / 4.1 series, SSE streaming, function calling |
 | **Gemini** | Cloud | 2.0 / 2.5 Flash + Pro, function calling |
 | **DeepSeek** | Cloud | `deepseek-chat` (V3) / `deepseek-reasoner` (R1), OpenAI-compatible |
-| **MiniMax** | Cloud | MiniMax-M2 / Text-01, OpenAI-compatible |
+| **MiniMax** | Cloud | MiniMax-M3 / M2.x via the domestic (国内) platform `api.minimaxi.com`, OpenAI-compatible |
 | **Moonshot Kimi** | Cloud | Kimi K2.6 / K2 series, OpenAI-compatible |
 | **Qwen (Alibaba)** | Cloud | Qwen-Max / Plus / Turbo, Qwen3, QwQ — Alibaba Cloud Model Studio (MaaS), OpenAI-compatible via `/compatible-mode/v1` |
 | **LM Studio** | Local server | Any loaded model, no API key, live `/v1/models` discovery |
@@ -169,6 +217,7 @@ After synthesis, a dedicated `CitationExtractor` re-reads the draft and maps eve
 - Python 3.10+ on `PATH` (the app auto-creates a virtualenv and installs the SeekDB deps on first run — manual `pip install pyseekdb fastapi uvicorn pydantic` is optional)
 - Optional: API keys for any combination of Anthropic, OpenAI, Gemini, DeepSeek, MiniMax, Moonshot/Kimi, Qwen (Alibaba Cloud Model Studio), a custom endpoint, Tavily, Exa, Brave
 - Optional: Ollama or LM Studio running locally with at least one tool-capable model loaded
+- Optional (Forecast): a local MiroFish checkout (with its vendored DeerFlow) and a Zep API key — the in-app onboarding assistant runs its `setup.sh` and launches the backend for you
 
 ### Build & run
 1. Open `Swift Deep Research.xcodeproj` in Xcode 26.
@@ -177,6 +226,7 @@ After synthesis, a dedicated `CitationExtractor` re-reads the draft and maps eve
 4. Open Settings → paste any API keys you want to use (Anthropic, OpenAI, Gemini, DeepSeek, MiniMax, Kimi, …); point the LM Studio / custom-endpoint cards at a local or self-hosted server.
 5. Drag PDFs into the Knowledge tab if you want a private KB.
 6. Type a question in the hero composer, pick a depth preset, and run.
+7. For forecasts: switch the toolbar to **Forecast**, let the onboarding assistant set up and launch the MiroFish backend (or point Settings → Forecast at an existing checkout), then ask how a society reacts to an event.
 
 ### Sidecar manually
 If the auto-launch ever fails (PATH issues, missing Python), run it yourself:
@@ -197,8 +247,12 @@ Swift Deep Research/
 │                     # ResearchEvent, AgentBudget, FetchedSource, …
 ├── Engine/           # ResearchEngine, Planner, WorkerAgent (ReAct loop),
 │                     # Synthesizer, Reflector, IterationController
+├── Forecast/         # MiroFishClient (REST), ForecastRun (pipeline state),
+│                     # MiroFishSupervisor (backend launch/repair), ForecastOnboarding
 ├── Interface/        # SwiftUI: MainScene, Composer, ResearchCanvas,
 │                     # SourcePanel, KBChunkDetail, SettingsSheet, ConversationView
+│   └── Forecast/     # Pipeline stepper, KnowledgeGraphView (Grape), simulation
+│                     # telemetry, report + chat, onboarding, backend browser
 ├── Knowledge/        # SeekDBClient, SidecarSupervisor (venv bootstrap), KnowledgeBase
 ├── LLM/              # Provider clients (Anthropic, OpenAI, Gemini, Ollama,
 │                     # FoundationModels, MLX) + OpenAICompatibleClient
@@ -217,6 +271,7 @@ sidecar/              # Python FastAPI seekdb sidecar
 - The original **ReAct** paper (Yao et al., *Reasoning + Acting in Language Models*)
 - Perplexity / ChatGPT Search citation-rendering pattern
 - Open-source agents: STORM, GPT-Researcher, smolagents
+- Forecast stack: MiroFish, ByteDance **DeerFlow**, **Zep** temporal knowledge graphs, CAMEL-AI **OASIS** social simulation, **Grape** force-directed graphs
 
 ---
 
