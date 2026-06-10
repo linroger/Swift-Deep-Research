@@ -335,3 +335,59 @@ the real machine (venv shim, deerflow_research.py, tool discovery incl. claude
 at `~/.local/bin`); setup.sh non-interactive path verified by source read. Live
 setup.sh run intentionally NOT performed — the user's backend is mid-pipeline
 and the script would mutate `.env`'s LLM_PROVIDER.
+
+### 2026-06-10 (later) — Backend forecast browser + knowledge-graph fixes
+
+**Request:** "read from the completed forecast reports and display them on the
+app's interface, including all the research, reports, and knowledge graph, and
+everything else."
+
+**Backend pipeline browser.** The sidebar now lists every pipeline MiroFish
+knows about — started from this app, the web UI, run_simulation.py, or another
+machine — under an "On backend" section (deduped against locally-imported runs,
+manual refresh button). Tapping a remote pipeline imports it as a `ForecastRecord`
+and opens it through the normal restore→hydrate path.
+- `AppEnvironment`: `backendPipelines` state, `refreshBackendPipelines()`,
+  `openBackendPipeline()` (creates record from `/status`, treats `pending`→running),
+  `deleteBackendPipeline()`.
+- `ResearchStore.findForecast(pipelineID:)` for dedupe.
+- `ForecastSidebar`: "On backend" section + `BackendPipelineRow`; refresh `.task`.
+- `ForecastWorkspaceView`: refreshes the list once the backend is confirmed up.
+
+**Full hydration of completed/imported runs.** `ForecastRun.finalFetches` now
+pulls *every* stage artifact (research console tail, dossier, project ontology,
+knowledge graph, simulation run-status + timeline, report + agent log), not just
+the ones that streamed in live — so an imported finished forecast renders all six
+stages. `hydrateFromBackend()` (added earlier) drives this on open.
+
+**Knowledge-graph view fixes (user-reported bugs).**
+- *"No way to back out."* Grape's `ForceDirectedGraph` is a bare greedy `Canvas`
+  that drew **unclipped over the pipeline header/stepper**, hiding the New/back
+  controls. Fixed by `.clipShape(RoundedRectangle)` on both the graph canvas and
+  the outer container, plus a finite `maxWidth/maxHeight:.infinity` frame.
+- *"Tapping nodes shows no labels/details."* The plain `.onTapGesture` was being
+  swallowed by Grape's `withGraphDragGesture`. Replaced with a
+  `.simultaneousGesture(SpatialTapGesture)` that survives the drag and carries the
+  hit location; empty-space taps now dismiss the inspector. Grape's hit-test area
+  equals a node's drawn radius (confirmed by reading
+  `ForceDirectedGraphModel.findNode`), so the node radius floor was raised
+  (5→8 + degree) to make small nodes tappable.
+
+**Live verification (against the user's running backend, 7 pipelines).**
+- `/api/research/list` decodes cleanly into `MFPipelineSummary` (isolated Swift
+  harness): 7 pipelines, 5 completed.
+- Endpoint shapes for a completed pipeline confirmed: dossier (5.4 KB report),
+  ontology (10 entity / 8 edge types), graph (90 nodes / 140 edges), simulation
+  (542 actions, 24 timeline rounds), report (16.7 KB markdown, 3 sections),
+  agent-log (70 lines).
+- Built app launched: the Forecast sidebar populated with the backend pipelines;
+  opening one rendered the full view — header, 6-stage stepper (Deep Research /
+  Ontology / Knowledge Graph / Agent Setup all green, Simulation telemetry with
+  the actions-per-round chart + agent feed, Report state). A live pipeline
+  auto-advanced through its stages in real time in the imported view.
+- Four clean `xcodebuild` Debug builds (`logs/backend-browser-build-*.log`,
+  `logs/graph-fix-build-*.log`).
+- Not visually re-confirmed via automation: the graph chip's rendered output
+  after the clip fix — scripted clicking kept being confounded by live-pipeline
+  auto-follow and then an OS automation-permission dialog. The fix is grounded in
+  reading Grape's source (overdraw + gesture swallowing) and is low-risk.

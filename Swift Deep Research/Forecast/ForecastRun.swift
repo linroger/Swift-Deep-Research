@@ -304,14 +304,31 @@ public final class ForecastRun: Identifiable {
         }
     }
 
+    /// Pull every artifact a finished (or terminal) pipeline produced, so a
+    /// completed/imported forecast renders all stages — not just the ones that
+    /// happened to stream in while we were polling. Each fetch is best-effort.
     private func finalFetches(_ state: MFPipelineState) async {
-        if dossier == nil { dossier = try? await client.dossier(state.pipeline_id) }
-        if let gid = state.graph_id, let data = try? await client.graphData(gid) {
-            graph = ForecastGraph.from(data)
+        if researchLines.isEmpty, stageStatus(.research) != .pending {
+            if let p = try? await client.researchProgress(state.pipeline_id, lines: 200) {
+                researchLines = p.lines
+            }
         }
-        if let sid = state.simulation_id, let detail = try? await client.runStatusDetail(sid) {
-            runState = detail
-            recentActions = detail.recent_actions ?? recentActions
+        if dossier == nil { dossier = try? await client.dossier(state.pipeline_id) }
+        if ontology == nil, let pid = state.project_id {
+            if let proj = try? await client.project(pid), let o = proj.ontology { ontology = o }
+        }
+        if let gid = state.graph_id, let data = try? await client.graphData(gid) {
+            let next = ForecastGraph.from(data)
+            if !next.isEmpty { graph = next }
+        }
+        if let sid = state.simulation_id {
+            if let detail = try? await client.runStatusDetail(sid) {
+                runState = detail
+                recentActions = detail.recent_actions ?? recentActions
+            }
+            if timeline.isEmpty, let t = try? await client.timeline(sid) {
+                timeline = t.timeline
+            }
         }
         if let rid = state.report_id { await fetchReport(rid) }
     }

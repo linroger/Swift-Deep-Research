@@ -150,6 +150,16 @@ public final class ResearchStore {
         return try context.fetch(descriptor)
     }
 
+    /// The local record for a MiroFish pipeline, if it was ever imported/started
+    /// from this app. Used to dedupe the backend pipeline browser.
+    public func findForecast(pipelineID: String) throws -> ForecastRecord? {
+        var descriptor = FetchDescriptor<ForecastRecord>(
+            predicate: #Predicate { $0.pipelineID == pipelineID }
+        )
+        descriptor.fetchLimit = 1
+        return try context.fetch(descriptor).first
+    }
+
     // MARK: - Events
 
     public func appendEvent(kind: String,

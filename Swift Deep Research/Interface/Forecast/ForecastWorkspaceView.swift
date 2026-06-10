@@ -21,8 +21,9 @@ struct ForecastWorkspaceView: View {
             ForecastOnboardingView()
         }
         .task {
-            await env.ensureForecastBackend()
+            let status = await env.ensureForecastBackend()
             env.maybeAutoPresentForecastOnboarding()
+            if case .running = status { await env.refreshBackendPipelines() }
         }
     }
 

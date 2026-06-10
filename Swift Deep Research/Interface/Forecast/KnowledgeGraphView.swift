@@ -31,7 +31,9 @@ struct KnowledgeGraphView: View {
             emptyState
         } else {
             ZStack(alignment: .topLeading) {
+                graphBackground
                 graphCanvas
+                    .clipShape(RoundedRectangle(cornerRadius: 14))   // never draw over the pipeline chrome
                 legend
                     .padding(12)
                 if let id = selectedNodeID, let node = nodeByID[id] {
@@ -41,8 +43,11 @@ struct KnowledgeGraphView: View {
                         .allowsHitTesting(true)
                 }
             }
-            .background(graphBackground)
+            // Pin a finite size so Grape's canvas can't impose a giant minimum
+            // height that squeezes the pipeline header out of the window.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(alignment: .top) { controlBar }
+            .clipShape(RoundedRectangle(cornerRadius: 14))
         }
     }
 
@@ -55,7 +60,9 @@ struct KnowledgeGraphView: View {
             Series(graph.nodes) { node in
                 NodeMark(id: node.id)
                     .symbol(.circle)
-                    .symbolSize(radius: 5.0 + CGFloat(min(deg[node.id] ?? 0, 12)))
+                    // Grape's tap hit-area equals the drawn radius, so keep a
+                    // generous floor — tiny nodes were nearly impossible to tap.
+                    .symbolSize(radius: 8.0 + CGFloat(min(deg[node.id] ?? 0, 12)))
                     .foregroundStyle(GraphPalette.color(for: node.type, in: types))
                     .stroke(node.id == selectedNodeID ? .white : .white.opacity(0.35),
                             StrokeStyle(lineWidth: node.id == selectedNodeID ? 2.0 : 0.6))
@@ -77,12 +84,19 @@ struct KnowledgeGraphView: View {
                 .fill(.clear)
                 .contentShape(Rectangle())
                 .withGraphDragGesture(proxy, of: String.self)
-                .onTapGesture { location in
-                    let hit = proxy.node(of: String.self, at: location)
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        selectedNodeID = (hit == selectedNodeID) ? nil : hit
-                    }
-                }
+                // A simultaneous spatial tap survives the drag gesture (a plain
+                // onTapGesture is swallowed by it) and carries the hit location.
+                // Pad the hit test so taps near a small node still land.
+                .simultaneousGesture(
+                    SpatialTapGesture(coordinateSpace: .local)
+                        .onEnded { value in
+                            let hit = proxy.node(of: String.self, at: value.location)
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                if let hit { selectedNodeID = (hit == selectedNodeID) ? nil : hit }
+                                else { selectedNodeID = nil }  // tap on empty space dismisses
+                            }
+                        }
+                )
         }
     }
 

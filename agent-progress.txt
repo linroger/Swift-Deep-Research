@@ -556,3 +556,13 @@ Verified live with the user's sk-cp coding-plan key: /v1/models lists 8 models,
 chat completion + SSE streaming both work on api.minimaxi.com (the key 401s on
 the international host, confirming domestic-only). Key upserted into the app's
 Keychain entry (minimax.api). Build green.
+
+=== Session 2026-06-10d (branch v2-deep-research-forecast) ===
+Backend forecast browser: sidebar "On backend" section lists all MiroFish
+pipelines (deduped), tap imports + opens with full hydration (research, dossier,
+ontology, graph, simulation telemetry, report, agent log). Fixed KnowledgeGraphView:
+clip the greedy Grape canvas so it no longer overdraws the pipeline header
+("no way to back out"), and use a simultaneous SpatialTapGesture + larger node
+radius so node taps open the inspector. Verified live against the user's backend
+(7 pipelines, 5 completed); imported pipeline rendered all stages incl. a live one
+auto-advancing. 4 clean builds.

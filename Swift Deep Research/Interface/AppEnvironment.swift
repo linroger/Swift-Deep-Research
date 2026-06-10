@@ -152,6 +152,68 @@ public final class AppEnvironment {
         }
     }
 
+    // MARK: Backend pipeline browser
+
+    /// Every pipeline MiroFish knows about (started from this app, the web UI,
+    /// or run_simulation.py). Drives the sidebar's "On backend" section.
+    public var backendPipelines: [MFPipelineSummary] = []
+    public var backendPipelinesRefreshing = false
+
+    /// Refresh the backend pipeline list. Keeps the previous list on transport
+    /// errors so a momentary hiccup doesn't blank the sidebar.
+    public func refreshBackendPipelines() async {
+        guard !backendPipelinesRefreshing else { return }
+        backendPipelinesRefreshing = true
+        defer { backendPipelinesRefreshing = false }
+        if let pipelines = try? await makeMiroFishClient().listPipelines() {
+            backendPipelines = pipelines
+        }
+    }
+
+    /// Open a pipeline that lives only on the backend: import it as a local
+    /// `ForecastRecord` (so it joins the regular sidebar and survives offline),
+    /// then open it through the normal restore + hydrate path, which pulls the
+    /// research dossier, ontology, knowledge graph, simulation telemetry, and
+    /// the prediction report.
+    public func openBackendPipeline(_ summary: MFPipelineSummary) {
+        if let existing = try? store.findForecast(pipelineID: summary.pipeline_id) {
+            openForecast(record: existing)
+            return
+        }
+        Task { @MainActor in
+            let client = makeMiroFishClient()
+            do {
+                let state = try await client.pipelineStatus(summary.pipeline_id)
+                let record = try store.createForecast(pipelineID: state.pipeline_id,
+                                                      prompt: state.prompt,
+                                                      mode: state.mode,
+                                                      depth: state.options?.depth ?? "standard")
+                // "pending" isn't a ForecastRun.Phase; treat it as running so a
+                // queued pipeline reattaches and follows along.
+                record.status = state.status == "pending" ? "running" : state.status
+                record.globalProgress = state.global_progress
+                record.graphID = state.graph_id
+                record.simulationID = state.simulation_id
+                record.reportID = state.report_id
+                record.errorText = state.error
+                try? store.saveChanges()
+                openForecast(record: record)
+            } catch {
+                Log.engine.error("Backend pipeline import failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    /// Delete a backend-only pipeline (its record + handoff artifacts on the
+    /// server). Running pipelines are refused by the backend with a 409.
+    public func deleteBackendPipeline(_ summary: MFPipelineSummary) {
+        let client = makeMiroFishClient()
+        Task { @MainActor in
+            try? await client.deletePipeline(summary.pipeline_id)
+            await refreshBackendPipelines()
+        }
+    }
+
     /// Stop following the current run in the UI *without* cancelling it on the
     /// backend — switching to another forecast shouldn't kill a live pipeline.
     private func detachForecast() {
