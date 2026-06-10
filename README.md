@@ -117,19 +117,46 @@ The **Forecast** workspace (toolbar toggle: Research ⇄ Forecast) answers a dif
  ⑥ Prediction Report ◀─ ⑤ Simulation (OASIS) ◀─ ④ Agent Setup ◀┘
 ```
 
-1. **Deep Research** — DeerFlow runs a multi-pass background investigation and produces a research dossier plus a cast of real-world actors (people, companies, institutions) with roles, stances, and influence. A live console streams research lines as they happen.
-2. **Ontology** — the pipeline decides which entity and relationship types matter for this question.
-3. **Knowledge Graph** — entities are extracted into a Zep temporal knowledge graph, rendered as a **native interactive force-directed graph** (the [Grape](https://github.com/li3zhen1/Grape) package): pan, zoom, drag nodes, toggle labels, and tap any node for an inspector with its type, summary, and relationships.
-4. **Agent Setup** — each graph actor becomes an autonomous LLM agent with a persona, memory, and posting behaviour.
-5. **Simulation** — OASIS runs the agent society on simulated **Twitter and Reddit** for dozens of rounds. The stage view shows per-platform telemetry, an actions-per-round chart, and a live feed of every post, comment, and like as agents react to the event and to each other.
-6. **Prediction Report** — a ReAct report agent reads the simulation back out (it can interview individual agents as a tool call) and writes the forecast. You can then **chat with the report**: follow-up questions run against the full simulation context.
+The composer offers three research depths (**Quick / Standard / Deep** — deeper means more DeerFlow research passes and a richer actor dossier) and two modes: **Full forecast**, or **Research only**, which stops after stage ① when all you want is the dossier. The workspace renders the run as a six-chip **stage stepper** — each chip shows live status, progress, and the stage's last message; click any chip to inspect that stage while later ones are still running, and the view auto-follows the pipeline unless you pin a stage.
+
+### The pipeline, stage by stage
+
+**① Deep Research.** DeerFlow runs a multi-pass background investigation (the number of passes scales with the chosen depth) and produces two artifacts: a research dossier and a cast of **real-world actors** — people, companies, institutions — each with a role, stance, influence weight, and memory seed. A live console streams every research line as it happens, and the actor dossier renders below it as cards.
+
+**② Ontology.** Before extracting anything, the pipeline decides *what kinds of things matter for this question* — a bespoke schema of entity types and relationship types, each with a natural-language description that guides extraction. For a semiconductor forecast that means types like `ChipCompany`, `AILab`, `CEO`, `MediaOutlet` and relations like `LEADS`, `WORKS_FOR`, `SUPPLIES`, `COMPETES_WITH`:
+
+![Ontology stage — inferred entity and relationship types](./Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2022.47.32%402x.png)
+
+**③ Knowledge Graph.** Entities and relations are extracted from the research into a **Zep temporal knowledge graph**, which the app renders as a *native* interactive force-directed graph (the [Grape](https://github.com/li3zhen1/Grape) package — no web view). Nodes are coloured by entity type and sized by connection count; the control bar pauses/resumes the physics layout, zooms, and toggles labels; the legend keys the type palette. Tap any node and an inspector slides in with its type, summary, and relationship list — tap empty space to dismiss. Large graphs are capped at the top ~140 nodes by degree so the layout stays fluid:
+
+![Knowledge graph — force-directed Zep graph with node inspector](./Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2022.47.59%402x.png)
+
+**④ Agent Setup.** Each graph actor becomes an autonomous LLM agent with a persona distilled from its dossier entry, a memory, and platform-specific posting behaviour. The stage reports the simulation scale (agents × rounds) once configured.
+
+**⑤ Simulation.** OASIS runs the agent society on simulated **Twitter and Reddit** in parallel for dozens of rounds (the screenshot below: round 40 of 40, 1,668 actions — 613 tweets, 1,055 Reddit posts/comments). The stage view shows per-platform cards, an actions-per-round chart, and a live feed of every post, comment, and like as agents react to the event — and to each other:
+
+![Simulation stage — per-platform telemetry, actions-per-round chart, live agent feed](./Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2022.48.06%402x.png)
+
+**⑥ Prediction Report.** A ReAct report agent reads the simulation back out — it can *interview individual simulated agents* as a tool call — and writes a structured forecast: key judgments up front, scenario analysis, and the evidence trail from the simulation. The report renders as native markdown with a table of contents, and you can **chat with it**: follow-up questions run against the full simulation context, and the answer cites which agents were interviewed:
+
+![Prediction report — structured forecast](./Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2022.48.10%402x.png)
+
+![Prediction report — AI-rivalry forecast example](./Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2022.47.29%402x.png)
+
+### How the app drives the backend
+
+The whole pipeline runs in a local **MiroFish** Flask backend on `127.0.0.1:5001`; the Swift side is a thin, typed REST layer plus an observable state machine:
+
+- **`MiroFishClient`** wraps every endpoint (`/api/research/*`, `/api/graph/*`, `/api/simulation/*`, `/api/report/*`, `/api/settings/*`) behind `Codable` types and the backend's uniform `{success, data, error}` envelope. Long-running calls (report chat) get their own timeouts; cancel/delete tolerate races where the pipeline already finished.
+- **`ForecastRun`** is the `@Observable` heart of the workspace: it starts the pipeline, then polls status — updating each stage's progress, streaming new research-console lines, and following the backend's current stage. When the run completes (or an existing pipeline is imported) it hydrates *everything* in one sweep: research lines, actor dossier, ontology, graph JSON, simulation timeline + telemetry, and the report markdown.
+- **SwiftData persistence.** Every forecast is a `ForecastRecord` — prompt, pipeline id, status, progress, error text — so the sidebar survives relaunches. Opening a record whose pipeline is still running **reattaches** the poll loop; opening a finished one re-hydrates all stages from the backend on demand.
+- **`MiroFishSupervisor`** owns the backend process: it launches it, watches `/health`, and when the process dies it classifies the exit (port already taken, broken virtualenv, missing `.env` keys) into a message with a fix attached — including a one-click **Repair environment** that rebuilds the Python side.
 
 ### Built to survive real pipelines
 
 Forecasts run for tens of minutes against a local Python backend, so the lifecycle is hardened end-to-end:
 
 - **Onboarding assistant.** A guided first-run flow checks the environment, captures your Zep key, streams MiroFish's `setup.sh` into a live console, and launches the backend — no terminal needed.
-- **Supervised backend.** The app launches and health-checks the Flask backend itself, classifies failures (port conflicts, broken venv, missing `.env` config) into actionable messages, and offers one-click **environment repair**.
 - **Cancel / resume / reattach.** Stop a run mid-flight; resume restarts from the first incomplete stage, reusing finished research, graph, and simulation artifacts. Quit the app mid-run and reopening the forecast reattaches to the still-running pipeline.
 - **Backend browser.** The sidebar's *On backend* section lists pipelines that exist on MiroFish but weren't started from this app (web UI, CLI, another machine). One click imports them with full hydration — research lines, dossier, ontology, graph, simulation telemetry, and report.
 - **Provider switching.** The simulation/report LLM is switchable from Settings → Forecast — including the **MiniMax domestic (国内) platform** (`api.minimaxi.com`, MiniMax-M3), DeepSeek, Qwen, and more — with keys pulled from the same Keychain the research side uses.
