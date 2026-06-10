@@ -30,24 +30,29 @@ struct KnowledgeGraphView: View {
         if graph.isEmpty {
             emptyState
         } else {
-            ZStack(alignment: .topLeading) {
-                graphBackground
-                graphCanvas
-                    .clipShape(RoundedRectangle(cornerRadius: 14))   // never draw over the pipeline chrome
-                legend
-                    .padding(12)
-                if let id = selectedNodeID, let node = nodeByID[id] {
-                    nodeInspector(node)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+            // GeometryReader hands the force-graph an explicit finite frame, so
+            // Grape's greedy canvas can't impose a runaway size on its container.
+            GeometryReader { geo in
+                ZStack(alignment: .topLeading) {
+                    graphBackground
+                    graphCanvas
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                    legend
                         .padding(12)
-                        .allowsHitTesting(true)
+                    // Inspector lives in an overlay (below) so it's always on top.
                 }
+                .frame(width: geo.size.width, height: geo.size.height)
+                .overlay(alignment: .top) { controlBar }
+                .overlay(alignment: .bottomTrailing) {
+                    if let id = selectedNodeID, let node = nodeByID[id] {
+                        nodeInspector(node)
+                            .padding(12)
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 14))
             }
-            // Pin a finite size so Grape's canvas can't impose a giant minimum
-            // height that squeezes the pipeline header out of the window.
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(alignment: .top) { controlBar }
-            .clipShape(RoundedRectangle(cornerRadius: 14))
         }
     }
 

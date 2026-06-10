@@ -15,17 +15,26 @@ struct ForecastPipelineView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            if run.phase == .failed || run.phase == .cancelled {
-                errorBanner(run.errorMessage ?? (run.phase == .cancelled
-                    ? "The pipeline was stopped before it finished."
-                    : "The MiroFish pipeline failed."))
+            // The chrome (header + stepper) is grouped and given layout priority
+            // so a greedy stage view — notably the Grape force-graph canvas —
+            // can never compress it to zero height and hide the way out.
+            VStack(spacing: 0) {
+                header
+                if run.phase == .failed || run.phase == .cancelled {
+                    errorBanner(run.errorMessage ?? (run.phase == .cancelled
+                        ? "The pipeline was stopped before it finished."
+                        : "The MiroFish pipeline failed."))
+                }
+                Divider()
+                stepper
+                Divider()
             }
-            Divider()
-            stepper
-            Divider()
+            .layoutPriority(1)
+            .zIndex(1)   // stays above the stage canvas even if it overdraws
+
             stageDetail(activeStage)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()   // a stage view can't draw up into the chrome
         }
         .onChange(of: run.currentStage) {
             // Resume auto-follow whenever the pipeline advances to a new stage.
