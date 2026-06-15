@@ -14,6 +14,16 @@ public struct OllamaClient: LLMClient {
     private let host: URL
     private let model: String
     private let session: URLSession
+    /// Memoizes the resolved num_ctx per model so we only probe `/api/show`
+    /// once per (host, model) for the lifetime of the client. An actor keeps
+    /// the lookup race-free while staying Sendable, so the surrounding struct
+    /// remains Sendable as required by `LLMClient`.
+    private let contextCache = ContextWindowCache()
+
+    /// Hard ceiling on the KV-cache context we request. A 131072-token cache
+    /// OOMs small Macs (the old hardcoded default); 32768 is a safe upper
+    /// bound that still comfortably fits our orchestrator-worker prompts.
+    private static let safeContextCeiling = 32_768
 
     public init(host: URL = URL(string: "http://localhost:11434")!,
                 model: String = "qwen3:8b",
@@ -52,6 +62,66 @@ public struct OllamaClient: LLMClient {
         return URL(string: "\(base)/\(path)")!
     }
 
+    /// Per-model memo of the resolved num_ctx. Keyed by model name; the value
+    /// is the already-clamped context we will request.
+    private actor ContextWindowCache {
+        private var resolved: [String: Int] = [:]
+        func value(for model: String) -> Int? { resolved[model] }
+        func store(_ value: Int, for model: String) { resolved[model] = value }
+    }
+
+    /// Resolve the num_ctx to request for `model`, capped at
+    /// `safeContextCeiling` and shrunk to the model's advertised
+    /// `context_length` when `/api/show` reports a smaller window.
+    ///
+    /// We probe `/api/show` once per model and memoize the result. If the
+    /// probe fails (older Ollama without the endpoint, server unreachable,
+    /// unexpected payload), we fall back to the ceiling so the request still
+    /// succeeds with a safe, non-OOM context. The probe result is cached even
+    /// on the fallback path so a transient miss doesn't re-probe on every call.
+    private func resolveNumCtx(for model: String) async -> Int {
+        if let cached = await contextCache.value(for: model) { return cached }
+        let resolved = await probeContextLength(for: model)
+            .map { min($0, Self.safeContextCeiling) }
+            ?? Self.safeContextCeiling
+        await contextCache.store(resolved, for: model)
+        return resolved
+    }
+
+    /// Ask Ollama for the model's advertised maximum context length via
+    /// `/api/show`. Ollama nests this under `model_info` as an
+    /// architecture-prefixed key (e.g. `qwen3.context_length`,
+    /// `llama.context_length`), so we scan for any `*.context_length` entry and
+    /// also tolerate a bare top-level `context_length`. Returns nil when the
+    /// endpoint is unavailable or the field is absent/non-positive.
+    private func probeContextLength(for model: String) async -> Int? {
+        do {
+            var req = URLRequest(url: Self.endpoint(host: host, path: "api/show"))
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try JSONSerialization.data(withJSONObject: ["model": model])
+
+            let (data, response) = try await session.data(for: req)
+            if let http = response as? HTTPURLResponse, !(200..<300 ~= http.statusCode) {
+                return nil
+            }
+            guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return nil
+            }
+            if let info = obj["model_info"] as? [String: Any] {
+                for (key, value) in info where key.hasSuffix(".context_length") || key == "context_length" {
+                    if let n = value as? Int, n > 0 { return n }
+                    if let d = value as? Double, d > 0 { return Int(d) }
+                }
+            }
+            if let n = obj["context_length"] as? Int, n > 0 { return n }
+            return nil
+        } catch {
+            Log.net.debug("\(identity.displayName, privacy: .public): /api/show probe failed (\(String(describing: error), privacy: .public)); using default context.")
+            return nil
+        }
+    }
+
     public func stream(_ request: LLMRequest) -> AsyncThrowingStream<LLMStreamChunk, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -59,7 +129,8 @@ public struct OllamaClient: LLMClient {
                     var req = URLRequest(url: Self.endpoint(host: host, path: "api/chat"))
                     req.httpMethod = "POST"
                     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    req.httpBody = try Self.encodeBody(request: request, defaultModel: model)
+                    let numCtx = await resolveNumCtx(for: request.model ?? model)
+                    req.httpBody = try Self.encodeBody(request: request, defaultModel: model, numCtx: numCtx)
 
                     let (bytes, response) = try await session.bytes(for: req)
                     if let http = response as? HTTPURLResponse, !(200..<300 ~= http.statusCode) {
@@ -201,7 +272,7 @@ public struct OllamaClient: LLMClient {
         }
     }
 
-    private static func encodeBody(request: LLMRequest, defaultModel: String) throws -> Data {
+    private static func encodeBody(request: LLMRequest, defaultModel: String, numCtx: Int) throws -> Data {
         struct Body: Encodable {
             let model: String
             let stream: Bool
@@ -240,10 +311,12 @@ public struct OllamaClient: LLMClient {
         }
         // num_ctx widens Ollama's context window from its conservative
         // 2048-token default to a value large enough for our orchestrator-
-        // worker prompts (system + tool outputs + history). 128k is the
-        // ceiling most modern local models advertise; Ollama will clamp to
-        // the model's actual capacity if smaller. num_predict left nil so
-        // the model uses its own max output length.
+        // worker prompts (system + tool outputs + history). The value is
+        // resolved by `resolveNumCtx(for:)`: we cap at `safeContextCeiling`
+        // (32k) instead of pinning 128k, since a 131072-token KV cache OOMs
+        // small Macs, and shrink further to the model's own advertised
+        // `context_length` when `/api/show` reports a smaller window.
+        // num_predict left nil so the model uses its own max output length.
         struct Opts: Encodable {
             let temperature: Double
             let num_predict: Int?
@@ -300,7 +373,7 @@ public struct OllamaClient: LLMClient {
             messages: messages,
             options: Opts(temperature: request.temperature,
                          num_predict: request.maxTokens,
-                         num_ctx: 131_072),
+                         num_ctx: numCtx),
             tools: tools
         )
         let encoder = JSONEncoder()

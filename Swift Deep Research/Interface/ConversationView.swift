@@ -256,11 +256,42 @@ struct ConversationView: View {
                         .lineLimit(4)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                // One-click recovery (E3-ux-4): re-run the original query, and —
+                // when the failure looks like a missing/invalid key — jump to
+                // Settings so the user can fix it inline.
+                HStack(spacing: 8) {
+                    if let query = live?.query, !query.isEmpty {
+                        Button {
+                            env.startResearch(query: query)
+                        } label: {
+                            Label("Retry", systemImage: "arrow.clockwise")
+                        }
+                        .controlSize(.small)
+                    }
+                    if failureLooksLikeKeyProblem(failure) {
+                        Button {
+                            env.settingsOpen = true
+                        } label: {
+                            Label("Open Settings", systemImage: "key")
+                        }
+                        .controlSize(.small)
+                    }
+                }
+                .padding(.top, 2)
             }
             Spacer()
         }
         .padding(14)
         .background(.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// Heuristic: does this failure point at a missing/invalid provider key, so a
+    /// "fix it in Settings" affordance is the right next step?
+    private func failureLooksLikeKeyProblem(_ failure: EngineFailure) -> Bool {
+        let haystack = (failure.message + " " + (failure.underlying ?? "")).lowercased()
+        return haystack.contains("api key") || haystack.contains("api-key")
+            || haystack.contains("unauthorized") || haystack.contains("401")
+            || haystack.contains("missing key") || haystack.contains("needs an api")
     }
 
     @ViewBuilder

@@ -43,6 +43,45 @@ public actor SidecarSupervisor {
         "pydantic>=2,<3",
     ]
 
+    /// Distinct, user-facing message for the "no internet" case of a failed
+    /// dependency bootstrap (kb-offline-vs-broken-deps). The first launch must
+    /// download Python packages and the ~470 MB embedding model once; offline
+    /// that can't succeed, so we tell the user to connect and Reinstall rather
+    /// than handing them a `pip install` command that will keep failing. The
+    /// banner detects this exact string (via `messageIndicatesOffline`) to render
+    /// the offline-specific fix instead of the generic missing-deps card.
+    static let offlineMessage =
+        "No internet connection — the knowledge base needs to download Python " +
+        "packages and an embedding model once. Connect to the internet and click " +
+        "Reinstall."
+
+    /// Substrings pip/urllib emit when the package index or model host can't be
+    /// reached. Matching any of these in pip's output tail means the failure is a
+    /// connectivity problem, not a genuinely unsatisfiable/broken dependency, so
+    /// `installDependencies` surfaces `offlineMessage` instead of a raw pip dump.
+    static let offlineSignatures: [String] = [
+        "could not find a version",
+        "temporary failure in name resolution",
+        "failed to establish a new connection",
+        "network is unreachable",
+        "connection timed out",
+        "getaddrinfo failed",
+    ]
+
+    /// True when pip's combined output tail carries an offline/network signature.
+    static func outputIndicatesOffline(_ output: String) -> Bool {
+        let lowered = output.lowercased()
+        return offlineSignatures.contains { lowered.contains($0) }
+    }
+
+    /// True when a stored diagnostic/error string is the offline message we set
+    /// in `installDependencies`. Lets the UI distinguish "no internet" from a
+    /// generic unreachable/broken-deps state without a new status enum case.
+    public static func messageIndicatesOffline(_ message: String?) -> Bool {
+        guard let message else { return false }
+        return message == offlineMessage
+    }
+
     /// True when the app is running inside the macOS App Sandbox. The sandbox
     /// exports `APP_SANDBOX_CONTAINER_ID` into every sandboxed process's
     /// environment; its absence is a reliable signal we're unsandboxed (the
@@ -102,6 +141,12 @@ public actor SidecarSupervisor {
     private var venvDir: URL { appSupportDir.appendingPathComponent("sidecar-venv", isDirectory: true) }
     private var venvPython: URL { venvDir.appendingPathComponent("bin/python3") }
     private var hasVenv: Bool { FileManager.default.isExecutableFile(atPath: venvPython.path) }
+    /// Stable cache for the Hugging Face / sentence-transformers embedding model
+    /// (~470 MB) under our app-support dir, alongside the venv and seekdb data.
+    /// Pointing HF_HOME here makes the model's location predictable and persists
+    /// it across runs so the first-launch download happens exactly once instead
+    /// of re-downloading into a transient/per-user-default cache (kb-stable-hf-cache).
+    private var hfCacheDir: URL { appSupportDir.appendingPathComponent("hf-cache", isDirectory: true) }
 
     // MARK: - Public API
 
@@ -528,6 +573,18 @@ public actor SidecarSupervisor {
         ]
         env["PATH"] = extraPaths.joined(separator: ":") + ":" + (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
         env["PYTHONUNBUFFERED"] = "1"
+        // Pin the embedding model cache to a stable subdir under our app-support
+        // dir so the ~470 MB model downloads once and lives in a predictable
+        // location alongside the venv/seekdb data (kb-stable-hf-cache). HF_HOME
+        // is the modern umbrella var; TRANSFORMERS_CACHE / SENTENCE_TRANSFORMERS_HOME
+        // are set too so older huggingface_hub / sentence-transformers builds that
+        // don't honor HF_HOME still land in the same place. Best-effort dir
+        // creation: if it fails the libraries fall back to their own default.
+        let cache = hfCacheDir
+        try? FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        env["HF_HOME"] = cache.path
+        env["TRANSFORMERS_CACHE"] = cache.appendingPathComponent("transformers", isDirectory: true).path
+        env["SENTENCE_TRANSFORMERS_HOME"] = cache.appendingPathComponent("sentence-transformers", isDirectory: true).path
         return env
     }
 
@@ -600,7 +657,17 @@ public actor SidecarSupervisor {
             // Tear down the venv so the next attempt starts clean instead of
             // inheriting a partially-installed environment.
             try? fm.removeItem(at: venvDir)
-            lastError = "pip install failed:\n" + String(out.suffix(2000))
+            // Distinguish "no internet" from "broken deps" (kb-offline-vs-broken-deps):
+            // offline pip can't possibly succeed, so handing the user the same
+            // `pip install` command is useless. Detect the network signatures in
+            // pip's output tail and surface an actionable "connect to the internet"
+            // message (carried verbatim through the offline marker so the banner
+            // can render the right fix instead of a pip command).
+            if Self.outputIndicatesOffline(out) {
+                lastError = Self.offlineMessage
+            } else {
+                lastError = "pip install failed:\n" + String(out.suffix(2000))
+            }
             return false
         }
         // Verify the venv really imports all four modules before declaring

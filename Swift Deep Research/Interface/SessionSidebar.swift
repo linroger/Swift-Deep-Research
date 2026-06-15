@@ -26,15 +26,20 @@ struct SessionSidebar: View {
             }
             Section {
                 if filtered.isEmpty && !search.isEmpty {
+                    // Lightweight inline note for the search-with-no-results case,
+                    // so the full empty-state illustration is reserved for a
+                    // genuinely empty library (matching ForecastSidebar).
                     Text("No matches")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                         .padding(.vertical, 4)
                 } else if filtered.isEmpty {
-                    Text("No sessions yet.\nAsk a question to begin.")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .padding(.vertical, 4)
+                    ContentUnavailableView {
+                        Label("No research yet", systemImage: "sparkles")
+                    } description: {
+                        Text("Ask a question to start your first deep-research session.")
+                    }
+                    .listRowSeparator(.hidden)
                 } else {
                     ForEach(filtered) { session in
                         SessionRow(session: session, highlight: search)
@@ -52,7 +57,7 @@ struct SessionSidebar: View {
         .navigationTitle("Deep Research")
         .searchable(text: $search,
                     placement: .sidebar,
-                    prompt: "Search queries, sources, drafts")
+                    prompt: "Search sessions")
     }
 
     private func sectionLabel(_ title: String, icon: String, color: Color) -> some View {
@@ -72,8 +77,11 @@ struct SessionSidebar: View {
         guard !search.trimmingCharacters(in: .whitespaces).isEmpty else { return sessions }
         let needle = search.lowercased()
         // Match against a per-session blob that's lowercased once and cached, so
-        // a keystroke is O(sessions × one contains) rather than re-lowercasing
-        // every turn's full markdown and every source on every body re-eval.
+        // a keystroke is O(sessions × one contains). The blob is built only from
+        // the already-faulted cheap scalar fields (query + titleSummary) — it does
+        // NOT walk the turns/sources relationships, so typing in search never
+        // faults in every turn's full markdown or every source row for the whole
+        // history (the dominant cost the old corpus blob incurred on first search).
         return sessions.filter { searchIndex.blob(for: $0).contains(needle) }
     }
 
@@ -189,10 +197,13 @@ private struct LiveSessionRow: View {
 }
 
 /// Memoizes a lowercased searchable blob per session for the sidebar filter.
-/// Building the blob walks every turn's markdown and every source once; the
-/// result is cached by session id and rebuilt only when the session's
-/// `updatedAt` changes, so per-keystroke filtering is a single `contains` over
-/// the cached string instead of re-lowercasing the whole corpus each body pass.
+/// The blob is built ONLY from the cheap, already-faulted scalar fields the row
+/// itself displays (`query` + `titleSummary`); it deliberately does not walk the
+/// `turns`/`sources` relationships, so searching never faults in every turn's
+/// full markdown and every source for the whole history. The result is cached by
+/// session id and rebuilt only when the session's `updatedAt` changes, so
+/// per-keystroke filtering is a single `contains` over the cached string instead
+/// of re-lowercasing the fields each body pass.
 /// MainActor-isolated because it is only ever read/mutated from the view body.
 @MainActor
 private final class SessionSearchIndex {
@@ -203,10 +214,8 @@ private final class SessionSearchIndex {
         if let entry = cache[session.id], entry.stamp == session.updatedAt {
             return entry.blob
         }
-        var parts: [String] = [session.query, session.titleSummary]
-        for turn in session.turns { parts.append(turn.markdown) }
-        for src in session.sources { parts.append(src.title); parts.append(src.snippet) }
-        let blob = parts.joined(separator: "\n").lowercased()
+        let blob = [session.query, session.titleSummary]
+            .joined(separator: "\n").lowercased()
         cache[session.id] = Entry(stamp: session.updatedAt, blob: blob)
         return blob
     }

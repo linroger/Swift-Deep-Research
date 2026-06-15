@@ -10,6 +10,11 @@ public final class ResearchStore {
 
     public init(container: ModelContainer) {
         self.container = container
+        // One-shot retention sweep at startup so the store can't grow without
+        // bound across the app's lifetime. Runs synchronously on the MainActor
+        // (this initializer is MainActor-isolated, matching the context), and a
+        // failure is logged but never blocks launch. Manual deletes are unaffected.
+        pruneSessions()
     }
 
     /// Flush any pending coalesced save before the store is deallocated so the
@@ -209,6 +214,38 @@ public final class ResearchStore {
             sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
         )
         return try context.fetch(descriptor)
+    }
+
+    /// Cap the stored history at the `keepingMostRecent` newest sessions, deleting
+    /// the older ones (their turns/sources/events/citations follow via the cascade
+    /// delete rules) so the SQLite store can't grow without bound over the app's
+    /// lifetime. Sessions are ordered newest-first by `updatedAt` (the indexed
+    /// sort column), so we fetch only the overflow past the cap and delete it,
+    /// then flush once. The default (200) is deliberately generous — this is a
+    /// safety valve against pathological growth, not an aggressive trimmer, and it
+    /// is independent of the user's manual `deleteSession`.
+    ///
+    /// Best-effort by design: a fetch/save failure is logged and swallowed so it
+    /// can never block startup (where this runs once from `init`).
+    public func pruneSessions(keepingMostRecent cap: Int = 200) {
+        guard cap >= 0 else { return }
+        var descriptor = FetchDescriptor<StoredSession>(
+            sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
+        )
+        // Skip the newest `cap` rows; everything fetched after that is overflow.
+        descriptor.fetchOffset = cap
+        do {
+            let overflow = try context.fetch(descriptor)
+            guard !overflow.isEmpty else { return }
+            for session in overflow {
+                context.delete(session)
+            }
+            isDirty = true
+            flushNow()
+            Log.engine.notice("Pruned \(overflow.count, privacy: .public) old session(s) beyond retention cap \(cap, privacy: .public).")
+        } catch {
+            Log.engine.error("Session retention prune failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     // MARK: - Turns

@@ -19,6 +19,11 @@ public enum ResearchSchema {
 
 @Model
 public final class StoredSession {
+    // Index the column the sidebar sorts and the retention prune queries on
+    // (`updatedAt`, sorted reverse), so listing/pruning sessions stays cheap as
+    // history grows rather than forcing a full-table scan + sort.
+    #Index<StoredSession>([\.updatedAt])
+
     @Attribute(.unique) public var id: UUID
     public var query: String
     public var titleSummary: String

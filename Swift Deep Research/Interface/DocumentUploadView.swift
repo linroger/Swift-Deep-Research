@@ -63,32 +63,55 @@ struct DocumentUploadView: View {
                 .padding(10)
                 .background(.green.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
         case .unreachable(let host):
-            VStack(alignment: .leading, spacing: 8) {
-                Label("Couldn't start the embedding sidecar", systemImage: "exclamationmark.triangle.fill")
-                    .font(.headline)
-                    .foregroundStyle(.orange)
-                Text("Tried to auto-launch at \(host). If Python or the required packages are missing, install them once:")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("python3 -m pip install -r sidecar/requirements.txt")
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
-                    .padding(6)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
-                if let detail = kb.lastError {
-                    Text(detail)
-                        .font(.system(.caption2, design: .monospaced))
+            if SidecarSupervisor.messageIndicatesOffline(kb.lastError) {
+                // Offline-specific fix (kb-offline-vs-broken-deps): the first
+                // launch must download Python packages + the embedding model
+                // once, which can't happen without a connection. Show the
+                // "connect to the internet" guidance instead of a pip command
+                // that can't possibly succeed offline.
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("No internet connection", systemImage: "wifi.slash")
+                        .font(.headline)
+                        .foregroundStyle(.orange)
+                    Text("The knowledge base needs to download Python packages and an embedding model once. Connect to the internet, then click Reinstall.")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(6)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Reinstall") {
+                        Task { await reinstallDependencies() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding(12)
+                .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Couldn't start the embedding sidecar", systemImage: "exclamationmark.triangle.fill")
+                        .font(.headline)
+                        .foregroundStyle(.orange)
+                    Text("Tried to auto-launch at \(host). If Python or the required packages are missing, install them once:")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("python3 -m pip install -r sidecar/requirements.txt")
+                        .font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled)
                         .padding(6)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
+                    if let detail = kb.lastError {
+                        Text(detail)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(6)
+                            .textSelection(.enabled)
+                            .padding(6)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
+                    }
+                    Button("Retry") { Task { await kb.refresh() } }
+                        .buttonStyle(.bordered)
                 }
-                Button("Retry") { Task { await kb.refresh() } }
-                    .buttonStyle(.bordered)
+                .padding(12)
+                .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
             }
-            .padding(12)
-            .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
         case .launching:
             HStack(spacing: 10) {
                 ProgressView().controlSize(.small)
@@ -290,6 +313,18 @@ struct DocumentUploadView: View {
         }
         .padding(14)
         .glassCard()
+    }
+
+    // MARK: - Recovery
+
+    /// Force a dependency (re)install + relaunch, then refresh health. Used by
+    /// the offline banner's "Reinstall" button: once the user is back online the
+    /// first-run download of the Python packages + embedding model can complete
+    /// (kb-offline-vs-broken-deps).
+    private func reinstallDependencies() async {
+        kb.health = .installing
+        _ = await SidecarSupervisor.shared.reinstallAndStart(host: env.configuration.seekdbHost)
+        await kb.refresh()
     }
 
     // MARK: - File handling

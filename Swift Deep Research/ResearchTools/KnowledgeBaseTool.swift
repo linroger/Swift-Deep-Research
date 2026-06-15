@@ -15,7 +15,8 @@ public struct KnowledgeBaseTool: ResearchTool {
           "required": ["query"],
           "properties": {
             "query": { "type": "string", "description": "Natural-language search query." },
-            "k": { "type": "integer", "default": 6, "description": "Max passages to return (1–20)." }
+            "k": { "type": "integer", "default": 6, "description": "Max passages to return (1–20)." },
+            "min_score": { "type": "number", "default": 0.30, "description": "Minimum relevance score (0–1, on the 1/(1+distance) scale) a passage must meet to be returned. Lower to surface weaker matches; raise to keep only strong ones." }
           }
         }
         """#
@@ -26,8 +27,19 @@ public struct KnowledgeBaseTool: ResearchTool {
         self.client = client
     }
 
+    /// Default relevance floor on the 1/(1+distance) score scale. Conservative
+    /// on purpose: 0.30 corresponds to a distance of ~2.33, so only clearly
+    /// off-topic chunks are dropped and genuine (even weak) small-KB hits survive
+    /// (kb-relevance-floor). Overridable per-call via the `min_score` argument.
+    static let defaultMinScore = 0.30
+
+    /// Max chunks returned from any single document, so one long document can't
+    /// monopolise the result set and starve the worker of cross-document
+    /// diversity (kb-relevance-floor).
+    static let maxChunksPerDocument = 2
+
     public func call(argumentsJSON: String, context: ToolContext) async throws -> ToolOutcome {
-        struct Args: Decodable { let query: String; let k: Int? }
+        struct Args: Decodable { let query: String; let k: Int?; let min_score: Double? }
         guard let data = argumentsJSON.data(using: .utf8),
               let args = try? JSONDecoder().decode(Args.self, from: data) else {
             return .failed(message: "knowledge_base: invalid arguments")
@@ -36,8 +48,16 @@ public struct KnowledgeBaseTool: ResearchTool {
         guard !trimmed.isEmpty else { return .failed(message: "knowledge_base: empty query") }
 
         let k = max(1, min(args.k ?? 6, 20))
+        // Clamp the relevance floor to [0, 1] so a stray argument can't invert
+        // the filter or accept everything; default stays conservative.
+        let minScore = max(0.0, min(args.min_score ?? Self.defaultMinScore, 1.0))
         do {
-            let hits = try await queryWithRecovery(trimmed, k: k)
+            let rawHits = try await queryWithRecovery(trimmed, k: k)
+            // Apply the relevance floor + per-document diversity cap before we
+            // surface anything to the worker (kb-relevance-floor). A nil score
+            // (distance the backend couldn't convert) is treated as failing the
+            // floor — we only keep passages we can vouch for as relevant.
+            let hits = Self.applyRelevanceFloorAndDiversity(rawHits, minScore: minScore)
             let fetchedSources = hits.compactMap(Self.fetchedSource)
             // Emit each hit as a discovered source so the UI surfaces them in
             // the inspector under "discovered". We use a synthetic URL scheme
@@ -69,7 +89,15 @@ public struct KnowledgeBaseTool: ResearchTool {
             // fall through to web search. The worker reads the payload JSON, so
             // the signal must live there, not only in the UI summary.
             var note: String? = nil
-            if hits.isEmpty {
+            if hits.isEmpty && !rawHits.isEmpty {
+                // The KB returned matches but all fell below the relevance floor
+                // (or were de-duplicated to nothing). Treat this like empty-KB:
+                // tell the worker to fall through to web_search rather than
+                // claiming it consulted private docs that weren't actually
+                // relevant (kb-relevance-floor). No health round-trip needed —
+                // we already know documents exist.
+                note = "matches were below the relevance threshold — rely on web_search"
+            } else if hits.isEmpty {
                 // Distinguish three cases, not two: a failed/unavailable health
                 // check (docCount == nil) must NOT be reported as "the KB is
                 // empty" — the documents may well exist but the sidecar was
@@ -142,6 +170,29 @@ public struct KnowledgeBaseTool: ResearchTool {
             }
             throw lastError
         }
+    }
+
+    /// Filter the raw query hits to those meeting the relevance floor, then cap
+    /// the number of chunks kept per source document for diversity
+    /// (kb-relevance-floor). Input order is preserved (the sidecar already sorts
+    /// by descending relevance), so the per-document cap keeps each document's
+    /// strongest chunks. A hit with no score (`nil`) fails the floor — we only
+    /// keep passages whose relevance we can actually vouch for.
+    static func applyRelevanceFloorAndDiversity(
+        _ hits: [SeekDBClient.QueryHit],
+        minScore: Double
+    ) -> [SeekDBClient.QueryHit] {
+        var perDocCount: [String: Int] = [:]
+        var kept: [SeekDBClient.QueryHit] = []
+        for hit in hits {
+            guard let score = hit.score, score >= minScore else { continue }
+            let docID = hit.docID
+            let count = perDocCount[docID, default: 0]
+            guard count < maxChunksPerDocument else { continue }
+            perDocCount[docID] = count + 1
+            kept.append(hit)
+        }
+        return kept
     }
 
     private static func fetchedSource(for hit: SeekDBClient.QueryHit) -> FetchedSource? {
