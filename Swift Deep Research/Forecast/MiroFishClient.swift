@@ -25,6 +25,12 @@ public actor MiroFishClient {
     private let session: URLSession
     private let decoder = JSONDecoder()
 
+    /// Per-request inactivity timeout for endpoints that block server-side before
+    /// emitting a response (pipeline start/resume do synchronous setup before
+    /// returning a pipeline_id; a large graph can take a while to serialize). The
+    /// short `defaultSession(timeout: 60)` is kept for quick status/polling calls.
+    private static let longRunningTimeout: TimeInterval = 300
+
     public init(host: URL = URL(string: "http://127.0.0.1:5001")!,
                 session: URLSession = HTTPClientCommon.defaultSession(timeout: 60)) {
         self.host = host
@@ -76,7 +82,11 @@ public actor MiroFishClient {
         }
         let body = Body(prompt: prompt, mode: mode, depth: depth,
                         project_name: projectName, max_rounds: maxRounds)
-        return try await request("/api/research/run", method: "POST", body: body)
+        // The backend can do synchronous setup before returning a pipeline_id; the
+        // 60s default would spuriously fail the start (and risk orphaning a started
+        // pipeline the app never recorded). Give it the long-running budget.
+        return try await request("/api/research/run", method: "POST", body: body,
+                                 timeout: Self.longRunningTimeout)
     }
 
     public func pipelineStatus(_ pipelineID: String) async throws -> MFPipelineState {
@@ -113,7 +123,10 @@ public actor MiroFishClient {
     /// Resume a failed/cancelled pipeline. The backend reuses completed stage
     /// artifacts (research report, graph, …) so this skips the expensive re-runs.
     public func resumePipeline(_ pipelineID: String) async throws -> MFRunResponse {
-        try await request("/api/research/\(pipelineID)/resume", method: "POST")
+        // Like /run, the backend may block on synchronous stage setup before
+        // responding — use the long-running timeout, not the 60s default.
+        try await request("/api/research/\(pipelineID)/resume", method: "POST",
+                          timeout: Self.longRunningTimeout)
     }
 
     /// Delete a terminal pipeline record (and its handoff artifacts) on the backend.
@@ -135,7 +148,11 @@ public actor MiroFishClient {
     // MARK: - Knowledge graph
 
     public func graphData(_ graphID: String) async throws -> MFGraphData {
-        try await request("/api/graph/data/\(graphID)", method: "GET")
+        // A large knowledge graph can take a while to serialize server-side; allow
+        // more than the 60s polling default so a big graph fetch doesn't spuriously
+        // time out and get treated as a transient transport failure.
+        try await request("/api/graph/data/\(graphID)", method: "GET",
+                          timeout: Self.longRunningTimeout)
     }
 
     // MARK: - Simulation

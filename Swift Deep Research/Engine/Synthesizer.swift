@@ -102,7 +102,7 @@ public struct Synthesizer: Sendable {
         // matches `complete()`'s assignment semantics and is correct for both.
         var lastPrompt = 0
         var lastCompletion = 0
-        var wallClockBust = false
+        var budgetBust = false
         var chunkCount = 0
         let stream = llm.stream(req)
         for try await chunk in stream {
@@ -110,11 +110,26 @@ public struct Synthesizer: Sendable {
             // checkWallClock previously only fired at loop boundaries — so a
             // slow/hung synthesis stream could blow the whole wall-clock cap.
             // Poll periodically (not per token — that's an actor hop each token)
-            // and stop streaming with whatever draft we have when time is up.
+            // and stop streaming with whatever draft we have when a budget is up.
             chunkCount += 1
             if chunkCount % 48 == 0 {
                 do { try await budget.checkWallClock() }
-                catch { wallClockBust = true; break }
+                catch { budgetBust = true; break }
+                // Enforce the TOKEN cap on synthesis too. The reflection loop only
+                // checks wall-clock before a round, so a run that already blew its
+                // token budget on workers/planner/reflector would otherwise stream
+                // a full synthesis anyway — and the post-loop token charge below is
+                // swallowed with `try?` (the stream is already done, so aborting it
+                // then is pointless). Checking the snapshot here is the deliberate
+                // enforcement point: stop streaming once the run is over its token
+                // cap (budget-charge-swallowed-4). The current synthesis's own
+                // tokens are charged after the loop and bounded by the model's
+                // output window, so they can't run away unbounded.
+                if await budget.snapshot.tokenFraction > 1 {
+                    budgetBust = true
+                    emit(.warning("Token budget exhausted; returning the synthesis draft produced so far."))
+                    break
+                }
             }
             switch chunk {
             case .text(let t):
@@ -131,11 +146,11 @@ public struct Synthesizer: Sendable {
             try? await budget.chargeTokens(lastPrompt + lastCompletion)
         }
 
-        // Skip the citation pass (another LLM round-trip) when the wall-clock
-        // budget is already spent — return the draft we have rather than overrun.
+        // Skip the citation pass (another LLM round-trip) when a budget (wall-clock
+        // or token) is already spent — return the draft we have rather than overrun.
         let citations: [Citation]
-        if wallClockBust {
-            emit(.warning("Synthesis reached the wall-clock budget; returning the draft without a citation pass."))
+        if budgetBust {
+            emit(.warning("Synthesis reached a budget limit; returning the draft without a citation pass."))
             citations = []
         } else {
             citations = try await citationExtractor.extract(draft: draft,

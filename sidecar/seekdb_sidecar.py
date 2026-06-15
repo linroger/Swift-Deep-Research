@@ -26,6 +26,7 @@ Endpoints (all JSON, no auth — bound to localhost only by default):
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as _dt
 import hashlib
 import json
@@ -40,7 +41,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 try:
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, Request
+    from fastapi.responses import JSONResponse
     from pydantic import BaseModel
     import uvicorn
 except ImportError as exc:  # pragma: no cover
@@ -61,6 +63,94 @@ except ImportError as exc:  # pragma: no cover
 
 LOG = logging.getLogger("seekdb_sidecar")
 LOG.setLevel(logging.INFO)
+
+# Pinned embedding model. pyseekdb's default auto-embedding model is
+# all-MiniLM-L6-v2 (384-dim). We name it explicitly so a future change to
+# pyseekdb's default can't silently swap the model and make new query
+# embeddings incompatible with vectors already stored on disk (kb-implicit-
+# embedding-fn). If you ever change this, existing collections must be reset.
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+
+# Upper bound on a single document's text. Embedding is synchronous and holds
+# the writer lock; an unbounded document could stall the KB for minutes. ~8 MB
+# of text is far larger than any realistic single ingest (kb-no-ingest-batching).
+MAX_DOCUMENT_CHARS = 8_000_000
+
+# Number of chunks embedded per _collection.add() call. Batching lets a large
+# document embed incrementally and releases the writer lock between batches so
+# queries aren't starved for the whole ingest (kb-no-ingest-batching,
+# kb-global-lock-serializes-query).
+ADD_BATCH_SIZE = 96
+
+# Max accepted request body. A document is at most MAX_DOCUMENT_CHARS of text,
+# plus JSON framing and metadata, plus headroom for a bulk array of a few docs.
+# Anything larger is almost certainly abusive and is rejected with 413 before
+# it is buffered/embedded (kb-no-request-size-limit). NOTE: this is a body-size
+# defense-in-depth cap only — the sidecar is still unauthenticated and bound to
+# loopback; a shared-secret token between the app and sidecar is a recommended
+# follow-up (kb-no-request-size-limit) but is a cross-process change.
+MAX_REQUEST_BYTES = 64 * 1024 * 1024
+
+
+class _ReadWriteLock:
+    """A small writer-preferring readers-writer lock (stdlib only).
+
+    The previous single ``threading.Lock`` serialized every ``query()`` behind
+    any in-flight ingest because both took the same mutex (kb-global-lock-
+    serializes-query). Vector search is read-only, so multiple queries may run
+    concurrently; only writers (upsert/delete/reset) need exclusivity. Writers
+    are preferred so a steady stream of queries can't starve an ingest.
+    """
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition(threading.Lock())
+        self._readers = 0
+        self._writers_waiting = 0
+        self._writer_active = False
+
+    def acquire_read(self) -> None:
+        with self._cond:
+            # Wait while a writer holds the lock or is queued (writer preference).
+            while self._writer_active or self._writers_waiting > 0:
+                self._cond.wait()
+            self._readers += 1
+
+    def release_read(self) -> None:
+        with self._cond:
+            self._readers -= 1
+            if self._readers == 0:
+                self._cond.notify_all()
+
+    def acquire_write(self) -> None:
+        with self._cond:
+            self._writers_waiting += 1
+            try:
+                while self._writer_active or self._readers > 0:
+                    self._cond.wait()
+            finally:
+                self._writers_waiting -= 1
+            self._writer_active = True
+
+    def release_write(self) -> None:
+        with self._cond:
+            self._writer_active = False
+            self._cond.notify_all()
+
+    @contextlib.contextmanager
+    def read(self):
+        self.acquire_read()
+        try:
+            yield
+        finally:
+            self.release_read()
+
+    @contextlib.contextmanager
+    def write(self):
+        self.acquire_write()
+        try:
+            yield
+        finally:
+            self.release_write()
 
 
 def _distance_to_score(dist: Any) -> Optional[float]:
@@ -122,7 +212,25 @@ class KnowledgeBase:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.settings.ensure_dir()
-        self._lock = threading.Lock()
+        # Readers-writer lock: many concurrent queries, exclusive writers
+        # (kb-global-lock-serializes-query).
+        self._lock = _ReadWriteLock()
+        # Pin the embedding function explicitly so the model is not an implicit
+        # pyseekdb default that could change between versions (kb-implicit-
+        # embedding-fn). We capture it on self so the warm-up can reuse it.
+        try:
+            self._embedding_fn: Any = pyseekdb.DefaultEmbeddingFunction(
+                model_name=EMBEDDING_MODEL
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            # If this pyseekdb build doesn't accept the kwarg, fall back to its
+            # default factory rather than failing startup outright.
+            LOG.warning(
+                "could not pin embedding model %s (%s); using pyseekdb default",
+                EMBEDDING_MODEL,
+                exc,
+            )
+            self._embedding_fn = pyseekdb.get_default_embedding_function()
         if settings.server_host:
             self._client = pyseekdb.Client(
                 host=settings.server_host,
@@ -148,10 +256,9 @@ class KnowledgeBase:
                 path=str(settings.data_dir),
                 database=settings.database,
             )
-        # `get_or_create_collection` is the documented entry point.
-        self._collection = self._client.get_or_create_collection(
-            name=settings.collection
-        )
+        # `get_or_create_collection` is the documented entry point. Pass the
+        # pinned embedding function so add()/query() auto-embedding is explicit.
+        self._collection = self._open_collection()
         self._journal_path = settings.data_dir / "documents.json"
         self._journal: dict[str, dict[str, Any]] = {}
         if self._journal_path.exists():
@@ -159,6 +266,103 @@ class KnowledgeBase:
                 self._journal = json.loads(self._journal_path.read_text())
             except json.JSONDecodeError:
                 LOG.warning("Corrupt journal at %s, starting fresh", self._journal_path)
+        # Warm up the embedding model at boot so any first-use model download
+        # happens during the app's "launching" window, not on the user's first
+        # query (kb-implicit-embedding-fn).
+        self._warm_up_embeddings()
+        # Reconcile the JSON journal against the vector store so list/query
+        # agree even if a previous run crashed between add() and journal
+        # persist (kb-journal-vector-drift).
+        self._reconcile_journal()
+
+    def _open_collection(self) -> Any:
+        """Open the collection with the pinned embedding function.
+
+        Some pyseekdb builds reject an embedding_function kwarg on an existing
+        collection created without one; fall back to the plain call so we don't
+        fail to start on an older on-disk collection.
+        """
+        try:
+            return self._client.get_or_create_collection(
+                name=self.settings.collection,
+                embedding_function=self._embedding_fn,
+            )
+        except TypeError:
+            # Older pyseekdb without the embedding_function kwarg.
+            return self._client.get_or_create_collection(name=self.settings.collection)
+        except Exception as exc:
+            LOG.warning(
+                "get_or_create_collection with pinned embedding failed (%s); "
+                "retrying without explicit embedding function",
+                exc,
+            )
+            return self._client.get_or_create_collection(name=self.settings.collection)
+
+    def _warm_up_embeddings(self) -> None:
+        """Embed a tiny string so the model loads/downloads at boot, not on the
+        user's first query (kb-implicit-embedding-fn). Best-effort: a failure
+        here must not prevent the sidecar from serving."""
+        try:
+            self._embedding_fn(["warm up"])
+        except Exception as exc:  # pragma: no cover - environment dependent
+            LOG.warning("embedding warm-up failed (will retry on first use): %s", exc)
+
+    def _reconcile_journal(self) -> None:
+        """Best-effort startup reconciliation of journal vs. vector store.
+
+        The vector store is the source of truth. We group existing chunk
+        metadata by doc_id and (a) drop journal entries whose vectors are gone,
+        (b) rebuild journal entries for docs that have vectors but no journal
+        record (e.g. a crash between add() and _persist_journal). This keeps
+        list_documents()/health in sync with what /query can actually return
+        (kb-journal-vector-drift)."""
+        try:
+            results = self._collection.get(include=["metadatas"])
+        except Exception as exc:  # pragma: no cover - depends on backend
+            LOG.warning("journal reconciliation skipped (collection.get failed): %s", exc)
+            return
+        ids = results.get("ids") or []
+        metadatas = results.get("metadatas") or []
+        # pyseekdb may nest results one level deep; flatten defensively.
+        if ids and isinstance(ids[0], list):
+            ids = ids[0]
+            metadatas = metadatas[0] if metadatas and isinstance(metadatas[0], list) else metadatas
+        counts: dict[str, int] = {}
+        meta_by_doc: dict[str, dict[str, Any]] = {}
+        for meta in metadatas:
+            if not isinstance(meta, dict):
+                continue
+            doc_id = meta.get("doc_id")
+            if not doc_id:
+                continue
+            counts[doc_id] = counts.get(doc_id, 0) + 1
+            meta_by_doc.setdefault(doc_id, meta)
+        changed = False
+        # Drop journal entries with no surviving vectors.
+        for doc_id in list(self._journal.keys()):
+            if doc_id not in counts:
+                LOG.warning("journal drift: doc %s has no vectors; dropping entry", doc_id)
+                del self._journal[doc_id]
+                changed = True
+        # Rebuild journal entries for orphaned vectors.
+        for doc_id, n_chunks in counts.items():
+            if doc_id not in self._journal:
+                meta = meta_by_doc.get(doc_id, {})
+                LOG.warning("journal drift: vectors for %s have no journal entry; rebuilding", doc_id)
+                self._journal[doc_id] = {
+                    "id": doc_id,
+                    "title": meta.get("title") or doc_id,
+                    "chunks": n_chunks,
+                    "added_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                    "source": meta.get("source"),
+                    "metadata": {k: v for k, v in meta.items() if k not in ("chunk_index",)},
+                }
+                changed = True
+        if changed:
+            try:
+                self._persist_journal()
+            except Exception as exc:  # pragma: no cover
+                LOG.warning("failed to persist reconciled journal: %s", exc)
 
     # --- journal helpers ------------------------------------------------
 
@@ -169,6 +373,33 @@ class KnowledgeBase:
 
     # --- mutations ------------------------------------------------------
 
+    @staticmethod
+    def _coerce_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+        """Coerce metadata values to scalars the vector store + Swift client
+        round-trip cleanly.
+
+        The Swift AnyCodableValue decoder only handles String/Int/Double/Bool
+        and silently turns arrays/objects into null (kb-anycodable-silent-null).
+        Rather than drop structured values on the floor, JSON-encode any
+        list/dict to a string so it survives the round-trip, and log when we do
+        so the coercion is observable instead of silent."""
+        out: dict[str, Any] = {}
+        for key, value in metadata.items():
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                out[key] = value
+            else:
+                LOG.info(
+                    "metadata key %r has non-scalar value (%s); JSON-stringifying "
+                    "for scalar-only storage",
+                    key,
+                    type(value).__name__,
+                )
+                try:
+                    out[key] = json.dumps(value, ensure_ascii=False, sort_keys=True)
+                except (TypeError, ValueError):
+                    out[key] = str(value)
+        return out
+
     def upsert(
         self,
         doc_id: str,
@@ -178,27 +409,41 @@ class KnowledgeBase:
         chunk_chars: int = 1500,
         overlap_chars: int = 200,
     ) -> dict[str, Any]:
-        metadata = dict(metadata or {})
+        metadata = self._coerce_metadata(dict(metadata or {}))
         metadata.setdefault("title", title)
         if not text.strip():
             raise ValueError("document text is empty")
+        if len(text) > MAX_DOCUMENT_CHARS:
+            # Guard against pathological inputs that would embed for minutes
+            # while holding the writer lock (kb-no-ingest-batching).
+            raise ValueError(
+                f"document is too large ({len(text)} chars > {MAX_DOCUMENT_CHARS} limit)"
+            )
+        # Chunking is pure CPU work and the most expensive non-embedding step;
+        # do it OUTSIDE the lock so concurrent queries aren't blocked by it
+        # (kb-global-lock-serializes-query).
         chunks = self._split(text, chunk_chars, overlap_chars)
         if not chunks:
             raise ValueError("document produced no chunks")
-        with self._lock:
+        ids = [f"{doc_id}::{i:04d}" for i in range(len(chunks))]
+        metadatas = [
+            {**metadata, "doc_id": doc_id, "chunk_index": i}
+            for i in range(len(chunks))
+        ]
+        with self._lock.write():
             # Remove any old chunks for this document first so re-uploads don't
-            # leave stale embeddings.
+            # leave stale embeddings. Failures propagate (kb-journal-vector-drift).
             self._delete_chunks_of(doc_id)
-            ids = [f"{doc_id}::{i:04d}" for i in range(len(chunks))]
-            metadatas = [
-                {**metadata, "doc_id": doc_id, "chunk_index": i}
-                for i in range(len(chunks))
-            ]
-            self._collection.add(
-                ids=ids,
-                documents=chunks,
-                metadatas=metadatas,
-            )
+            # Batch the add so a large document embeds incrementally; the lock is
+            # held for the whole upsert (one doc is atomic), but batching keeps
+            # per-call memory bounded and aids progress (kb-no-ingest-batching).
+            for start in range(0, len(chunks), ADD_BATCH_SIZE):
+                end = start + ADD_BATCH_SIZE
+                self._collection.add(
+                    ids=ids[start:end],
+                    documents=chunks[start:end],
+                    metadatas=metadatas[start:end],
+                )
             self._journal[doc_id] = {
                 "id": doc_id,
                 "title": title,
@@ -211,7 +456,7 @@ class KnowledgeBase:
         return self._journal[doc_id]
 
     def delete(self, doc_id: str) -> bool:
-        with self._lock:
+        with self._lock.write():
             removed = self._delete_chunks_of(doc_id)
             if doc_id in self._journal:
                 del self._journal[doc_id]
@@ -219,43 +464,75 @@ class KnowledgeBase:
             return removed > 0
 
     def reset(self) -> None:
-        with self._lock:
+        with self._lock.write():
             try:
                 self._client.delete_collection(self.settings.collection)
-            except Exception:  # pragma: no cover
-                pass
-            self._collection = self._client.get_or_create_collection(
-                name=self.settings.collection
-            )
+            except Exception as exc:
+                # Tolerate only the benign "already gone" case so reset stays
+                # idempotent; any other delete failure must surface rather than
+                # silently wiping the journal while vectors remain
+                # (kb-journal-vector-drift). The emptiness check below is the
+                # real guarantee.
+                msg = str(exc).lower()
+                if "exist" not in msg and "not found" not in msg:
+                    raise
+            self._collection = self._open_collection()
+            # Verify the collection is actually empty before wiping the journal,
+            # so a failed/partial delete can't leave queryable vectors with no
+            # journal record (kb-journal-vector-drift).
+            try:
+                remaining = self._collection.get(include=["metadatas"])
+                rem_ids = remaining.get("ids") or []
+                if rem_ids and isinstance(rem_ids[0], list):
+                    rem_ids = rem_ids[0]
+            except Exception as exc:  # pragma: no cover
+                LOG.warning("reset: could not verify empty collection: %s", exc)
+                rem_ids = []
+            if rem_ids:
+                raise RuntimeError(
+                    f"reset did not empty collection ({len(rem_ids)} chunks remain)"
+                )
             self._journal = {}
             self._persist_journal()
 
     def _delete_chunks_of(self, doc_id: str) -> int:
-        try:
-            # `ids` are always returned; "ids" is NOT a valid `include` token and
-            # raises ValueError on pyseekdb/Chroma-style backends — which would
-            # leave stale chunks behind on re-upsert (duplicate retrieval hits)
-            # and make delete() a no-op. Request no extra fields.
-            results = self._collection.get(where={"doc_id": doc_id})
-            ids = results.get("ids") or []
-            if isinstance(ids, list) and ids and isinstance(ids[0], list):
-                ids = ids[0]
-            if ids:
-                self._collection.delete(ids=ids)
-            return len(ids)
-        except Exception as exc:  # pragma: no cover
-            LOG.warning("delete-by-doc-id failed: %s", exc)
-            return 0
+        # `ids` are always returned; "ids" is NOT a valid `include` token and
+        # raises ValueError on pyseekdb/Chroma-style backends — which would
+        # leave stale chunks behind on re-upsert (duplicate retrieval hits)
+        # and make delete() a no-op. Request no extra fields.
+        #
+        # Exceptions are NOT swallowed here (kb-journal-vector-drift): a failed
+        # delete that still let the journal be overwritten is exactly how the
+        # journal and vector store drift apart. Callers hold the writer lock and
+        # let the failure abort the mutation so the journal is not updated.
+        results = self._collection.get(where={"doc_id": doc_id})
+        ids = results.get("ids") or []
+        if isinstance(ids, list) and ids and isinstance(ids[0], list):
+            ids = ids[0]
+        if ids:
+            self._collection.delete(ids=ids)
+        return len(ids)
 
     # --- reads ----------------------------------------------------------
 
     def list_documents(self) -> list[dict[str, Any]]:
-        return sorted(self._journal.values(), key=lambda d: d.get("added_at", ""), reverse=True)
+        # Snapshot under the read lock so we never iterate the journal while a
+        # writer is reassigning it (reset) or deleting keys.
+        with self._lock.read():
+            snapshot = list(self._journal.values())
+        return sorted(snapshot, key=lambda d: d.get("added_at", ""), reverse=True)
+
+    def document_count(self) -> int:
+        with self._lock.read():
+            return len(self._journal)
 
     def query(self, text: str, k: int = 6) -> list[dict[str, Any]]:
         if not text.strip():
             return []
-        with self._lock:
+        # Read lock: concurrent queries run in parallel and only block while a
+        # writer (ingest/delete/reset) holds the lock (kb-global-lock-
+        # serializes-query).
+        with self._lock.read():
             res = self._collection.query(
                 query_texts=[text],
                 n_results=max(1, min(k, 25)),
@@ -367,6 +644,37 @@ class QueryBody(BaseModel):
 def build_app(kb: KnowledgeBase) -> FastAPI:
     app = FastAPI(title="Swift Deep Research — seekdb sidecar")
 
+    @app.middleware("http")
+    async def _limit_body_size(request: Request, call_next):
+        # Reject oversized payloads before they are buffered/embedded
+        # (kb-no-request-size-limit). The Swift URLSession client always sends a
+        # Content-Length, so the cheap header check covers the real path. For a
+        # request with no/invalid Content-Length we buffer the body once (which
+        # caps memory, since request.body() itself is bounded by the streamed
+        # bytes we count) and reject if it exceeds the limit; downstream
+        # handlers then read the already-cached body normally.
+        declared = request.headers.get("content-length")
+        if declared is not None:
+            try:
+                length = int(declared)
+            except ValueError:
+                return JSONResponse(
+                    status_code=400, content={"detail": "invalid Content-Length"}
+                )
+            if length > MAX_REQUEST_BYTES:
+                return JSONResponse(
+                    status_code=413, content={"detail": "request body too large"}
+                )
+        else:
+            # Unknown length: buffer and measure. Starlette caches the result on
+            # the request so the route handler can read it again without loss.
+            body = await request.body()
+            if len(body) > MAX_REQUEST_BYTES:
+                return JSONResponse(
+                    status_code=413, content={"detail": "request body too large"}
+                )
+        return await call_next(request)
+
     def _derive_id(body: UpsertBody) -> str:
         if body.id:
             return body.id
@@ -382,7 +690,7 @@ def build_app(kb: KnowledgeBase) -> FastAPI:
             "mode": kb.settings.mode,
             "database": kb.settings.database,
             "collection": kb.settings.collection,
-            "documents": len(kb._journal),
+            "documents": kb.document_count(),
         }
 
     @app.get("/documents")
@@ -444,16 +752,29 @@ def build_app(kb: KnowledgeBase) -> FastAPI:
 # ---------------------------------------------------------------------------
 
 
+# Fallback poll interval for the parent-death watchdog when kqueue isn't
+# available. Tightened from 2.0s to 0.5s to shrink the orphan window in which a
+# dead parent's child still holds the port and a rapid relaunch could collide
+# (kb-watchdog-orphan-window).
+_WATCHDOG_POLL_SECONDS = 0.5
+
+
 def _start_parent_watchdog() -> None:
     """Self-terminate when the launching app process dies.
 
     The Swift app launches this sidecar as a child process but cannot reliably
     kill it on crash, force-quit, or debugger stop — leaving an orphan that
     keeps holding the port and blocks the next launch with "address already in
-    use". We watch the parent PID: when the app exits, this process is
-    re-parented to launchd (PID 1), so `getppid() == 1` means "parent died" and
-    we exit immediately, freeing the port. `os._exit` skips atexit/uvicorn
-    shutdown hooks deliberately — we want a prompt, unconditional exit.
+    use". When the app exits, this process is re-parented to launchd (PID 1),
+    so `getppid() == 1` (or a changed ppid) means "parent died".
+
+    Primary mechanism (macOS/BSD): a kqueue EVFILT_PROC/NOTE_EXIT watch on the
+    parent PID delivers an *immediate* event the instant the parent dies, so
+    there is essentially no orphan window (kb-watchdog-orphan-window). If kqueue
+    is unavailable, we fall back to a tightened 0.5s getppid() poll.
+
+    `os._exit` skips atexit/uvicorn shutdown hooks deliberately — we want a
+    prompt, unconditional exit that frees the port.
     """
     initial_parent = os.getppid()
     # If we were already orphaned at launch (parent == 1), there is nothing to
@@ -461,16 +782,50 @@ def _start_parent_watchdog() -> None:
     if initial_parent <= 1:
         return
 
+    def _exit_on_parent_death() -> None:
+        LOG.info("parent process %s exited; sidecar shutting down", initial_parent)
+        os._exit(0)
+
     def _watch() -> None:
+        import select as _select
+
+        # Try event-driven kqueue first for instant notification.
+        if hasattr(_select, "kqueue"):
+            try:
+                queue = _select.kqueue()
+                event = _select.kevent(
+                    initial_parent,
+                    filter=_select.KQ_FILTER_PROC,
+                    flags=_select.KQ_EV_ADD,
+                    fflags=_select.KQ_NOTE_EXIT,
+                )
+                # Register the watch. Block in kevent() until the parent exits.
+                queue.control([event], 0, 0)
+                # Guard against a race where the parent died between getppid()
+                # and registration: re-check immediately.
+                if os.getppid() != initial_parent:
+                    _exit_on_parent_death()
+                while True:
+                    events = queue.control(None, 1, None)
+                    for ev in events:
+                        if ev.fflags & _select.KQ_NOTE_EXIT:
+                            _exit_on_parent_death()
+                    # Defensive: also re-check ppid in case the event was
+                    # spurious / the kernel coalesced it.
+                    if os.getppid() != initial_parent:
+                        _exit_on_parent_death()
+            except Exception as exc:  # pragma: no cover - fall back to polling
+                LOG.warning("kqueue parent watch unavailable (%s); polling", exc)
+
+        # Polling fallback (or if kqueue raised above).
         while True:
             try:
                 ppid = os.getppid()
             except Exception:  # pragma: no cover
                 ppid = 1
             if ppid == 1 or ppid != initial_parent:
-                LOG.info("parent process %s exited; sidecar shutting down", initial_parent)
-                os._exit(0)
-            time.sleep(2.0)
+                _exit_on_parent_death()
+            time.sleep(_WATCHDOG_POLL_SECONDS)
 
     t = threading.Thread(target=_watch, name="parent-watchdog", daemon=True)
     t.start()

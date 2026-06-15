@@ -747,3 +747,45 @@ AppEnvironment decomposition, no-tests-1). Work top-down in EXECPLAN2.md.
 
   CATALOG PROGRESS: 81 / 150 findings done (54%). Branch audit-remediation-batch5
   (commits 21a2f2a, 39063fe, + this batch7). Not yet pushed/merged.
+
+  ========================================================================
+  SESSION 2026-06-15 (continuation) — Batch 8: MiroFish backend reliability
+  + KB sidecar Python robustness (+20 findings; Swift BUILD SUCCEEDED 0/0,
+  sidecar python3 -m py_compile OK). 2-agent workflow (disjoint: 3 Forecast
+  Swift files vs sidecar/seekdb_sidecar.py) + main-loop budget/no-op work.
+
+  MiroFish (ForecastRun/MiroFishClient/MiroFishSupervisor): poll loop now
+  classifies MiroFishError.isTransient (fail fast on decode/4xx, ~6s, vs the
+  old 60s blanket retry); restored runs seed report/agent-log cursors +
+  dedupe agent log; cancel/detach stash the cancelled pollTask and resume/
+  resumePolling/hydrate drainExistingPollLoop() (await the PREVIOUS task from
+  inside the NEW task body — never its own handle — so no self-deadlock and no
+  two loops interleaving); applyStageFallback derives monotonic stage state so
+  a stalled backend isn't frozen mid-stage; waitForHealthOrExit uses
+  process.isRunning==false + drains the pipe so ImportError/config diagnostics
+  survive; syncEnv escapes .env values (single-quote + newline strip);
+  launchEpoch tag drops a dead child's stdout on relaunch + observer removed on
+  deinit; 300s longRunningTimeout for run/resume/graph endpoints.
+
+  KB sidecar (seekdb_sidecar.py): writer-preferring _ReadWriteLock (@contextmanager
+  read()/write()) so concurrent queries run in parallel and don't block on
+  ingest, chunking moved outside the lock; pinned embedding model
+  (all-MiniLM-L6-v2) + boot warm-up; journal/vector drift hardened (propagate
+  delete failures, verify reset emptied collection, startup _reconcile_journal);
+  batched add (96-chunk groups) + 8M-char doc guard; kqueue NOTE_EXIT parent-
+  death watchdog (~0.3ms vs 2s poll); 64MB request-body cap middleware -> 413;
+  _coerce_metadata JSON-stringifies nested arrays/objects instead of dropping
+  to null. Agent unit-tested RW-lock/body-size/kqueue/metadata in isolation.
+
+  Main loop: budget-charge-swallowed-4 — Synthesizer now checks tokenFraction>1
+  every 48 chunks and stops streaming (the deliberate enforcement point; the
+  reflection loop only checked wall-clock before a round, and the post-loop
+  token charge is necessarily try? since the stream is already done). kb-utf8-
+  only-text-load fixed Swift-side: KnowledgeBase.decodeText tries auto-detect
+  (usedEncoding:) then UTF-8/UTF-16/CP1252/Latin-1. Marked 3 confirm-only
+  concurrency findings done (unchecked-sendable-justification, sourcecache-
+  inflight-defer-clear, sidecar-ensuretask-clear-race — verified correct, no
+  change needed).
+
+  CATALOG PROGRESS: 101 / 150 findings done (67%). Branch audit-remediation-batch5
+  (commits 21a2f2a, 39063fe, 20dc322, + this batch8). Not yet pushed/merged.

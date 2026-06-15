@@ -38,6 +38,12 @@ public actor MiroFishSupervisor {
     private var logTail: String = ""
     private var lastPort: Int?
     private var quitObserver: NSObjectProtocol?
+    /// Monotonic launch generation. Each `launch()` bumps it; the readability
+    /// handler captures the value at registration time and `appendLog` drops text
+    /// tagged with a stale epoch, so a quick fail-then-relaunch can't mix the dead
+    /// child's stdout into the new child's `logTail` (which `statusAfterExit`
+    /// later parses for diagnostics).
+    private var launchEpoch: UInt64 = 0
     private(set) var status: Status = .stopped
     /// Coalesce concurrent `ensureRunning` callers onto one launch.
     private var ensureTask: Task<Status, Never>?
@@ -50,9 +56,18 @@ public actor MiroFishSupervisor {
     /// handler can reap the tree inline (an awaiting Task can't finish before the
     /// app process exits).
     nonisolated let liveGroup = ProcessGroupBox()
+    /// Nonisolated holder for the quit-notification token so the nonisolated
+    /// `deinit` can deregister it (an actor-isolated stored property is
+    /// unreachable from `deinit`). Removing the observer prevents the latent leak
+    /// the singleton would otherwise carry if it ever stops being a singleton.
+    nonisolated private let quitObserverBox = ObserverTokenBox()
 
     private init() {
         Task { await registerTermination() }
+    }
+
+    deinit {
+        quitObserverBox.remove()
     }
 
     private func registerTermination() {
@@ -67,6 +82,7 @@ public actor MiroFishSupervisor {
             MiroFishSupervisor.shared.liveGroup.reap()
         }
         self.quitObserver = token
+        quitObserverBox.set(token)
     }
 
     // MARK: - Public API
@@ -101,6 +117,7 @@ public actor MiroFishSupervisor {
         // Already supervising a child — just wait for it to come up.
         if let process, process.isRunning {
             let up = await waitForHealthOrExit(host: host)
+            if !up { drainPipeIntoLogTail() }   // populate diagnostics before parsing
             status = up ? .running : statusAfterExit()
             return status
         }
@@ -126,6 +143,7 @@ public actor MiroFishSupervisor {
                               port: host.port ?? 5001)
         guard case .launching = launched else { status = launched; return launched }
         let up = await waitForHealthOrExit(host: host)
+        if !up { drainPipeIntoLogTail() }   // populate diagnostics before parsing
         status = up ? .running : statusAfterExit()
         return status
     }
@@ -174,11 +192,11 @@ public actor MiroFishSupervisor {
             guard !trimmed.hasPrefix("#"), let eq = trimmed.firstIndex(of: "=") else { continue }
             let key = String(trimmed[trimmed.startIndex..<eq]).trimmingCharacters(in: .whitespaces)
             if let value = remaining[key] {
-                lines[i] = "\(key)=\(value)"
+                lines[i] = "\(key)=\(Self.escapeEnvValue(value))"
                 remaining.removeValue(forKey: key)
             }
         }
-        for (k, v) in remaining { lines.append("\(k)=\(v)") }
+        for (k, v) in remaining { lines.append("\(k)=\(Self.escapeEnvValue(v))") }
         let output = lines.joined(separator: "\n")
         do {
             try output.write(to: envURL, atomically: true, encoding: .utf8)
@@ -193,6 +211,21 @@ public actor MiroFishSupervisor {
             logTail = "Failed to update MiroFish .env: \(error.localizedDescription)"
             return false
         }
+    }
+
+    /// Render an `.env` value safely. API keys can contain `#`, spaces, `=`, or
+    /// quotes that would corrupt an unquoted `KEY=VALUE` line (or, worse, a value
+    /// with a newline could inject a second assignment) and break backend boot.
+    /// Wrap in single quotes — which python-dotenv and shells treat literally — and
+    /// escape any embedded single quote with the POSIX `'\''` idiom. Newlines and
+    /// carriage returns are stripped (no legitimate API key contains them and they
+    /// can't be represented inside a single-quoted line anyway).
+    private static func escapeEnvValue(_ value: String) -> String {
+        let sanitized = value
+            .replacingOccurrences(of: "\r", with: "")
+            .replacingOccurrences(of: "\n", with: "")
+        let escaped = sanitized.replacingOccurrences(of: "'", with: "'\\''")
+        return "'\(escaped)'"
     }
 
     // MARK: - Setup script (onboarding)
@@ -455,6 +488,10 @@ public actor MiroFishSupervisor {
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
         stdoutPipe = nil
         logTail = ""
+        // New launch generation: any appendLog Task still queued from the previous
+        // child carries the old epoch and will be dropped (see `launchEpoch`).
+        launchEpoch &+= 1
+        let epoch = launchEpoch
 
         let process = Process()
         let pipe = Pipe()
@@ -514,7 +551,7 @@ public actor MiroFishSupervisor {
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let chunk = handle.availableData
             guard !chunk.isEmpty, let text = String(data: chunk, encoding: .utf8), !text.isEmpty else { return }
-            Task { await self?.appendLog(text) }
+            Task { await self?.appendLog(text, epoch: epoch) }
         }
         process.terminationHandler = { [weak self] proc in
             let code = proc.terminationStatus
@@ -534,7 +571,11 @@ public actor MiroFishSupervisor {
         return env
     }
 
-    private func appendLog(_ text: String) {
+    /// Append child stdout to `logTail`, dropping any text from a prior launch.
+    /// `epoch == nil` is a synchronous in-actor caller (e.g. `drainPipeIntoLogTail`)
+    /// that is already current by construction.
+    private func appendLog(_ text: String, epoch: UInt64? = nil) {
+        if let epoch, epoch != launchEpoch { return }   // stale child's output
         logTail = String((logTail + text).suffix(4096))
     }
 
@@ -602,9 +643,35 @@ public actor MiroFishSupervisor {
         for _ in 0..<240 {
             try? await Task.sleep(nanoseconds: 500_000_000)
             if await probeHealth(host: host) { return true }
-            if process == nil { return false }   // exited
+            // Detect exit SYNCHRONOUSLY off the Process. The async `handleExit`
+            // hop (which sets `process = nil`) can lag the OS exit by an unbounded
+            // scheduling gap; waiting on `process == nil` would keep sleeping the
+            // full ~120s after the child already died. `isRunning == false` is
+            // observed the instant the OS reaps the child.
+            if process?.isRunning == false { return false }
         }
         return false
+    }
+
+    /// Synchronously drain whatever is left in the backend's stdout/stderr pipe
+    /// into `logTail`, so the diagnostic heuristics in `statusAfterExit` see the
+    /// child's final ImportError/配置错误/port-taken output. Without this, a child
+    /// that crashes instantly can exit before its async `appendLog` Tasks run,
+    /// leaving `logTail` empty and producing the generic 'exited' message.
+    private func drainPipeIntoLogTail() {
+        // Only drain once the child has exited; while it's alive its streamed
+        // output already flows through the readability handler.
+        guard process?.isRunning != true, let pipe = stdoutPipe else { return }
+        // Stop the readability handler first so it can't race this read, then read
+        // what's already buffered. `availableData` returns immediately (it does NOT
+        // block waiting for EOF the way `readToEnd()` would) — important because a
+        // setsid descendant could still hold the pipe's write end open after the
+        // direct child exited, and a blocking read would hang the actor.
+        pipe.fileHandleForReading.readabilityHandler = nil
+        let rest = pipe.fileHandleForReading.availableData
+        if !rest.isEmpty, let text = String(data: rest, encoding: .utf8) {
+            appendLog(text)
+        }
     }
 }
 
@@ -627,5 +694,21 @@ final class ProcessGroupBox: @unchecked Sendable {
         killpg(p, SIGTERM)
         usleep(200_000)          // 200ms grace for a clean Flask shutdown
         killpg(p, SIGKILL)
+    }
+}
+
+/// Nonisolated, lock-protected holder of the `willTerminate` observer token so the
+/// actor's nonisolated `deinit` can deregister it. `NotificationCenter` is
+/// thread-safe; the token is an opaque reference, so this is safe to drop from any
+/// isolation.
+final class ObserverTokenBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var token: NSObjectProtocol?
+
+    func set(_ t: NSObjectProtocol) { lock.lock(); token = t; lock.unlock() }
+
+    func remove() {
+        lock.lock(); let t = token; token = nil; lock.unlock()
+        if let t { NotificationCenter.default.removeObserver(t) }
     }
 }

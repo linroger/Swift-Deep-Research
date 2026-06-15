@@ -113,9 +113,9 @@ public final class KnowledgeBase {
             case "pdf":
                 text = try Self.extractPDF(url: url)
             case "md", "markdown", "txt", "rtf", "csv", "json", "yaml", "yml", "html", "htm":
-                text = try String(contentsOf: url, encoding: .utf8)
+                text = try Self.decodeText(at: url)
             default:
-                if let decoded = try? String(contentsOf: url, encoding: .utf8) {
+                if let decoded = try? Self.decodeText(at: url) {
                     text = decoded
                 } else {
                     throw KBError.unsupportedFormat(ext)
@@ -165,6 +165,25 @@ public final class KnowledgeBase {
                 "No readable text was found in \(title)."
             }
         }
+    }
+
+    /// Decode a text file tolerantly. `String(contentsOf:encoding:.utf8)` throws
+    /// on any non-UTF-8 file (Windows-1252, ISO-8859-1, GB2312, UTF-16 …), so a
+    /// perfectly readable document in another encoding failed to ingest
+    /// (kb-utf8-only-text-load). Prefer Foundation's auto-detection (BOM / file
+    /// attributes) via `usedEncoding:`, then fall back through UTF-8,
+    /// Windows-1252, and finally ISO-Latin-1 (which never fails) so the file
+    /// still ingests instead of erroring.
+    private static func decodeText(at url: URL) throws -> String {
+        var used: String.Encoding = .utf8
+        if let s = try? String(contentsOf: url, usedEncoding: &used) { return s }
+        let data = try Data(contentsOf: url)
+        for enc: String.Encoding in [.utf8, .utf16, .windowsCP1252, .isoLatin1] {
+            if let s = String(data: data, encoding: enc) { return s }
+        }
+        // .isoLatin1 above maps every byte, so this is effectively unreachable;
+        // kept as an explicit, typed failure rather than a force-unwrap.
+        throw KBError.unsupportedFormat(url.pathExtension.lowercased())
     }
 
     #if canImport(PDFKit)

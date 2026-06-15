@@ -82,6 +82,10 @@ public final class ForecastRun: Identifiable {
     // MainActor and read from deinit at end-of-life when no other reference exists,
     // so the cross-isolation access has no real race; a `Task` is Sendable.
     @ObservationIgnored private nonisolated(unsafe) var pollTask: Task<Void, Never>?
+    /// The just-cancelled poll task whose trailing awaits may still be unwinding.
+    /// A new loop awaits this before running so two loops can't interleave against
+    /// the same @Observable state (see `mirofish-run-4`). Cleared once drained.
+    private var previousPollTask: Task<Void, Never>?
     private var agentLogCursor = 0
     private var lastPersistedReportLength = 0
 
@@ -103,6 +107,21 @@ public final class ForecastRun: Identifiable {
 
     // MARK: - Lifecycle
 
+    /// Await a poll loop that a prior `cancel()`/`detach()` cancelled but whose
+    /// trailing awaits may still be unwinding, before starting a new one — so no
+    /// two loops ever run concurrently against the same @Observable state.
+    /// `Task<Void, Never>` never throws, and `await value` returns once the loop
+    /// has unwound past its last cancellation check, at which point it can no
+    /// longer mutate state. Called from the new task's body (not touching the
+    /// new task's own `pollTask` handle, which would self-deadlock) so the public
+    /// lifecycle methods stay synchronous.
+    private func drainExistingPollLoop() async {
+        guard let prior = previousPollTask else { return }
+        prior.cancel()
+        previousPollTask = nil
+        await prior.value
+    }
+
     public func start() {
         guard phase == .idle else { return }
         phase = .starting
@@ -114,12 +133,16 @@ public final class ForecastRun: Identifiable {
     /// so re-opening it reattaches via `resumePolling`/`hydrateFromBackend`.
     public func detach() {
         pollTask?.cancel()
+        // Keep the cancelled handle so a later resumePolling/resume awaits its
+        // trailing awaits before starting a fresh loop (see `mirofish-run-4`).
+        previousPollTask = pollTask
         pollTask = nil
         persist(force: true)
     }
 
     public func cancel() {
         pollTask?.cancel()
+        previousPollTask = pollTask
         pollTask = nil
         let wasActive = phase.isActive
         if wasActive {
@@ -161,6 +184,10 @@ public final class ForecastRun: Identifiable {
         phase = .starting
         pollTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            // Wait out any previous loop (e.g. one cancel() just stopped) before
+            // resuming, so two poll loops can't interleave (`mirofish-run-4`).
+            await self.drainExistingPollLoop()
+            guard !Task.isCancelled else { return }
             do {
                 _ = try await self.client.resumePipeline(pid)
                 guard !Task.isCancelled else { return }
@@ -205,11 +232,17 @@ public final class ForecastRun: Identifiable {
     }
 
     private func pollLoop(pipelineID: String) async {
-        var consecutiveFailures = 0
+        var transientFailures = 0
+        var nonTransientFailures = 0
         while !Task.isCancelled {
             do {
                 let state = try await client.pipelineStatus(pipelineID)
-                consecutiveFailures = 0
+                // A cancel()/detach() that fired while this status await was in
+                // flight must not let a stale iteration overwrite the terminal
+                // state it just set — bail before mutating any @Observable field.
+                guard !Task.isCancelled else { return }
+                transientFailures = 0
+                nonTransientFailures = 0
                 ingest(state)
                 if state.status == "completed" {
                     await finalFetches(state)
@@ -236,14 +269,32 @@ public final class ForecastRun: Identifiable {
                     return
                 }
                 await sideFetches(state)
+                // sideFetches has its own awaits; re-check before the non-terminal
+                // persist so a late iteration doesn't flip record.status back to
+                // "running" after a concurrent cancel set it terminal.
+                guard !Task.isCancelled else { return }
                 persist(force: false)
             } catch {
-                // A single status hiccup shouldn't abort the run; only give up if
-                // the backend stays unreachable for a long stretch.
-                consecutiveFailures += 1
-                if consecutiveFailures >= 30 {     // ~60s of failures
-                    failWith(error)
-                    return
+                // Transient transport failures (unreachable/429/5xx) deserve the
+                // long retry budget — the backend may just be busy. But a
+                // non-transient error (decode/4xx/api) means the contract drifted
+                // or the pipeline id is gone, so retrying for 60s only delays the
+                // real diagnosis and keeps the UI spinning. Fail those fast (after a
+                // couple of retries to ride out a one-off blip), surfacing the
+                // underlying error rather than a generic timeout.
+                let isTransient = (error as? MiroFishError)?.isTransient ?? true
+                if isTransient {
+                    transientFailures += 1
+                    if transientFailures >= 30 {     // ~60s of transient failures
+                        failWith(error)
+                        return
+                    }
+                } else {
+                    nonTransientFailures += 1
+                    if nonTransientFailures >= 3 {   // ~6s; rules out a one-off blip
+                        failWith(error)
+                        return
+                    }
                 }
             }
             try? await Task.sleep(for: .seconds(2))
@@ -275,6 +326,41 @@ public final class ForecastRun: Identifiable {
                 stages[i].message = s.message ?? ""
             }
         }
+        applyStageFallback(currentStageKey: state.current_stage, pipelineStatus: state.status)
+    }
+
+    /// The stage rows only advance when the backend echoes that exact stage key.
+    /// A backend that reports stages sparsely (or that stalls/renames a key — the
+    /// 'prepare'/Agent Setup stage in particular streams no resource of its own)
+    /// would otherwise leave rows stuck at `.pending` while `current_stage` has
+    /// clearly moved past them. Derive a monotonic fallback from `current_stage`:
+    /// everything before the current stage is at least completed, and the current
+    /// stage reflects the run's outcome (running while live; completed/failed/
+    /// skipped once the pipeline finished) instead of looking frozen mid-stage.
+    private func applyStageFallback(currentStageKey: String, pipelineStatus: String) {
+        guard let currentIdx = stages.firstIndex(where: { $0.kind.rawValue == currentStageKey })
+        else { return }   // unknown/empty key — nothing reliable to infer
+        for i in stages.indices {
+            if i < currentIdx {
+                // Earlier stages must be done if we're past them; never downgrade.
+                if stages[i].status == .pending || stages[i].status == .running {
+                    stages[i].status = .completed
+                    if stages[i].progress < 100 { stages[i].progress = 100 }
+                }
+            } else if i == currentIdx, stages[i].status != .completed {
+                // Don't leave the active stage spinning after the run ended; mirror
+                // the pipeline outcome so a stalled/terminal backend reads honestly.
+                switch pipelineStatus {
+                case "completed":
+                    stages[i].status = .completed
+                    if stages[i].progress < 100 { stages[i].progress = 100 }
+                case "failed":  stages[i].status = .failed
+                case "cancelled": stages[i].status = .skipped
+                default:
+                    if stages[i].status == .pending { stages[i].status = .running }
+                }
+            }
+        }
     }
 
     /// Pull stage-specific resources based on what's currently available.
@@ -301,9 +387,11 @@ public final class ForecastRun: Identifiable {
                 if !next.isEmpty { graph = next }
             }
         }
-        // Simulation telemetry while running / once present.
-        if let sid = state.simulation_id,
-           stageStatus(.run) == .running || stageStatus(.run) == .completed {
+        // Simulation telemetry: fetch whenever a simulation id exists, not only
+        // when the local 'run' stage row says running/completed. The backend may
+        // omit or rename the 'run' stage key, which previously suppressed ALL
+        // simulation telemetry even though `simulation_id` was present.
+        if let sid = state.simulation_id {
             if let detail = try? await client.runStatusDetail(sid) {
                 runState = detail
                 recentActions = detail.recent_actions ?? recentActions
@@ -350,8 +438,15 @@ public final class ForecastRun: Identifiable {
         if let p = try? await client.reportProgress(reportID) { reportProgress = p }
         if let log = try? await client.reportAgentLog(reportID, fromLine: agentLogCursor) {
             if !log.logs.isEmpty {
-                agentLog.append(contentsOf: log.logs)
-                if agentLog.count > 600 { agentLog.removeFirst(agentLog.count - 600) }
+                // Dedupe by entry id: a restored/resumed run re-fetches from
+                // fromLine 0, so an overlapping range mustn't duplicate console
+                // rows already shown.
+                let existingIDs = Set(agentLog.map(\.id))
+                let fresh = log.logs.filter { !existingIDs.contains($0.id) }
+                if !fresh.isEmpty {
+                    agentLog.append(contentsOf: fresh)
+                    if agentLog.count > 600 { agentLog.removeFirst(agentLog.count - 600) }
+                }
             }
             agentLogCursor = log.total_lines ?? agentLogCursor
         }
@@ -447,6 +542,10 @@ public final class ForecastRun: Identifiable {
                                   status: "completed", outline: nil,
                                   markdown_content: record.reportMarkdown,
                                   created_at: nil, completed_at: nil, error: nil)
+            // Seed the persistence cursor from the rehydrated markdown so the first
+            // post-restore persist() doesn't rewrite the identical report back to
+            // SwiftData (reportChanged compares against lastPersistedReportLength).
+            run.lastPersistedReportLength = record.reportMarkdown.count
         }
         // Mark all stages completed for a finished restore so the stepper reads sensibly.
         if run.phase == .completed {
@@ -461,7 +560,12 @@ public final class ForecastRun: Identifiable {
         guard pollTask == nil else { return }
         isRestored = false
         phase = .running
-        pollTask = Task { @MainActor [weak self] in await self?.pollLoop(pipelineID: pid) }
+        pollTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.drainExistingPollLoop()
+            guard !Task.isCancelled else { return }
+            await self.pollLoop(pipelineID: pid)
+        }
     }
 
     /// Best-effort re-fetch of a restored run's full artifacts (dossier, ontology,
@@ -490,7 +594,10 @@ public final class ForecastRun: Identifiable {
                     self.phase = .running
                     if self.pollTask == nil {
                         self.pollTask = Task { @MainActor [weak self] in
-                            await self?.pollLoop(pipelineID: pid)
+                            guard let self else { return }
+                            await self.drainExistingPollLoop()
+                            guard !Task.isCancelled else { return }
+                            await self.pollLoop(pipelineID: pid)
                         }
                     }
                 default: break
