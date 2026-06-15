@@ -16,7 +16,7 @@
 
 私有文档由内置的 **SeekDB** 向量知识库管理，通过 Python FastAPI sidecar 暴露给 App，首次启动自动拉起。PDF 自动分块、向量化并支持语义检索——Agent 会**先**调用 `knowledge_base` 再访问公网，让你自己的笔记拥有优先级。
 
-在深度研究之外，全新的 **Forecast（预测）工作区**回答另一类问题——关于*未来*的问题：它通过 HTTP 驱动本地 **MiroFish** 预测后端，跑通六阶段流水线——深度研究（DeerFlow）→ 角色本体 → 时序知识图谱（Zep）→ Agent 人格构建 → 多 Agent 社会模拟（OASIS，数百个 LLM Agent 在模拟的 Twitter / Reddit 上发帖互动）→ 可对话的最终预测报告。每个阶段都以原生 SwiftUI 渲染，包括一个可交互的力导向知识图谱。
+在深度研究之外，全新的 **Forecast（预测）工作区**回答另一类问题——关于*未来*的问题：它通过 HTTP 驱动本地 **DeepResearchForecast** 预测后端（原 MiroFish），跑通六阶段流水线——深度研究（DeerFlow）→ 角色本体 → 本地 Graphiti 时序知识图谱（内嵌 FalkorDB，无需 API Key）→ Agent 人格构建 → 多 Agent 社会模拟（OASIS，数百个 LLM Agent 在模拟的 Twitter / Reddit 上发帖互动）→ 可对话的最终预测报告。每个阶段都以原生 SwiftUI 渲染，包括一个可交互的力导向知识图谱。
 
 整个项目使用 Swift 6.2 / SwiftUI 为 macOS 26 Tahoe 从零构建，启用严格并发，统一封装跨厂商的结构化工具调用协议，UI 适配 Liquid Glass 设计语言。
 
@@ -58,7 +58,7 @@
 | **知识库** — 拖入 PDF 即可通过自动拉起的 SeekDB sidecar 完成分块与向量化，研究过程中自动检索 | ![Knowledge Base](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2010.53.03%402x.png) |
 | **设置页** — 为规划器 / 工作者 / 综合器在 12 个带品牌图标的提供方间分别选择 LLM，一键测试 API Key 并实时拉取最新模型，配置 LM Studio / 自定义端点、sidecar 控制以及预算 | ![Settings](./Screenshots/Swift%20Deep%20Research%202026-05-26%20at%2011.17.46%402x.png) |
 | **Forecast 工作区** — 提问「某个社会将如何对某事件作出反应」；深度预设（Quick / Standard / Deep）、完整预测 vs 仅研究两种模式、后端就绪状态横幅，侧边栏列出历史预测与后端上的流水线 | ![Forecast composer](./Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2021.15.22%402x.png) |
-| **Forecast 设置** — MiroFish 后端状态与一键启动、引导式安装助手、环境修复，模拟 / 报告 LLM 提供方切换（含 MiniMax 国内平台）、后端目录与 Host URL、按需自动拉起、默认研究深度 | ![Forecast settings](./Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2021.15.06%402x.png) |
+| **Forecast 设置** — DeepResearchForecast 后端状态与一键启动、引导式安装助手、环境修复，模拟 / 报告 LLM 提供方切换（含 MiniMax 国内平台）、后端目录与 Host URL、按需自动拉起、默认研究深度 | ![Forecast settings](./Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2021.15.06%402x.png) |
 | **提供方路由** — 编排器 / 工作者 / 综合器各自独立选择提供方与模型；「Test key & fetch」一键向真实 API 验证密钥并拉取最新模型列表 | ![Providers](./Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2021.13.45%402x.png) |
 | **预算预设** — Fast / Standard / Thorough 同步缩放最大 Token、工作者数、每工作者来源数与工具调用数，也可逐项手动调整 | ![Budget](./Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2021.14.57%402x.png) |
 | **关于页** — 一眼看懂整体架构：编排器–工作者模式、完整的 LLM 提供方阵容、搜索 fallback 链、SeekDB 知识库、Keychain 密钥存储 | ![About](./Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2021.14.35%402x.png) |
@@ -109,12 +109,12 @@
 
 ## Forecast —— 预测一个社会的反应
 
-**Forecast 工作区**（工具栏切换：Research ⇄ Forecast）回答的不是「什么是真的？」，而是「将会发生什么？」。输入一个事件——例如*「美国芯片出口管制将如何重塑 2030 年的半导体行业？」*——App 会驱动本地 **MiroFish** 预测后端跑通六阶段流水线，并以原生界面渲染每个阶段：
+**Forecast 工作区**（工具栏切换：Research ⇄ Forecast）回答的不是「什么是真的？」，而是「将会发生什么？」。输入一个事件——例如*「美国芯片出口管制将如何重塑 2030 年的半导体行业？」*——App 会驱动本地 **DeepResearchForecast** 预测后端（原 MiroFish）跑通六阶段流水线，并以原生界面渲染每个阶段：
 
 ```
- 提问 ─▶ ① 深度研究（DeerFlow）─▶ ② 本体 ─▶ ③ 知识图谱（Zep）
-                                                    │
- ⑥ 预测报告 ◀─ ⑤ 社会模拟（OASIS）◀─ ④ Agent 构建 ◀──┘
+ 提问 ─▶ ① 深度研究（DeerFlow）─▶ ② 本体 ─▶ ③ 知识图谱（Graphiti）
+                                                         │
+ ⑥ 预测报告 ◀─ ⑤ 社会模拟（OASIS）◀─ ④ Agent 构建 ◀───────┘
 ```
 
 输入区提供三档研究深度（**Quick / Standard / Deep**——越深意味着 DeerFlow 跑更多轮研究、角色档案更丰富），以及两种模式：**完整预测**，或只想要研究档案时的**仅研究**（跑完阶段 ① 即停）。工作区以六枚芯片组成的**阶段步进器**呈现整次运行——每枚芯片实时显示状态、进度与该阶段的最新消息；后面的阶段还在跑时就可以点击任意芯片查看其内容，视图默认自动跟随流水线推进，手动选择后则固定在该阶段。
@@ -127,9 +127,9 @@
 
 ![本体阶段——推断出的实体与关系类型](./Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2022.47.32%402x.png)
 
-**③ 知识图谱。** 实体与关系从研究成果中被抽取进 **Zep 时序知识图谱**，并以*原生*交互式力导向图渲染（[Grape](https://github.com/li3zhen1/Grape) 包——不是 Web View）。节点按实体类型着色、按连接数定大小；控制栏可暂停/恢复物理布局、缩放、开关标签；图例标注配色对应的类型。点按任意节点，检视面板滑入，展示其类型、摘要与全部关系——点空白处即可关闭。超大图谱会按连接度截取前 ~140 个节点，保证布局流畅：
+**③ 知识图谱。** 实体与关系从研究成果中被抽取进**本地 Graphiti 时序知识图谱（内嵌 FalkorDB，无需 API Key）**，并以*原生*交互式力导向图渲染（[Grape](https://github.com/li3zhen1/Grape) 包——不是 Web View）。节点按实体类型着色、按连接数定大小；控制栏可暂停/恢复物理布局、缩放、开关标签；图例标注配色对应的类型。点按任意节点，检视面板滑入，展示其类型、摘要与全部关系——点空白处即可关闭。超大图谱会按连接度截取前 ~140 个节点，保证布局流畅：
 
-![知识图谱——力导向 Zep 图谱与节点检视面板](./Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2022.47.59%402x.png)
+![知识图谱——力导向 Graphiti 图谱与节点检视面板](./Screenshots/Swift%20Deep%20Research%202026-06-10%20at%2022.47.59%402x.png)
 
 **④ Agent 构建。** 图谱中的每个角色都变成一个自治 LLM Agent：人格从其档案条目提炼而来，拥有记忆与按平台区分的发帖行为。模拟规模（Agent 数 × 轮数）确定后会显示在该阶段。
 
@@ -145,7 +145,7 @@
 
 ### App 如何驱动后端
 
-整条流水线在本地 **MiroFish** Flask 后端（`127.0.0.1:5001`）中运行；Swift 侧是一层轻薄的强类型 REST 封装加一个可观察状态机：
+整条流水线在本地 **DeepResearchForecast**（原 MiroFish）Flask 后端（`127.0.0.1:5001`）中运行；Swift 侧是一层轻薄的强类型 REST 封装加一个可观察状态机：
 
 - **`MiroFishClient`** 把每个端点（`/api/research/*`、`/api/graph/*`、`/api/simulation/*`、`/api/report/*`、`/api/settings/*`）封装为 `Codable` 类型，统一处理后端的 `{success, data, error}` 信封。长耗时调用（报告对话）有独立超时；取消/删除能容忍流水线已自行结束的竞态。
 - **`ForecastRun`** 是工作区的 `@Observable` 核心：发起流水线后持续轮询状态——更新每个阶段的进度、流式追加研究控制台的新行、跟随后端当前所在阶段。运行完成（或导入一条已有流水线）时一次性水合*全部*内容：研究记录、角色档案、本体、图谱 JSON、模拟时间线与遥测、报告 Markdown。
@@ -156,12 +156,12 @@
 
 一次预测要对着本地 Python 后端跑几十分钟，所以整个生命周期都做了加固：
 
-- **引导式安装助手。** 首次运行的引导流程会检查环境、录入 Zep Key、把 MiroFish 的 `setup.sh` 流式输出到内置控制台并启动后端——全程无需打开终端。
+- **引导式安装助手。** 首次运行的引导流程会检查环境、把后端的 `setup.sh` 流式输出到内置控制台并启动后端——全程无需打开终端。知识图谱在本地运行（内嵌 FalkorDB），所以无需录入任何图谱密钥；首次预测会一次性下载约 470MB 的本地嵌入模型。
 - **取消 / 恢复 / 重连。** 运行中可随时停止；恢复会从第一个未完成的阶段重启，已完成的研究、图谱与模拟产物全部复用。运行中途退出 App，重新打开该预测会自动重连仍在运行的流水线。
-- **后端浏览器。** 侧边栏的 *On backend* 分区列出存在于 MiroFish 上、但不是从本 App 发起的流水线（Web UI、命令行、另一台机器）。一键导入并完整水合——研究记录、角色档案、本体、图谱、模拟遥测与报告全部呈现。
+- **后端浏览器。** 侧边栏的 *On backend* 分区列出存在于后端上、但不是从本 App 发起的流水线（Web UI、命令行、另一台机器）。一键导入并完整水合——研究记录、角色档案、本体、图谱、模拟遥测与报告全部呈现。
 - **提供方切换。** 模拟 / 报告所用的 LLM 可在 设置 → Forecast 中切换——包括 **MiniMax 国内平台**（`api.minimaxi.com`，MiniMax-M3）、DeepSeek、Qwen 等——密钥与研究侧共用同一个 Keychain。
 
-后端（MiroFish + 内置的 DeerFlow）位于 App 之外；在 设置 → Forecast 中指向其目录，启动、健康检查与关闭都由 App 接管。
+后端（DeepResearchForecast + 内置的 DeerFlow）位于 App 之外；在 设置 → Forecast 中指向其目录，启动、健康检查与关闭都由 App 接管。
 
 ---
 
@@ -244,7 +244,7 @@ DeepSeek、MiniMax、Kimi、Qwen、LM Studio 与自定义端点都使用 OpenAI 
 - PATH 中可用的 Python 3.10+（App 首次运行会自动创建虚拟环境并安装 SeekDB 依赖——手动 `pip install pyseekdb fastapi uvicorn pydantic` 为可选）
 - 可选：Anthropic / OpenAI / Gemini / DeepSeek / MiniMax / Moonshot(Kimi) / Qwen（阿里云百炼） / 自定义端点 / Tavily / Exa / Brave 的 API Key（任意组合）
 - 可选：本地运行的 Ollama 或 LM Studio + 至少一个支持工具调用的模型
-- 可选（Forecast）：本地的 MiroFish 检出目录（含其内置 DeerFlow）与一个 Zep API Key——App 内置的引导助手会代你运行 `setup.sh` 并启动后端
+- 可选（Forecast）：本地的 DeepResearchForecast 检出目录（含其内置 DeerFlow；知识图谱在本地运行——无需 API Key，默认路径 `~/Downloads/DeepResearchForecast`）——App 内置的引导助手会代你运行 `setup.sh` 并启动后端
 
 ### 构建与运行
 1. 用 Xcode 26 打开 `Swift Deep Research.xcodeproj`。
@@ -253,7 +253,7 @@ DeepSeek、MiniMax、Kimi、Qwen、LM Studio 与自定义端点都使用 OpenAI 
 4. 打开设置，粘贴你需要使用的 API Key（Anthropic、OpenAI、Gemini、DeepSeek、MiniMax、Kimi、Qwen……），可点「测试」即时校验；在 LM Studio / 自定义端点卡片中填写本地或自托管服务地址。
 5. 把 PDF 拖入知识库标签页（如需启用私有 KB）。
 6. 在主输入区输入问题、选择研究深度，开始。
-7. 如需预测：把工具栏切换到 **Forecast**，让引导助手完成 MiroFish 后端的安装与启动（或在 设置 → Forecast 指向已有检出目录），然后提问「某个社会将如何对某事件作出反应」。
+7. 如需预测：把工具栏切换到 **Forecast**，让引导助手完成 DeepResearchForecast 后端的安装与启动（或在 设置 → Forecast 指向已有检出目录），然后提问「某个社会将如何对某事件作出反应」。
 
 ### 手动启动 sidecar
 若自动拉起失败（PATH 异常 / 缺 Python），可手动启动：
@@ -298,7 +298,7 @@ sidecar/              # Python FastAPI seekdb sidecar
 - **ReAct** 原论文（Yao 等人，*Reasoning + Acting in Language Models*）
 - Perplexity / ChatGPT Search 的引文渲染范式
 - 开源 Agent：STORM、GPT-Researcher、smolagents
-- Forecast 技术栈：MiroFish、字节跳动 **DeerFlow**、**Zep** 时序知识图谱、CAMEL-AI **OASIS** 社会模拟、**Grape** 力导向图
+- Forecast 技术栈：DeepResearchForecast、字节跳动 **DeerFlow**、本地 **Graphiti** 时序知识图谱（内嵌 FalkorDB）、CAMEL-AI **OASIS** 社会模拟、**Grape** 力导向图
 
 ---
 
