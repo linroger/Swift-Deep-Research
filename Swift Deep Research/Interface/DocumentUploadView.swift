@@ -70,7 +70,7 @@ struct DocumentUploadView: View {
                 Text("Tried to auto-launch at \(host). If Python or the required packages are missing, install them once:")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("python3 -m pip install pyseekdb fastapi uvicorn pydantic")
+                Text("python3 -m pip install -r sidecar/requirements.txt")
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
                     .padding(6)

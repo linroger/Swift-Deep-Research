@@ -128,6 +128,18 @@ public struct ProviderRegistry: Sendable {
                 return false   // on-device, no remote catalogue
             }
         }
+
+        /// Whether this provider's client can actually use tools (`web_search`,
+        /// `knowledge_base`). Apple Foundation Models and MLX run text-only on
+        /// device and ignore tool specs, so a *worker* on these silently never
+        /// fetches the web/KB — research degrades to the model's built-in
+        /// knowledge. The engine/UI consult this to warn or re-route (E3-llm-3).
+        public var supportsToolCalling: Bool {
+            switch self {
+            case .foundationmodels, .mlx: return false
+            default: return true
+            }
+        }
     }
 
     public init() {}

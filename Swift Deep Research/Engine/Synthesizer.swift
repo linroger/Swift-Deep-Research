@@ -48,6 +48,18 @@ public struct Synthesizer: Sendable {
             "[\(idx + 1)] \(src.title) — \(src.url.absoluteString)"
         }.joined(separator: "\n")
 
+        // Detect a fully ungrounded synthesis: no sources were gathered AND no
+        // worker produced any prose findings. This happens most often when no
+        // web-search API key is configured and the keyless fallback returned
+        // nothing — the model would otherwise emit a confident-looking answer
+        // with no citations and no evidence. Warn the user and instruct the model
+        // to say it could not gather sources, rather than inventing one
+        // (engine-zero-grounded-findings).
+        let hasGrounding = !(orderedSources.isEmpty && workerOutputs.allSatisfy { !$0.hasFindings })
+        if !hasGrounding {
+            emit(.warning("No sources were gathered — the answer below is unverified and uncited. Add a web-search API key in Settings to enable real research."))
+        }
+
         let conversationContext = conversation.isFirstTurn ? "" : """
 
         # Prior conversation context
@@ -57,8 +69,21 @@ public struct Synthesizer: Sendable {
 
         let extra = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
         let appendix = extra.isEmpty ? "" : "\n\n# User instructions (honor unless they conflict with safety)\n\(extra)"
+        // When nothing could be gathered, lead the prompt with an explicit caveat
+        // so the model openly states it had no sources instead of fabricating an
+        // authoritative answer (engine-zero-grounded-findings).
+        let groundingCaveat = hasGrounding ? "" : """
+        IMPORTANT: No sources or worker findings were gathered for this question. \
+        Begin your answer by clearly stating that no sources could be retrieved \
+        (likely because no web-search API key is configured) and that the response \
+        is therefore unverified. Do NOT invent citations, facts, or source markers; \
+        offer only general, clearly-hedged context and recommend adding a web-search \
+        API key in Settings for grounded research.
+
+
+        """
         let system = """
-        You are a senior research analyst writing the final synthesis.
+        \(groundingCaveat)You are a senior research analyst writing the final synthesis.
 
         Write a comprehensive markdown answer that:
         - Opens with a 2–3 sentence direct answer (the TL;DR a busy reader needs).

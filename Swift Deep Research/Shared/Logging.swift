@@ -23,6 +23,36 @@ public enum Clip {
     }
 }
 
+/// URLSession delegate that re-runs the SSRF guard on every HTTP redirect.
+///
+/// `URLSafety.blockReason(for:)` is enforced by each research tool on the URL
+/// it was *handed*, but a public URL can `30x` → `http://169.254.169.254/`,
+/// `http://127.0.0.1:5001`, or another private host. Default URLSession redirect
+/// handling would follow that hop without re-validation, re-opening the exact
+/// SSRF vector the up-front check closes. This delegate cancels (resumes with a
+/// `nil` request) any redirect whose target is blocked, and passes safe public
+/// redirects through unchanged. Stateless and `Sendable` so one instance can
+/// back many concurrent sessions/tasks.
+final class RedirectSafetyDelegate: NSObject, URLSessionTaskDelegate, Sendable {
+    func urlSession(_ session: URLSession,
+                    task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        guard let url = request.url else {
+            // No destination URL to validate — refuse rather than follow blindly.
+            completionHandler(nil)
+            return
+        }
+        if let reason = URLSafety.blockReason(for: url) {
+            Log.net.warning("Blocked SSRF redirect to \(url.absoluteString, privacy: .public): \(reason, privacy: .public)")
+            completionHandler(nil)   // Cancel the redirect; the task fails fast.
+            return
+        }
+        completionHandler(request)   // Safe public redirect: follow it.
+    }
+}
+
 public enum HTTPClientCommon {
     public static let defaultUserAgent =
         "SwiftDeepResearch/2.0 (macOS) URLSession"
@@ -46,6 +76,12 @@ public enum HTTPClientCommon {
     ///   (e.g. 600s for a 300s request timeout) and killed reasoning models
     ///   mid-synthesis with "The network connection was lost". Default to ~24h
     ///   so only the inactivity window governs liveness.
+    /// Shared, stateless redirect guard. `URLSession` retains its delegate until
+    /// the session is invalidated; reusing one instance avoids re-allocating it
+    /// for every session built here while keeping the SSRF re-validation on the
+    /// redirect path for all research-tool fetches.
+    private static let redirectGuard = RedirectSafetyDelegate()
+
     public static func defaultSession(timeout: TimeInterval = 30,
                                       resourceTimeout: TimeInterval = 86_400,
                                       waitsForConnectivity: Bool = true) -> URLSession {
@@ -54,7 +90,10 @@ public enum HTTPClientCommon {
         config.timeoutIntervalForResource = resourceTimeout
         config.httpAdditionalHeaders = ["User-Agent": defaultUserAgent]
         config.waitsForConnectivity = waitsForConnectivity
-        return URLSession(configuration: config)
+        // Re-validate every redirect target against the SSRF guard so a public
+        // URL can't 30x into a private/loopback/metadata host. The delegate is
+        // retained by the session for its lifetime.
+        return URLSession(configuration: config, delegate: redirectGuard, delegateQueue: nil)
     }
 
     /// Fetch with bounded retry for the research web tools.

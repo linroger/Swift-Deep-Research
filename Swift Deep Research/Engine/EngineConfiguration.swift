@@ -124,15 +124,33 @@ public struct EngineConfiguration: Sendable, Codable, Equatable {
         researchFlow = try c.decodeIfPresent(ResearchFlow.self, forKey: .researchFlow) ?? .native
     }
 
-    /// A reasonable starting configuration: orchestrate locally if Foundation Models is available,
-    /// otherwise use Anthropic Haiku for the cheap planner. Synthesize with Claude Sonnet.
+    /// A reasonable starting configuration that is **runnable out of the box**.
+    ///
+    /// If Apple Foundation Models is available, route ALL three roles to it so a
+    /// fresh user with Apple Intelligence gets a working run with zero API keys
+    /// and zero configuration. (FM can't tool-call, so research is the model's
+    /// built-in knowledge until the user — or `autoConfigureLocalProviderIfNeeded`
+    /// — points the worker at a tool-capable provider; the config banner surfaces
+    /// this.) Only when no on-device model exists do we default to Anthropic, and
+    /// the missing-key banner then guides the user to add a key or start a local
+    /// model. Never ship a default whose worker/synthesis require a key the user
+    /// has not provided (E3-llm-1).
     public static func suggestedDefault() -> EngineConfiguration {
-        let useFM = FoundationModelsClient.isAvailable
-        let orchestrator: ProviderRegistry.ProviderID = useFM ? .foundationmodels : .anthropic
-        let orchestratorModel: String? = useFM ? nil : "claude-3-5-haiku-20241022"
+        if FoundationModelsClient.isAvailable {
+            return EngineConfiguration(
+                orchestratorProvider: .foundationmodels,
+                orchestratorModel: nil,
+                workerProvider: .foundationmodels,
+                workerModel: nil,
+                synthesisProvider: .foundationmodels,
+                synthesisModel: nil,
+                budget: .standard,
+                iteration: .standard
+            )
+        }
         return EngineConfiguration(
-            orchestratorProvider: orchestrator,
-            orchestratorModel: orchestratorModel,
+            orchestratorProvider: .anthropic,
+            orchestratorModel: "claude-3-5-haiku-20241022",
             workerProvider: .anthropic,
             workerModel: "claude-sonnet-4-20250514",
             synthesisProvider: .anthropic,

@@ -70,8 +70,9 @@ public struct MainScene: View {
             if env.workspace == .research {
                 ToolbarItem(placement: .navigation) {
                     Button {
-                        env.live = nil
-                        env.selectedSessionID = nil
+                        // Cancel any in-flight run first (E3-ux-1) so it can't
+                        // keep streaming/spending budget detached.
+                        env.newResearchSession()
                         query = ""
                         // Clear inspector state so it doesn't leak into the next
                         // session (the auto-reveal will re-arm for fresh context).
@@ -127,7 +128,10 @@ public struct MainScene: View {
             }
         }
         .task {
-            // Check whether the active provider has its API key so first-run
+            // First-run only: if the default config can't run keyless, adopt a
+            // reachable local Ollama so the app works out of the box (E3-oobe-5).
+            await env.autoConfigureLocalProviderIfNeeded()
+            // Check whether the active providers have their API keys so first-run
             // guidance can appear before the user fires a doomed run.
             await env.refreshKeyStatus()
             // Boot the embedding sidecar in the background at app launch so

@@ -10,10 +10,11 @@ import AppKit
 ///   3. Launch it with the best available Python — a managed virtualenv under
 ///      Application Support if we've built one, otherwise the system `python3`.
 ///   4. If the process dies because its Python dependencies are missing,
-///      bootstrap a private virtualenv (`python3 -m venv` + `pip install
-///      pyseekdb fastapi uvicorn pydantic`) ONCE and relaunch from it. This is
-///      what makes "the knowledge base just works on first launch" true even on
-///      a machine that has never had the packages installed.
+///      bootstrap a private virtualenv (`python3 -m venv` + `pip install -r
+///      sidecar/requirements.txt`, falling back to the same pinned specs inline)
+///      ONCE and relaunch from it. This is what makes "the knowledge base just
+///      works on first launch" true even on a machine that has never had the
+///      packages installed.
 ///   5. Poll `/health` and report a precise `Status`.
 ///
 /// The supervisor terminates the child on app quit.
@@ -27,6 +28,30 @@ public actor SidecarSupervisor {
         case notInstalled(String)          // python missing / pip deps missing
         case scriptMissing                 // can't find seekdb_sidecar.py
         case failed(String)                // process exited / unknown error
+    }
+
+    /// Single source of truth for the sidecar's pinned Python dependency specs.
+    /// Mirrors `sidecar/requirements.txt` verbatim. `installDependencies`
+    /// prefers `pip install -r requirements.txt` when that file is locatable and
+    /// falls back to these inline specs otherwise. pydantic v2 is mandatory —
+    /// the sidecar is Pydantic-v2-specific — and the rest are capped below the
+    /// next major so an unpinned float can't break the first-launch bootstrap.
+    static let pinnedPipSpecs: [String] = [
+        "pyseekdb>=0.1,<1",
+        "fastapi>=0.110,<1",
+        "uvicorn>=0.27,<1",
+        "pydantic>=2,<3",
+    ]
+
+    /// True when the app is running inside the macOS App Sandbox. The sandbox
+    /// exports `APP_SANDBOX_CONTAINER_ID` into every sandboxed process's
+    /// environment; its absence is a reliable signal we're unsandboxed (the
+    /// intended distribution mode — see Swift_Deep_Research.entitlements). Used
+    /// to turn an otherwise-cryptic spawn failure into an actionable message,
+    /// since the sandbox blocks the Process/exec + venv bootstrap the sidecar
+    /// relies on.
+    static var isSandboxed: Bool {
+        ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
     }
 
     private var process: Process?
@@ -101,6 +126,22 @@ public actor SidecarSupervisor {
         // Re-probe inside the launch: a sibling caller (or the startup launch)
         // may have brought it up between our fast-path check and here.
         if await probeHealth(host: host) { status = .running; return .running }
+
+        // Sandbox guard: if we're running inside the App Sandbox and nothing is
+        // already serving /health, we can't launch the sidecar at all — the
+        // sandbox blocks the child-process exec + venv bootstrap it requires.
+        // Probing interpreters and building a venv would all fail with cryptic
+        // posix_spawn errors, so short-circuit with an actionable message
+        // (the app is intentionally distributed unsandboxed; see
+        // Swift_Deep_Research.entitlements).
+        if Self.isSandboxed {
+            lastError = "This build can't launch the embedding sidecar inside the " +
+                "App Sandbox. The knowledge base needs to spawn Python and bootstrap " +
+                "a virtualenv, which the sandbox forbids. Use an unsandboxed build of " +
+                "Swift Deep Research."
+            status = .failed(lastError ?? "sandboxed")
+            return status
+        }
 
         // Already supervising — just wait for it to come up.
         if let process, process.isRunning {
@@ -430,6 +471,21 @@ public actor SidecarSupervisor {
         do {
             try process.run()
         } catch {
+            // If the spawn failed AND we're running inside the App Sandbox, the
+            // sandbox almost certainly blocked the exec: this build can't launch
+            // the embedding sidecar that way. Surface an actionable message
+            // instead of a generic "failed to spawn" that the user can't act on.
+            // The app is intentionally distributed unsandboxed (see
+            // Swift_Deep_Research.entitlements) precisely because the sidecar
+            // needs Process/exec + a venv bootstrap.
+            if Self.isSandboxed {
+                lastError = "This build can't launch the embedding sidecar inside " +
+                    "the App Sandbox. The knowledge base needs to spawn Python and " +
+                    "bootstrap a virtualenv, which the sandbox forbids. Use an " +
+                    "unsandboxed build of Swift Deep Research (underlying error: " +
+                    "\(error.localizedDescription))."
+                return .failed(lastError ?? "sandboxed")
+            }
             lastError = "Failed to spawn python (\(python)): \(error.localizedDescription)"
             return .notInstalled(lastError ?? "unknown")
         }
@@ -527,9 +583,19 @@ public actor SidecarSupervisor {
                              args: ["-m", "ensurepip", "--upgrade"], timeout: 120)
         _ = await runProcess(executable: venvPython.path,
                              args: ["-m", "pip", "install", "--upgrade", "pip"], timeout: 120)
+        // Prefer `pip install -r requirements.txt` so the pins live in one place
+        // (the file) and stay in lockstep with the manual-setup docs; fall back
+        // to the inline `pinnedPipSpecs` (same pins) when the file isn't found
+        // — e.g. an unusual bundle layout. pydantic v2 is mandatory either way.
+        let installArgs: [String]
+        if let requirements = locateRequirements() {
+            installArgs = ["-m", "pip", "install", "-r", requirements.path]
+        } else {
+            installArgs = ["-m", "pip", "install"] + Self.pinnedPipSpecs
+        }
         let (code, out) = await runProcess(
             executable: venvPython.path,
-            args: ["-m", "pip", "install", "pyseekdb", "fastapi", "uvicorn", "pydantic"])
+            args: installArgs)
         if code != 0 {
             // Tear down the venv so the next attempt starts clean instead of
             // inheriting a partially-installed environment.
@@ -644,9 +710,20 @@ public actor SidecarSupervisor {
     /// as long as the process is alive, up to ~90s, and bail out immediately if
     /// it exits (e.g. ModuleNotFoundError) so we never wait the full window on a
     /// launch that already failed.
+    ///
+    /// Warming tolerance: the sidecar now binds the port and answers /health
+    /// (HTTP 200) immediately, then loads the ~80-90 MB embedding model on a
+    /// background thread (model_ready=false until done). `probeHealth` only
+    /// checks for a 200, so a reachable-but-warming sidecar is treated as a
+    /// successful launch here — a slow first-run model download no longer trips
+    /// a false "unreachable" failure (kb-implicit-embedding-fn). The model
+    /// finishes warming in the background; the first query that arrives before
+    /// it is ready simply loads it lazily.
     private func waitForHealthOrExit(host: URL) async -> Bool {
         for _ in 0..<180 {
             try? await Task.sleep(nanoseconds: 500_000_000)
+            // A reachable /health is success even while model_ready=false; the
+            // embedding model keeps warming in the background.
             if await probeHealth(host: host) { return true }
             if process == nil { return false }   // process exited
         }
@@ -670,6 +747,32 @@ public actor SidecarSupervisor {
         }
         let dev = URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent("XCode-Projects/Swift-Deep-Research/sidecar/seekdb_sidecar.py")
+        if FileManager.default.fileExists(atPath: dev.path) {
+            return dev
+        }
+        return nil
+    }
+
+    /// Locate `requirements.txt` so the bootstrap can `pip install -r` the
+    /// pinned specs instead of inline names. Mirrors `locateScript`'s search:
+    /// bundled Resources for release builds, then the project tree for dev runs.
+    /// Returns nil when not found — the caller then falls back to the inline
+    /// `pinnedPipSpecs` (which carry the same pins).
+    private func locateRequirements() -> URL? {
+        if let bundled = Bundle.main.url(forResource: "requirements",
+                                         withExtension: "txt") {
+            return bundled
+        }
+        var dir = Bundle.main.bundleURL.deletingLastPathComponent()
+        for _ in 0..<8 {
+            let candidate = dir.appendingPathComponent("sidecar/requirements.txt")
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+            dir = dir.deletingLastPathComponent()
+        }
+        let dev = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("XCode-Projects/Swift-Deep-Research/sidecar/requirements.txt")
         if FileManager.default.fileExists(atPath: dev.path) {
             return dev
         }

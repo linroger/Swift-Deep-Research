@@ -5,9 +5,10 @@ A tiny FastAPI server that wraps pyseekdb so the Swift app can ingest, query,
 and delete documents in an OceanBase seekdb collection without needing a
 Python embedding directly inside the macOS process.
 
-Run manually from a terminal:
+Run manually from a terminal (dependency versions are pinned in
+sidecar/requirements.txt — pydantic v2 is mandatory, this code is v2-specific):
 
-    python3 -m pip install pyseekdb fastapi uvicorn pydantic
+    python3 -m pip install -r sidecar/requirements.txt
     python3 sidecar/seekdb_sidecar.py --host 127.0.0.1 --port 9100 \
         --data-dir ~/Library/Application\\ Support/SwiftDeepResearch/seekdb \
         --collection research_kb
@@ -48,7 +49,7 @@ try:
 except ImportError as exc:  # pragma: no cover
     sys.stderr.write(
         "Missing dependencies. Install with:\n"
-        "    python3 -m pip install pyseekdb fastapi uvicorn pydantic\n"
+        "    python3 -m pip install -r sidecar/requirements.txt\n"
     )
     raise SystemExit(2) from exc
 
@@ -215,6 +216,13 @@ class KnowledgeBase:
         # Readers-writer lock: many concurrent queries, exclusive writers
         # (kb-global-lock-serializes-query).
         self._lock = _ReadWriteLock()
+        # Embedding warm-up state. The model (~80-90 MB on first run) loads/
+        # downloads off the startup critical path on a background daemon thread
+        # so uvicorn binds — and /health answers — immediately. `model_ready`
+        # flips to True once the model is loaded (or stays False if warm-up
+        # never ran / failed, in which case the model loads lazily on first use).
+        self._model_ready = False
+        self._warm_up_thread: Optional[threading.Thread] = None
         # Pin the embedding function explicitly so the model is not an implicit
         # pyseekdb default that could change between versions (kb-implicit-
         # embedding-fn). We capture it on self so the warm-up can reuse it.
@@ -266,14 +274,18 @@ class KnowledgeBase:
                 self._journal = json.loads(self._journal_path.read_text())
             except json.JSONDecodeError:
                 LOG.warning("Corrupt journal at %s, starting fresh", self._journal_path)
-        # Warm up the embedding model at boot so any first-use model download
-        # happens during the app's "launching" window, not on the user's first
-        # query (kb-implicit-embedding-fn).
-        self._warm_up_embeddings()
         # Reconcile the JSON journal against the vector store so list/query
         # agree even if a previous run crashed between add() and journal
         # persist (kb-journal-vector-drift).
         self._reconcile_journal()
+        # Kick off embedding warm-up on a background thread AFTER all the cheap
+        # boot work is done. Previously this ran synchronously here, so /health
+        # could not answer until the ~80-90 MB model finished downloading and
+        # the parent's ~90s health wait could spuriously report a slow first run
+        # as a failure. Doing it on a daemon thread lets the caller bind the
+        # port and serve /health immediately while the model loads in the
+        # background (kb-implicit-embedding-fn).
+        self.start_warm_up()
 
     def _open_collection(self) -> Any:
         """Open the collection with the pinned embedding function.
@@ -298,14 +310,41 @@ class KnowledgeBase:
             )
             return self._client.get_or_create_collection(name=self.settings.collection)
 
+    def start_warm_up(self) -> None:
+        """Start embedding warm-up on a background daemon thread (idempotent).
+
+        Keeps the startup critical path free of the ~80-90 MB first-run model
+        download so uvicorn can bind and /health can answer immediately
+        (kb-implicit-embedding-fn). Safe to call more than once: a warm-up that
+        is already running or has already completed is a no-op."""
+        if self._model_ready:
+            return
+        if self._warm_up_thread is not None and self._warm_up_thread.is_alive():
+            return
+        thread = threading.Thread(
+            target=self._warm_up_embeddings,
+            name="embedding-warm-up",
+            daemon=True,
+        )
+        self._warm_up_thread = thread
+        thread.start()
+
     def _warm_up_embeddings(self) -> None:
-        """Embed a tiny string so the model loads/downloads at boot, not on the
-        user's first query (kb-implicit-embedding-fn). Best-effort: a failure
-        here must not prevent the sidecar from serving."""
+        """Embed a tiny string so the model loads/downloads off the startup
+        critical path, not on the user's first query (kb-implicit-embedding-fn).
+        Best-effort: a failure here must not prevent the sidecar from serving —
+        the model then loads lazily on first add()/query()."""
         try:
             self._embedding_fn(["warm up"])
+            self._model_ready = True
+            LOG.info("embedding model warm-up complete")
         except Exception as exc:  # pragma: no cover - environment dependent
             LOG.warning("embedding warm-up failed (will retry on first use): %s", exc)
+
+    @property
+    def model_ready(self) -> bool:
+        """True once the embedding model is loaded and ready (warm-up done)."""
+        return self._model_ready
 
     def _reconcile_journal(self) -> None:
         """Best-effort startup reconciliation of journal vs. vector store.
@@ -685,12 +724,21 @@ def build_app(kb: KnowledgeBase) -> FastAPI:
 
     @app.get("/health")
     def health() -> dict[str, Any]:
+        # NOTE: existing keys (ok/mode/database/collection/documents) are kept
+        # exactly as-is for backward compatibility with the Swift Health
+        # decoder. `model_ready`/`warming` are ADDITIVE: a reachable /health is
+        # success even while the embedding model is still warming, so a slow
+        # first-run download isn't reported as a launch failure
+        # (kb-implicit-embedding-fn).
+        ready = kb.model_ready
         return {
             "ok": True,
             "mode": kb.settings.mode,
             "database": kb.settings.database,
             "collection": kb.settings.collection,
             "documents": kb.document_count(),
+            "model_ready": ready,
+            "warming": not ready,
         }
 
     @app.get("/documents")

@@ -229,16 +229,23 @@ public final class ModelProviderManager {
     /// `LLM_*` variables for MiroFish's `.env`, so a cold-started backend boots
     /// straight onto the chosen provider even before the first API push.
     public func envSeed(config: EngineConfiguration) async -> [String: String] {
-        guard let payload = await mirofishPayload(config: config) else { return [:] }
+        // Always-on backend capabilities (independent of the chosen provider):
+        // emit the machine-readable forecast.json — named scenarios + calibrated
+        // probabilities + drivers — and expose the stable /api/v1 surface so the
+        // app can fetch and render it (E3-forecast-2). Both default off server-side.
         var env: [String: String] = [
-            "LLM_PROVIDER": payload.provider,
-            "DEERFLOW_MODEL": payload.deerflowModel
+            "REPORT_STRUCTURED_FORECAST": "true",
+            "API_V1_ENABLED": "true"
         ]
-        if let base = payload.baseURL { env["LLM_BASE_URL"] = base }
-        if let model = payload.model { env["LLM_MODEL_NAME"] = model }
-        if let key = payload.apiKey {
-            env["LLM_API_KEY"] = key
-            if let mirror = payload.keyEnvName { env[mirror] = key }
+        if let payload = await mirofishPayload(config: config) {
+            env["LLM_PROVIDER"] = payload.provider
+            env["DEERFLOW_MODEL"] = payload.deerflowModel
+            if let base = payload.baseURL { env["LLM_BASE_URL"] = base }
+            if let model = payload.model { env["LLM_MODEL_NAME"] = model }
+            if let key = payload.apiKey {
+                env["LLM_API_KEY"] = key
+                if let mirror = payload.keyEnvName { env[mirror] = key }
+            }
         }
         return env
     }

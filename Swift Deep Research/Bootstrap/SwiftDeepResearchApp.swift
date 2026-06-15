@@ -29,8 +29,9 @@ struct SwiftDeepResearchApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Research") {
-                    env.live = nil
-                    env.selectedSessionID = nil
+                    // Cancel any in-flight run first so it can't keep streaming
+                    // and spending budget detached (E3-ux-1).
+                    env.newResearchSession()
                 }
                 .keyboardShortcut("n", modifiers: .command)
             }

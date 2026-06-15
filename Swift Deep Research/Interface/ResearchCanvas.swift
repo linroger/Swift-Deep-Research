@@ -85,12 +85,10 @@ struct ResearchCanvas: View {
     }
 
     private func newSession() {
-        // Cancel before dropping the reference — otherwise an in-progress run's
-        // streamTask keeps streaming, persisting, and spending budget detached
-        // (orphaned) with no way for the user to stop it.
-        env.cancelLive()
-        env.live = nil
-        env.selectedSessionID = nil
+        // Cancel-first invariant lives in newResearchSession(): an in-progress
+        // run must be cancelled before dropping the reference, or its streamTask
+        // keeps streaming, persisting, and spending budget detached (E3-ux-1).
+        env.newResearchSession()
         query = ""
     }
 

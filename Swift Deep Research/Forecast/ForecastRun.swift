@@ -60,6 +60,11 @@ public final class ForecastRun: Identifiable {
     public var reportProgress: MFReportProgress?
     public var agentLog: [MFAgentLogEntry] = []
     public var reportID: String?
+    /// Machine-readable structured forecast (named scenarios + calibrated
+    /// probabilities + drivers) extracted from the finished report when the
+    /// backend has REPORT_STRUCTURED_FORECAST enabled (E3-forecast-2). Optional:
+    /// older reports / backends without the flag simply leave this nil.
+    public var structuredForecast: MFForecast?
 
     // Follow-up chat with the report agent (needs a finished simulation).
     public var chatMessages: [ChatMessage] = []
@@ -449,6 +454,15 @@ public final class ForecastRun: Identifiable {
                 }
             }
             agentLogCursor = log.total_lines ?? agentLogCursor
+        }
+        // Once the report has real content, pull the machine-readable structured
+        // forecast (scenarios + probabilities). A backend without
+        // REPORT_STRUCTURED_FORECAST / API_V1_ENABLED returns 409/404, which
+        // `try?` turns into nil — the card simply doesn't render (E3-forecast-2).
+        if structuredForecast == nil, report?.markdown_content?.isEmpty == false {
+            if let envelope = try? await client.structuredForecast(reportID: reportID) {
+                structuredForecast = envelope.forecast
+            }
         }
     }
 

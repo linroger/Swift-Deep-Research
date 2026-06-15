@@ -276,6 +276,29 @@ public struct WebReaderTool: ResearchTool {
             c.resume(with: result)
         }
 
+        /// Re-validate every navigation against the SSRF guard. The hidden view
+        /// runs arbitrary remote JS, so the page can trigger redirects or
+        /// JS-initiated navigations to private/loopback/metadata hosts after the
+        /// initial (already-checked) URL. Cancel any http(s) hop the guard
+        /// blocks; allow non-network internal schemes (e.g. `about:blank`) that
+        /// WebKit uses and that aren't an egress, so the load isn't broken.
+        func webView(_ webView: WKWebView,
+                     decidePolicyFor navigationAction: WKNavigationAction,
+                     decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
+            guard let url = navigationAction.request.url else {
+                decisionHandler(.cancel)
+                return
+            }
+            let scheme = url.scheme?.lowercased()
+            if scheme == "http" || scheme == "https" {
+                decisionHandler(URLSafety.isFetchable(url) ? .allow : .cancel)
+            } else {
+                // about:/data:/blob: and similar are not network fetches to a host;
+                // the http(s) SSRF guard doesn't apply, so don't block the load.
+                decisionHandler(.allow)
+            }
+        }
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             finish(.success(()))
         }

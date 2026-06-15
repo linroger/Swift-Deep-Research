@@ -104,17 +104,61 @@ public final class ResearchStore {
         do {
             return try ModelContainer(for: schema, configurations: [config])
         } catch {
-            // The on-disk store is incompatible with the current schema — i.e. a
-            // @Model changed with no migration plan. Without this fallback, the
-            // very next schema edit would crash the app on launch for every
-            // existing install (an unrecoverable brick). Destroy the store and
-            // recreate it empty: local research history is lost, but the app
-            // launches. A VersionedSchema + SchemaMigrationPlan that PRESERVES
-            // data is the follow-up once the schema stabilizes.
-            Log.engine.error("SwiftData store incompatible (\(error.localizedDescription, privacy: .public)); rebuilding empty store.")
+            // A first failure can be transient — e.g. another process (a lingering
+            // app instance, Spotlight/Time Machine, or a crash-recovery sweep) is
+            // momentarily holding the store/WAL lock. Destroying the store on that
+            // would discard recoverable history needlessly, so retry once after a
+            // short delay before deciding the store is genuinely incompatible.
+            Log.engine.error("SwiftData store open failed (\(error.localizedDescription, privacy: .public)); retrying once before rebuild.")
+            Thread.sleep(forTimeInterval: 0.25)
+            if let retried = try? ModelContainer(for: schema, configurations: [config]) {
+                Log.engine.notice("SwiftData store opened on retry; no rebuild needed.")
+                return retried
+            }
+
+            // Still failing: the on-disk store is incompatible with the current
+            // schema — i.e. a @Model changed with no migration plan. Without a
+            // rebuild, the very next schema edit would crash the app on launch for
+            // every existing install (an unrecoverable brick). Make the rebuild
+            // RECOVERABLE first: copy the store + WAL/SHM sidecars to a timestamped
+            // backup so the prior history can be inspected or restored manually,
+            // then recreate the store empty so the app launches. A VersionedSchema
+            // + SchemaMigrationPlan that PRESERVES data is the follow-up once the
+            // schema stabilizes.
+            if let backupURL = Self.backupStore(at: config.url) {
+                Log.engine.error("SwiftData store incompatible; backed up to \(backupURL.path, privacy: .public) before rebuilding empty store.")
+            } else {
+                Log.engine.error("SwiftData store incompatible; backup failed, rebuilding empty store anyway.")
+            }
             Self.destroyStore(at: config.url)
             return try ModelContainer(for: schema, configurations: [config])
         }
+    }
+
+    /// Copy the SQLite store and its WAL/SHM sidecars to a sibling backup named
+    /// `<store>.corrupt-<epoch>` so the about-to-be-destroyed history is recoverable.
+    /// Returns the backup store URL on success (so the path can be logged/surfaced),
+    /// or `nil` if the primary store file could not be copied. Sidecar copy failures
+    /// are tolerated — a missing/locked WAL must not abort the backup of the store.
+    private static func backupStore(at url: URL) -> URL? {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return nil }
+        let epoch = Int(Date().timeIntervalSince1970)
+        let backupURL = url.deletingLastPathComponent()
+            .appendingPathComponent("\(url.lastPathComponent).corrupt-\(epoch)")
+        do {
+            try fm.copyItem(at: url, to: backupURL)
+        } catch {
+            Log.engine.error("Failed to back up SwiftData store: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+        for suffix in ["-shm", "-wal"] {
+            let sidecar = URL(fileURLWithPath: url.path + suffix)
+            guard fm.fileExists(atPath: sidecar.path) else { continue }
+            try? fm.copyItem(at: sidecar,
+                             to: URL(fileURLWithPath: backupURL.path + suffix))
+        }
+        return backupURL
     }
 
     /// Remove the SQLite store and its WAL/SHM sidecar files so a fresh,
@@ -206,7 +250,6 @@ public final class ResearchStore {
             predicate: #Predicate<StoredSource> { $0.id == target }
         )
         if let existing = try context.fetch(descriptor).first {
-            existing.fullText = fetched.extractedText
             existing.fetchedAt = fetched.extractedAt
             if let snippet, existing.snippet.isEmpty { existing.snippet = snippet }
             scheduleSave()
@@ -217,7 +260,6 @@ public final class ResearchStore {
             urlString: fetched.url.absoluteString,
             title: fetched.title,
             snippet: snippet ?? "",
-            fullText: fetched.extractedText,
             providerHint: providerHint,
             fetchedAt: fetched.extractedAt,
             session: session
@@ -340,10 +382,14 @@ public final class ResearchStore {
     /// historically captured. `kind`/`summary` are derived from the event so call
     /// sites need only supply the event, its sequence, and the session.
     ///
-    /// `payloadJSON` is filled with the same Codable snapshot for backward
-    /// compatibility (legacy readers expect a non-empty payload string), and the
-    /// new `eventPayloadJSON` carries the canonical loss-less snapshot that
-    /// `StoredEvent.decodedSnapshot` reads.
+    /// The canonical loss-less snapshot is stored ONCE in `eventPayloadJSON` (which
+    /// `StoredEvent.decodedSnapshot` reads); `payloadJSON` is left empty for new
+    /// rows. Previously the identical JSON was encoded and written to BOTH fields,
+    /// doubling the encode cost and on-disk size of every event for a reconstruction
+    /// path that has no consumers (replay isn't implemented). `decodedSnapshot`
+    /// never reads `payloadJSON`, so the empty value is harmless, and legacy rows —
+    /// which carry their own `payloadJSON`/`eventPayloadJSON` — still decode exactly
+    /// as before.
     public func appendEvent(event: ResearchEvent,
                             summary: String,
                             sequence: Int,
@@ -356,7 +402,7 @@ public final class ResearchStore {
             sequence: sequence,
             kind: snapshot.kind,
             summary: summary,
-            payloadJSON: json,
+            payloadJSON: "",
             eventPayloadJSON: json,
             session: session
         )

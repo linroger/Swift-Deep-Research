@@ -6,8 +6,11 @@ over plain HTTP so the macOS process never has to embed a Python runtime.
 
 ## One-time install
 
+Dependencies are pinned in [`requirements.txt`](requirements.txt) (pydantic v2
+is mandatory — the sidecar is Pydantic-v2-specific):
+
 ```bash
-python3 -m pip install --upgrade pyseekdb fastapi uvicorn pydantic
+python3 -m pip install -r sidecar/requirements.txt
 ```
 
 ## Run

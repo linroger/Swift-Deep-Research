@@ -1,0 +1,19 @@
+# Swift Deep Research — pyseekdb sidecar dependencies (pinned ranges).
+#
+# These pins are the single source of truth for the sidecar's runtime deps.
+# They are mirrored verbatim in SidecarSupervisor.swift (pinnedPipSpecs) which
+# prefers `pip install -r requirements.txt` when this file is locatable and
+# falls back to the same inline specs otherwise. Keep the two in sync.
+#
+# Why ranges (>=tested,<next-major) instead of bare names:
+#   * pydantic v2 is MANDATORY — the sidecar's BaseModel / Settings usage is
+#     Pydantic-v2-specific and will not run under v1.
+#   * Unpinned installs silently float to whatever is newest, so a breaking
+#     major (e.g. fastapi/uvicorn/pyseekdb) could land on a user's first launch
+#     and break the auto-bootstrap. Capping below the next major keeps the
+#     environment on a tested line while still picking up patch/minor fixes.
+
+pyseekdb>=0.1,<1
+fastapi>=0.110,<1
+uvicorn>=0.27,<1
+pydantic>=2,<3

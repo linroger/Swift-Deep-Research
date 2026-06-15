@@ -1359,7 +1359,7 @@ private struct KnowledgeTab: View {
             }
             DisclosureGroup("Manual setup (optional)") {
                 VStack(alignment: .leading, spacing: 8) {
-                    codeRow("python3 -m pip install pyseekdb fastapi uvicorn pydantic")
+                    codeRow("python3 -m pip install -r sidecar/requirements.txt")
                     codeRow("python3 sidecar/seekdb_sidecar.py --port 9100")
                 }
                 .padding(.vertical, 8)

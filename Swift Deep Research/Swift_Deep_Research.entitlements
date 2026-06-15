@@ -1,5 +1,31 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
+<!--
+  Swift Deep Research entitlements.
+
+  The App Sandbox is intentionally DISABLED (no com.apple.security.app-sandbox
+  key, empty <dict/>). This is a deliberate, required design decision — NOT an
+  oversight:
+
+  The knowledge base is backed by a pyseekdb sidecar that the app auto-launches
+  so users never touch a terminal. SidecarSupervisor bootstraps this itself by:
+    * spawning child processes (Foundation.Process / posix_spawn / exec),
+    * creating a private Python virtualenv (`python3 -m venv`),
+    * running `pip install -r requirements.txt` to fetch the sidecar's deps,
+    * launching `python3 seekdb_sidecar.py` as a process-group leader, and
+    * reaping the process tree (killpg) on quit.
+
+  The App Sandbox forbids arbitrary child-process exec and writing/creating an
+  executable virtualenv outside the container, so enabling it would break the
+  "the knowledge base just works on first launch" flow entirely. The app is
+  distributed unsandboxed for this reason; SidecarSupervisor additionally
+  surfaces an actionable error if it ever finds itself running inside a sandbox
+  (APP_SANDBOX_CONTAINER_ID present) and a launch fails.
+
+  If sandboxing is ever required (e.g. Mac App Store), the sidecar must be
+  redesigned to avoid spawning Python/pip — for example by bundling a
+  pre-built, signed helper tool and using a sanctioned IPC mechanism.
+-->
 <dict/>
 </plist>

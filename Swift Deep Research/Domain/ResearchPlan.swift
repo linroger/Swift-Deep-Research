@@ -140,15 +140,28 @@ public enum ResearchPlanJSON {
         }
         let strategy = ResearchPlan.Strategy(rawValue: wire.strategy) ?? .parallelDecomposition
         let complexity = ResearchPlan.Complexity(rawValue: wire.estimatedComplexity) ?? .moderate
+        let subtasks = wire.subtasks.map {
+            ResearchPlan.Subtask(question: $0.question,
+                                 rationale: $0.rationale,
+                                 suggestedQueries: $0.suggestedQueries)
+        }
+        // Schema-valid JSON can still be degenerate: an empty `"subtasks": []`
+        // (the schema's minItems is advisory to the LLM, not enforced by our
+        // decoder) or subtasks whose questions are all blank/whitespace yield a
+        // plan no worker can act on. Fall back to the single-subtask direct plan
+        // so the run still produces grounded output instead of fanning out zero
+        // workers (engine-empty-planner-output).
+        let hasActionableSubtask = subtasks.contains {
+            !$0.question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard hasActionableSubtask else {
+            return ResearchPlanJSON.fallback(query: userQuery)
+        }
         return ResearchPlan(
             userQuery: userQuery,
             restatement: wire.restatement,
             strategy: strategy,
-            subtasks: wire.subtasks.map {
-                ResearchPlan.Subtask(question: $0.question,
-                                     rationale: $0.rationale,
-                                     suggestedQueries: $0.suggestedQueries)
-            },
+            subtasks: subtasks,
             estimatedComplexity: complexity,
             estimatedTokenBudget: wire.estimatedTokenBudget
         )

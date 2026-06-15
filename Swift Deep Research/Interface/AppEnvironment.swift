@@ -99,16 +99,29 @@ public final class AppEnvironment {
     /// the run doesn't fire a doomed `POST /api/research/run`.
     public func startForecast(prompt: String, mode: ForecastRun.Mode, depth: String, maxRounds: Int?) {
         detachForecast()   // don't kill a still-running pipeline; just stop following it
+        let client = makeMiroFishClient()
         let run = ForecastRun(prompt: prompt, mode: mode, depth: depth, maxRounds: maxRounds,
-                              client: makeMiroFishClient(), store: store)
+                              client: client, store: store)
         forecast = run
         Task { @MainActor in
             let status = await ensureForecastBackend()
-            if case .running = status {
-                run.start()
-            } else {
+            guard case .running = status else {
                 run.reportBackendUnavailable(Self.backendMessage(status))
+                return
             }
+            // Preflight before spending: catch a misconfigured provider / invalid
+            // GRAPH_BACKEND / placeholder credential up front, instead of learning
+            // it only after the (expensive) research stage has begun (E3-forecast-1).
+            // Offline checks only, so this adds negligible latency. If the endpoint
+            // is unavailable (older backend), `try?` yields nil and we proceed.
+            if let pf = try? await client.preflight(mode: mode.rawValue), !pf.ready {
+                let detail = pf.errors.isEmpty
+                    ? "The forecast backend isn't ready to run — check Settings → Forecast and your provider key."
+                    : "The forecast backend isn't ready:\n• " + pf.errors.joined(separator: "\n• ")
+                run.reportBackendUnavailable(detail)
+                return
+            }
+            run.start()
         }
     }
 
@@ -302,21 +315,89 @@ public final class AppEnvironment {
         live?.cancel()
     }
 
-    /// Refresh `missingKeyHint` by checking the Keychain for the active worker
-    /// provider's key. Local providers (Ollama / LM Studio / MLX / Apple) need
-    /// no key, so they always clear the hint.
+    /// Refresh `missingKeyHint` — the first-run guidance banner — by checking
+    /// EVERY role the run will exercise (orchestrator, worker, synthesis), not
+    /// just the worker, so a keyed orchestrator/synthesis with no key surfaces
+    /// the friendly banner instead of an opaque mid-run 401 (E3-engine-3 / E3-oobe-5).
+    /// When all keyed roles have keys, fall back to a tool-calling caveat if the
+    /// worker can't use tools (web-less research) so the user knows why a local
+    /// default returns un-grounded answers (E3-llm-3). Local providers need no key.
     public func refreshKeyStatus() async {
-        let provider = configuration.workerProvider
-        guard let account = provider.requiresAPIKey else {
-            missingKeyHint = nil
-            return
+        let roles: [(String, ProviderRegistry.ProviderID)] = [
+            ("Orchestrator", configuration.orchestratorProvider),
+            ("Worker", configuration.workerProvider),
+            ("Synthesis", configuration.synthesisProvider),
+        ]
+        for (label, provider) in roles {
+            guard let account = provider.requiresAPIKey else { continue }
+            let key = await KeychainStore.shared.get(account) ?? ""
+            if key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                missingKeyHint = "\(label) model (\(provider.displayName)) needs an API key. Open Settings → API keys to add one, or switch to a local model (Ollama, LM Studio, or Apple)."
+                return
+            }
         }
-        let key = await KeychainStore.shared.get(account) ?? ""
-        if key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            missingKeyHint = "\(provider.displayName) needs an API key. Open Settings → API keys to add one, or switch to a local model (Ollama, LM Studio, or Apple)."
+        // Every keyed role has a key. Surface a tool-calling caveat when the
+        // worker can't fetch the web / knowledge base, so research-without-web
+        // isn't silently mistaken for grounded research.
+        if !configuration.workerProvider.supportsToolCalling {
+            missingKeyHint = "The worker model (\(configuration.workerProvider.displayName)) can't use web search or the knowledge base, so research relies on the model's built-in knowledge. Switch the Worker role to Ollama or a hosted provider in Settings for web-grounded research."
         } else {
             missingKeyHint = nil
         }
+    }
+
+    /// First-run only: when the default config isn't cleanly runnable (a keyed
+    /// role is missing its key, or the worker can't tool-call), probe a local
+    /// Ollama server and, if it's reachable with at least one installed model,
+    /// route all three roles to it — giving a zero-key, web-capable default with
+    /// no configuration (E3-oobe-5). Runs at most once per install; never clobbers
+    /// a config the user has already customized away from the suggested default.
+    public func autoConfigureLocalProviderIfNeeded() async {
+        let flag = "didAutoConfigureLocalProvider.v1"
+        guard !UserDefaults.standard.bool(forKey: flag) else { return }
+
+        // Is the current config already cleanly runnable? (every keyed role has a
+        // key AND the worker can tool-call) — if so, leave it alone.
+        var needsHelp = !configuration.workerProvider.supportsToolCalling
+        for provider in [configuration.orchestratorProvider, configuration.workerProvider, configuration.synthesisProvider] {
+            if let account = provider.requiresAPIKey {
+                let key = (await KeychainStore.shared.get(account) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if key.isEmpty { needsHelp = true }
+            }
+        }
+        guard needsHelp else {
+            UserDefaults.standard.set(true, forKey: flag)
+            return
+        }
+
+        // Probe Ollama (the most common local setup). If reachable with models,
+        // adopt it for all three roles so research is keyless AND tool-capable.
+        guard let models = try? await OllamaClient.listModels(host: configuration.ollamaHost),
+              let first = models.first else {
+            // No local provider found; leave the keyed default + banner in place.
+            // Don't set the flag — retry the probe on a later launch (Ollama may
+            // be installed after first run).
+            return
+        }
+        configuration.orchestratorProvider = .ollama
+        configuration.orchestratorModel = first
+        configuration.workerProvider = .ollama
+        configuration.workerModel = first
+        configuration.synthesisProvider = .ollama
+        configuration.synthesisModel = first
+        saveConfiguration()
+        UserDefaults.standard.set(true, forKey: flag)
+        await refreshKeyStatus()
+    }
+
+    /// Single entry point for "start a fresh research session". Cancels any
+    /// in-flight run FIRST so an orphaned engine can't keep streaming, persisting,
+    /// and spending the user's API budget after the UI moved on (E3-ux-1). All
+    /// New Research affordances (toolbar, ⌘N, canvas) route through here.
+    public func newResearchSession() {
+        cancelLive()
+        live = nil
+        selectedSessionID = nil
     }
 }
 

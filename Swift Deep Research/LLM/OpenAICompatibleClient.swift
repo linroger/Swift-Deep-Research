@@ -250,13 +250,30 @@ public struct OpenAICompatibleClient: LLMClient {
 
     // MARK: - Body encoding
 
+    /// True for OpenAI reasoning models (GPT-5 family and the o1/o3/o4 series)
+    /// that reject any non-default `temperature` with HTTP 400. Matched on the
+    /// model id so a reasoning model pointed at a custom OpenAI-compatible
+    /// endpoint is also covered, not just the canonical `OpenAIClient` path.
+    /// Case-insensitive and prefix-based so dated/variant ids (`gpt-5.5-2026-04-23`,
+    /// `o3-mini`, `o1-preview`) all match.
+    private static func rejectsTemperature(model: String) -> Bool {
+        let id = model.lowercased()
+        return id.hasPrefix("gpt-5")
+            || id.hasPrefix("o1")
+            || id.hasPrefix("o3")
+            || id.hasPrefix("o4")
+    }
+
     private static func encodeBody(request: LLMRequest,
                                    defaultModel: String,
                                    tokenParameter: TokenParameter) throws -> Data {
         struct Body: Encodable {
             let model: String
             let stream: Bool
-            let temperature: Double
+            /// Optional so it can be omitted for OpenAI GPT-5 / o-series, which
+            /// reject any non-default `temperature` with HTTP 400. A `nil` value
+            /// is not serialized, so the server applies its own default.
+            let temperature: Double?
             let max_tokens: Int?
             let max_completion_tokens: Int?
             let messages: [Msg]
@@ -327,10 +344,19 @@ public struct OpenAICompatibleClient: LLMClient {
             ))
         }
 
+        // GPT-5 / o-series reject any non-default `temperature` with HTTP 400, so
+        // omit it on the OpenAI/reasoning path. The `.completion` token parameter
+        // already marks that path (only `OpenAIClient` selects it); additionally
+        // sniff the resolved model id so a reasoning model routed through a custom
+        // (`.legacy`) endpoint is also covered. Legacy and third-party chat models
+        // still receive `temperature`.
+        let resolvedModel = request.model ?? defaultModel
+        let omitTemperature = tokenParameter == .completion || Self.rejectsTemperature(model: resolvedModel)
+
         let body = Body(
-            model: request.model ?? defaultModel,
+            model: resolvedModel,
             stream: true,
-            temperature: request.temperature,
+            temperature: omitTemperature ? nil : request.temperature,
             max_tokens: tokenParameter == .legacy ? request.maxTokens : nil,
             max_completion_tokens: tokenParameter == .completion ? request.maxTokens : nil,
             messages: messages,

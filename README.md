@@ -241,10 +241,19 @@ After synthesis, a dedicated `CitationExtractor` re-reads the draft and maps eve
 ### Requirements
 - macOS 26 (Tahoe) on Apple Silicon
 - Xcode 26
-- Python 3.10+ on `PATH` (the app auto-creates a virtualenv and installs the SeekDB deps on first run — manual `pip install pyseekdb fastapi uvicorn pydantic` is optional)
+- Python 3.10+ on `PATH` (the app auto-creates a virtualenv and installs the SeekDB deps on first run — manual `pip install -r sidecar/requirements.txt` is optional)
 - Optional: API keys for any combination of Anthropic, OpenAI, Gemini, DeepSeek, MiniMax, Moonshot/Kimi, Qwen (Alibaba Cloud Model Studio), a custom endpoint, Tavily, Exa, Brave
 - Optional: Ollama or LM Studio running locally with at least one tool-capable model loaded
 - Optional (Forecast): a local DeepResearchForecast checkout (with its vendored DeerFlow), e.g. at `~/Downloads/DeepResearchForecast` — its knowledge graph runs locally, so there's no API key; the in-app onboarding assistant runs its `setup.sh` and launches the backend for you
+
+### Download (.dmg)
+Grab the latest `Swift-Deep-Research-<version>.dmg` from the [Releases](https://github.com/linroger/Swift-Deep-Research/releases) page, open it, and drag **Swift Deep Research** to **Applications**.
+
+The build is ad-hoc signed (not yet notarized with a Developer ID), so on first launch macOS Gatekeeper flags it as "from an unidentified developer." Open it the first time with **either**:
+- **Right-click** (Control-click) the app in `/Applications` → **Open** → **Open** in the dialog, **or**
+- run once: `xattr -dr com.apple.quarantine "/Applications/Swift Deep Research.app"`
+
+After the first open it launches normally. Building from source in Xcode avoids this entirely.
 
 ### Build & run
 1. Open `Swift Deep Research.xcodeproj` in Xcode 26.

@@ -128,7 +128,16 @@ public struct ResearchEngine: Sendable {
                     var dispatchedQuestions = Set<String>()
                     var pendingSubtasks: [ResearchPlan.Subtask] = []
 
-                    let round1Batch = Array(plan.subtasks.prefix(config.budget.maxWorkers))
+                    // Defense-in-depth against a degenerate plan reaching this far
+                    // (the decoder already falls back on empty/blank subtasks, but a
+                    // future planner path could hand us an empty `plan.subtasks`): if
+                    // the first batch is empty, seed it from the single-subtask
+                    // fallback so at least one worker always runs and the run never
+                    // silently fans out zero workers (engine-empty-planner-output).
+                    var round1Batch = Array(plan.subtasks.prefix(config.budget.maxWorkers))
+                    if round1Batch.isEmpty {
+                        round1Batch = Array(ResearchPlanJSON.fallback(query: query).subtasks.prefix(config.budget.maxWorkers))
+                    }
                     let round1Overflow = Array(plan.subtasks.dropFirst(config.budget.maxWorkers))
                     pendingSubtasks.append(contentsOf: round1Overflow)
                     if !round1Overflow.isEmpty {

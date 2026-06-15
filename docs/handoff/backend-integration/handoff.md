@@ -63,4 +63,5 @@
 ## 10) Updates (append-only)
 - 2026-06-15: Created. Scouting complete; launching orchestration workflow for exhaustive contract/edit-site mapping.
 - 2026-06-15: Workflow complete (6 agents, 741k tokens). Verdict recorded. Baseline build green. Implementing the 11-slice checklist.
+- 2026-06-16: Integration implemented + verified (build green, live-backend E2E). Committed on branch `backend-graphiti-integration-and-execplan3` (10edbf5). READMEs (EN+ZH) migrated to Graphiti via 2 agents, committed (b9390e2). Added `scripts/build_dmg.sh` (ad-hoc Release→DMG). Release recon: bundle `com.linroger.Swift-Deep-Research`, v1.0, ad-hoc sign, hardened runtime, macOS 26, empty entitlements (no sandbox — needed for subprocess launch); only Apple Development identity (no Developer ID → DMG not notarizable, needs Gatekeeper note). Launched EXECPLAN3 survey workflow (8 analysts) → next: write EXECPLAN3.md, implement, ship .dmg, push.
 </content>

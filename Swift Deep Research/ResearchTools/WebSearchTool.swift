@@ -109,7 +109,20 @@ public struct WebSearchTool: ResearchTool {
                                               provider: emptyBackends.joined(separator: "+"),
                                               results: [])
             let payloadJSON = String(decoding: (try? JSONEncoder().encode(payload)) ?? Data(), as: UTF8.self)
-            let summary = "No web results for “\(args.query)” (searched: \(emptyBackends.joined(separator: ", "))). Try rephrasing the query."
+            // When the *only* backends in the chain are keyless (i.e. no real
+            // search API key is configured), an all-empty 200 is almost always
+            // the unreliable DuckDuckGo HTML fallback coming up dry — not a
+            // genuinely empty topic. Make that case LOUD and actionable instead
+            // of letting it look like an ordinary "no results, rephrase" outcome
+            // (keyless-empty-search-silent). Keyed-backend behavior is unchanged.
+            let onlyKeylessBackends = backends.allSatisfy { !$0.requiresAPIKey }
+            let summary: String
+            if onlyKeylessBackends {
+                summary = "web search returned no results (no search API key configured — add Tavily/Brave in Settings for reliable results). Searched keyless fallback: \(emptyBackends.joined(separator: ", "))."
+                Log.tool.warning("web_search: 0 results for “\(args.query, privacy: .public)” with only keyless backend(s) configured (\(emptyBackends.joined(separator: ", "), privacy: .public)) — add a search API key (Tavily/Brave) in Settings for reliable results")
+            } else {
+                summary = "No web results for “\(args.query)” (searched: \(emptyBackends.joined(separator: ", "))). Try rephrasing the query."
+            }
             return .ok(summary: summary, payloadJSON: payloadJSON)
         }
 
@@ -133,7 +146,18 @@ public struct WebSearchTool: ResearchTool {
 
 public protocol SearchBackend: Sendable {
     var providerID: String { get }
+    /// Whether this backend is gated behind a user-supplied API key. Keyed
+    /// backends (Tavily/Exa/Brave) only enter the chain when a key is present,
+    /// so a chain made up entirely of *unkeyed* backends signals that the user
+    /// has configured no real search provider — which the empty-result path uses
+    /// to emit a louder, actionable diagnostic instead of a bland rephrase hint.
+    var requiresAPIKey: Bool { get }
     func search(query: String, limit: Int, session: URLSession) async throws -> [DiscoveredSource]
+}
+
+public extension SearchBackend {
+    /// Most backends are key-gated; only the keyless fallback overrides this.
+    var requiresAPIKey: Bool { true }
 }
 
 public struct SearchResultsPayload: Codable, Sendable {
@@ -305,6 +329,8 @@ public struct BraveBackend: SearchBackend {
 
 public struct DuckDuckGoBackend: SearchBackend {
     public let providerID = "ddg"
+    /// The keyless last-resort backend; needs no API key.
+    public let requiresAPIKey = false
 
     public init() {}
 

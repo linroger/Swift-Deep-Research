@@ -89,7 +89,12 @@ public final class StoredSource {
     public var urlString: String
     public var title: String
     public var snippet: String
-    public var fullText: String
+    // The extracted full text is intentionally NOT persisted: it was write-only
+    // (nothing ever read it back — the live engine keeps source text in
+    // `FetchedSource`, and the inspector shows only title/url/snippet), so storing
+    // it just bloated the SQLite store with the largest field per source. This is a
+    // @Model schema change; it relies on the destroy-and-rebuild fallback in
+    // `ResearchStore.makeContainer()`.
     public var providerHint: String      // "tavily" | "exa" | "brave" | "ddg" | "reddit" | ...
     public var fetchedAt: Date
     public var session: StoredSession?
@@ -98,7 +103,6 @@ public final class StoredSource {
                 urlString: String,
                 title: String,
                 snippet: String,
-                fullText: String,
                 providerHint: String,
                 fetchedAt: Date = .now,
                 session: StoredSession? = nil) {
@@ -106,7 +110,6 @@ public final class StoredSource {
         self.urlString = urlString
         self.title = title
         self.snippet = snippet
-        self.fullText = fullText
         self.providerHint = providerHint
         self.fetchedAt = fetchedAt
         self.session = session
@@ -150,12 +153,15 @@ public final class StoredEvent {
     /// `ResearchEventSnapshot`), JSON-encoded. `payloadJSON` historically carried
     /// a structured payload for only a handful of kinds and just `{kind,timestamp}`
     /// for the rest, so the persisted log could not reconstruct a run. This field
-    /// captures EVERY kind's associated values so the timeline is fully replayable.
+    /// captures EVERY kind's associated values so the timeline is fully replayable,
+    /// and is the SOLE store of the snapshot for new rows — `payloadJSON` is left
+    /// empty by `appendEvent(event:…)` rather than redundantly carrying the same
+    /// JSON.
     ///
     /// Optional with a `nil` default so SwiftData performs a lightweight,
     /// data-preserving migration: rows written before this field existed simply
-    /// decode it as `nil`, and `decodedSnapshot` falls back to `payloadJSON` for
-    /// those rows — old history is never lost and never crashes on read.
+    /// decode it as `nil`, and `decodedSnapshot` returns `nil` for them — old
+    /// history is never lost and never crashes on read.
     public var eventPayloadJSON: String? = nil
     public var occurredAt: Date
     public var session: StoredSession?

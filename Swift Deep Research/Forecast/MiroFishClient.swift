@@ -68,6 +68,14 @@ public actor MiroFishClient {
 
     // MARK: - Pipeline
 
+    /// Cheap pre-run readiness check (offline checks only — no pipeline started).
+    /// Mirrors the gate inside `POST /run`, so a misconfigured provider / invalid
+    /// GRAPH_BACKEND / placeholder credential is caught BEFORE any research spend.
+    /// `mode` is the forecast mode (`full` | `research_only`).
+    public func preflight(mode: String) async throws -> MFPreflight {
+        try await request("/api/research/preflight?mode=\(mode)", method: "GET")
+    }
+
     public func runPipeline(prompt: String,
                             mode: String,
                             depth: String,
@@ -185,6 +193,15 @@ public actor MiroFishClient {
 
     public func reportProgress(_ reportID: String) async throws -> MFReportProgress {
         try await request("/api/report/\(reportID)/progress", method: "GET")
+    }
+
+    /// Machine-readable structured forecast (scenarios + probabilities + drivers)
+    /// for a finished report, via the stable `/api/v1` surface. Requires the
+    /// backend to run with `REPORT_STRUCTURED_FORECAST=true` and `API_V1_ENABLED=true`
+    /// (the app seeds both into `.env`); otherwise the backend answers 409/404 and
+    /// the caller treats the absence as "no structured forecast". (E3-forecast-2)
+    public func structuredForecast(reportID: String) async throws -> MFForecastEnvelope {
+        try await request("/api/v1/forecast/\(reportID)", method: "GET")
     }
 
     /// Incremental ReAct agent log. Poll with `fromLine = previous total_lines`.
@@ -351,6 +368,13 @@ public struct MFProvider: Decodable, Sendable, Identifiable {
 }
 
 // MARK: - Pipeline wire types
+
+/// `GET /api/research/preflight` result (default format): a fast readiness gate.
+public struct MFPreflight: Decodable, Sendable {
+    public let ready: Bool
+    public let errors: [String]
+    public let mode: String?
+}
 
 public struct MFRunResponse: Decodable, Sendable {
     public let pipeline_id: String
@@ -661,6 +685,39 @@ public struct MFOutlineSection: Decodable, Sendable, Identifiable {
     public let title: String?
     public let content: String?
     public var id: String { title ?? UUID().uuidString }
+}
+
+// MARK: - Structured forecast wire types (/api/v1/forecast)
+
+/// Envelope returned by `GET /api/v1/forecast/<report_id>`: the report ids plus
+/// the structured forecast object (nil when the report has no structured forecast).
+public struct MFForecastEnvelope: Decodable, Sendable {
+    public let report_id: String?
+    public let simulation_id: String?
+    public let forecast: MFForecast?
+}
+
+/// A calibrated, machine-readable forecast: a probability distribution over named
+/// outcome scenarios, an overall confidence, and a time horizon.
+public struct MFForecast: Decodable, Sendable {
+    public let horizon: String?
+    public let confidence: String?      // low | medium | high
+    public let scenarios: [MFScenario]
+
+    /// Scenarios sorted most-likely first, for display.
+    public var rankedScenarios: [MFScenario] {
+        scenarios.sorted { $0.probability > $1.probability }
+    }
+}
+
+public struct MFScenario: Decodable, Sendable, Identifiable {
+    public let name: String
+    public let probability: Double      // 0.0–1.0 (normalized server-side to ≈1 total)
+    public let summary: String?
+    public let key_drivers: [String]?
+    public var id: String { name }
+    /// Probability as a 0–100 percentage for labels.
+    public var percent: Int { Int((probability * 100).rounded()) }
 }
 
 public struct MFReportProgress: Decodable, Sendable {

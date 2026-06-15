@@ -10,6 +10,12 @@ struct ForecastReportView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                // The decision-useful headline: a probability distribution over
+                // named outcome scenarios, shown above the prose report when the
+                // backend produced a structured forecast (E3-forecast-2).
+                if let forecast = run.structuredForecast, !forecast.scenarios.isEmpty {
+                    forecastCard(forecast)
+                }
                 if let progress = run.reportProgress, run.report?.markdown_content?.isEmpty != false {
                     progressView(progress)
                 }
@@ -34,6 +40,65 @@ struct ForecastReportView: View {
             Label("Report pending", systemImage: "doc.text.magnifyingglass")
         } description: {
             Text("After the simulation runs, a ReAct agent mines the post-simulation knowledge graph — interviewing agents and running multi-hop retrievals — to write the forecast.")
+        }
+    }
+
+    // MARK: - Structured forecast
+
+    private func forecastCard(_ forecast: MFForecast) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Label("Forecast", systemImage: "chart.bar.xaxis").font(.headline)
+                Spacer()
+                if let h = forecast.horizon, !h.isEmpty {
+                    Text("Horizon \(h)").font(.caption).foregroundStyle(.secondary)
+                }
+                if let c = forecast.confidence, !c.isEmpty {
+                    Text("\(c.capitalized) confidence")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(confidenceColor(c).opacity(0.15), in: Capsule())
+                        .foregroundStyle(confidenceColor(c))
+                }
+            }
+            ForEach(forecast.rankedScenarios) { scenario in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(scenario.name).font(.callout.weight(.medium))
+                        Spacer()
+                        Text("\(scenario.percent)%")
+                            .font(.callout.weight(.bold)).monospacedDigit()
+                            .foregroundStyle(.tint)
+                    }
+                    ProgressView(value: max(0, min(1, scenario.probability)))
+                        .tint(.accentColor)
+                    if let summary = scenario.summary, !summary.isEmpty {
+                        Text(summary).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let drivers = scenario.key_drivers, !drivers.isEmpty {
+                        FlowLayout(spacing: 6) {
+                            ForEach(drivers, id: \.self) { driver in
+                                Text(driver)
+                                    .font(.caption2)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(.quaternary.opacity(0.4), in: Capsule())
+                            }
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .padding(16)
+        .glassCard()
+    }
+
+    private func confidenceColor(_ confidence: String) -> Color {
+        switch confidence.lowercased() {
+        case "high": .green
+        case "low": .orange
+        default: .blue
         }
     }
 
