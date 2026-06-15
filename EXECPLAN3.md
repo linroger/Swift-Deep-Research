@@ -3,6 +3,8 @@
 > Generated from an 8-analyst parallel survey of the Swift Deep Research macOS app (Engine, LLM/providers, Knowledge, Forecast, UI/UX, Storage, OOBE/build/release, security/perf). EXECPLAN2.md covered a bug backlog; **EXECPLAN3 is for enhancements, optimizations, and — above all — guaranteeing the app works out of the box for a fresh user**, culminating in a shippable `.dmg`.
 
 **Totals:** 69 items — 1×P0, 20×P1, 27×P2, 21×P3.
+> **Progress (this session):** 21/21 P0+P1 implemented and shipped; 9+ P2/P3 items done. Remaining P2/P3 are tracked below (unchecked). Build green; v2.0 .dmg shipped. `E3-oobe-2` is partial — ad-hoc signed + Gatekeeper note, since no Developer ID identity is available to notarize.
+
 
 ## Executive summary
 
@@ -584,32 +586,32 @@ Ordered smallest-safe-first, P0/out-of-box first. Build + smoke after each wave.
 
 ### Wave 1 — Out-of-box gate (P0 + OOBE/robustness/security P1)
 
-- [ ] E3-llm-1
-- [ ] E3-engine-1
-- [ ] E3-engine-2
-- [ ] E3-engine-3
-- [ ] E3-engine-4
-- [ ] E3-forecast-1
-- [ ] E3-kb-1
-- [ ] E3-kb-2
-- [ ] E3-kb-8
-- [ ] E3-llm-2
-- [ ] E3-llm-3
-- [ ] E3-oobe-1
-- [ ] E3-oobe-2
-- [ ] E3-oobe-5
-- [ ] E3-sec-1
-- [ ] E3-sec-2
-- [ ] E3-storage-3
-- [ ] E3-ux-1
+- [x] E3-llm-1
+- [x] E3-engine-1
+- [x] E3-engine-2
+- [x] E3-engine-3
+- [x] E3-engine-4
+- [x] E3-forecast-1
+- [x] E3-kb-1
+- [x] E3-kb-2
+- [x] E3-kb-8
+- [x] E3-llm-2
+- [x] E3-llm-3
+- [x] E3-oobe-1
+- [~] E3-oobe-2  (README + ad-hoc DMG only; notarization needs a Developer ID)
+- [x] E3-oobe-5
+- [x] E3-sec-1
+- [x] E3-sec-2
+- [x] E3-storage-3
+- [x] E3-ux-1
 
 _Build: `xcodebuild -scheme "Swift Deep Research" -configuration Debug build` → fix → smoke._
 
 ### Wave 2 — Remaining P1 (quality/correctness)
 
-- [ ] E3-forecast-2
-- [ ] E3-storage-1
-- [ ] E3-storage-2
+- [x] E3-forecast-2
+- [x] E3-storage-1
+- [x] E3-storage-2
 
 _Build: `xcodebuild -scheme "Swift Deep Research" -configuration Debug build` → fix → smoke._
 
@@ -622,25 +624,25 @@ _Build: `xcodebuild -scheme "Swift Deep Research" -configuration Debug build` �
 - [ ] E3-forecast-3
 - [ ] E3-forecast-4
 - [ ] E3-forecast-7
-- [ ] E3-kb-3
-- [ ] E3-kb-4
-- [ ] E3-kb-6
+- [x] E3-kb-3
+- [x] E3-kb-4
+- [x] E3-kb-6
 - [ ] E3-kb-7
 - [ ] E3-kb-9
 - [ ] E3-llm-4
-- [ ] E3-llm-5
+- [x] E3-llm-5
 - [ ] E3-llm-8
 - [ ] E3-oobe-3
-- [ ] E3-oobe-4
+- [x] E3-oobe-4
 - [ ] E3-oobe-7
 - [ ] E3-sec-3
 - [ ] E3-sec-4
-- [ ] E3-storage-4
-- [ ] E3-storage-5
+- [x] E3-storage-4
+- [x] E3-storage-5
 - [ ] E3-storage-6
 - [ ] E3-ux-2
 - [ ] E3-ux-3
-- [ ] E3-ux-4
+- [x] E3-ux-4
 - [ ] E3-ux-6
 
 _Build: `xcodebuild -scheme "Swift Deep Research" -configuration Debug build` → fix → smoke._
@@ -657,14 +659,14 @@ _Build: `xcodebuild -scheme "Swift Deep Research" -configuration Debug build` �
 - [ ] E3-kb-5
 - [ ] E3-llm-6
 - [ ] E3-llm-7
-- [ ] E3-oobe-6
+- [x] E3-oobe-6
 - [ ] E3-oobe-8
 - [ ] E3-oobe-9
 - [ ] E3-sec-5
 - [ ] E3-sec-6
 - [ ] E3-storage-7
 - [ ] E3-ux-10
-- [ ] E3-ux-5
+- [x] E3-ux-5
 - [ ] E3-ux-7
 - [ ] E3-ux-8
 - [ ] E3-ux-9
