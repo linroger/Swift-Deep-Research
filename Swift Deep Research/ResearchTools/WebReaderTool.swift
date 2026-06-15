@@ -34,6 +34,12 @@ public struct WebReaderTool: ResearchTool {
         self.session = session
     }
 
+    /// Hard ceiling on the HTML body we buffer + hand to SwiftSoup. A few MB is
+    /// already an enormous page; beyond this a hostile/runaway response would
+    /// spike memory and SwiftSoup parse time across the parallel workers. The
+    /// rendered JS path caps innerText in-page (200k chars) instead.
+    private static let maxHTMLBytes = 8 * 1024 * 1024
+
     public func call(argumentsJSON: String, context: ToolContext) async throws -> ToolOutcome {
         struct Args: Decodable { let url: String; let javascript: Bool? }
         let args: Args
@@ -116,14 +122,28 @@ public struct WebReaderTool: ResearchTool {
         guard let http = response as? HTTPURLResponse, (200..<400) ~= http.statusCode else {
             return nil
         }
+        // Reject an oversized HTML body before parsing it: SwiftSoup would
+        // otherwise build a DOM for hundreds of MB, spiking memory/CPU across
+        // the parallel workers. Treat over-cap pages as "no static content" so
+        // the caller can decide (the JS path caps innerText in-page instead).
+        let declaredLength = Int(http.value(forHTTPHeaderField: "Content-Length") ?? "") ?? 0
+        if max(declaredLength, data.count) > Self.maxHTMLBytes { return nil }
         // Decode tolerantly: a large slice of the web isn't UTF-8 (Windows-1252,
         // ISO-8859-1, GB2312, Shift-JIS). Falling straight to `nil` on non-UTF-8
         // both lost the page and triggered the slower JS fallback unnecessarily.
         guard let html = Self.decodeHTML(data: data, response: http) else { return nil }
         let doc = try SwiftSoup.parse(html)
         try doc.select("script, style, nav, footer, header, aside, noscript, iframe").remove()
+        // Drop common boilerplate containers that survive the tag strip above
+        // (comment threads, related-article rails, cookie banners, ad slots) so
+        // they don't crowd out the article body in the 20k char budget.
+        _ = try? doc.select(".comments, #comments, .related, .sidebar, [aria-label*=cookie], [id*=cookie], [class*=advert], [class*=newsletter]").remove()
         let title = (try? doc.title()) ?? url.host ?? url.absoluteString
-        let text = (try? doc.text()) ?? ""
+        // Readability-lite: prefer the main-content container (<article>/<main>/
+        // [role=main], else the densest <section>/<div>) over whole-body soup.
+        // This raises signal-to-noise on news/blog/docs pages so the citation
+        // extractor and synthesizer see the article rather than chrome.
+        let text = (try? Self.mainContentText(in: doc)) ?? (try? doc.text()) ?? ""
         let cleaned = text
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -133,6 +153,44 @@ public struct WebReaderTool: ResearchTool {
         // SPA heuristic while preserving concise real content.
         if cleaned.count < 200 { return nil }
         return Extracted(url: url, title: title, body: cleaned)
+    }
+
+    /// Lightweight readability heuristic: return the text of the page's main
+    /// content container, or fall back to the whole-body text when no clear
+    /// candidate stands out.
+    ///
+    /// Strategy (cheapest-first, no scoring of the whole tree):
+    /// 1. Prefer the first semantic container — `<article>`, `<main>`, or
+    ///    `[role=main]` — when it carries a substantial amount of text.
+    /// 2. Otherwise pick the densest `<section>`/`<div>` whose text dominates the
+    ///    page, but only when it clearly beats the rest (≥60% of body text), so a
+    ///    layout wrapper that merely contains everything isn't mistaken for the
+    ///    article.
+    /// 3. Fall back to the full body text — never returns less content than a
+    ///    naive `doc.text()` would on pages without a recognizable main region.
+    fileprivate static func mainContentText(in doc: Document) throws -> String {
+        let bodyText = try doc.text()
+        let bodyLen = bodyText.count
+        // Tiny pages (definitions, stubs): the whole body IS the content.
+        guard bodyLen >= 400 else { return bodyText }
+
+        for selector in ["article", "main", "[role=main]"] {
+            if let el = try doc.select(selector).first() {
+                let t = try el.text()
+                // Require the semantic container to hold a meaningful share of the
+                // page; some sites wrap a nav blurb in <main>.
+                if t.count >= 200 && t.count >= bodyLen / 4 { return t }
+            }
+        }
+
+        // Densest generic container, capped so we don't scan a pathological DOM.
+        var best = ""
+        for el in try doc.select("section, div").array().prefix(400) {
+            let t = try el.text()
+            if t.count > best.count { best = t }
+        }
+        if best.count >= (bodyLen * 6) / 10 { return best }
+        return bodyText
     }
 
     /// Decode an HTML body using the charset from the `Content-Type` header /
@@ -170,6 +228,17 @@ public struct WebReaderTool: ResearchTool {
 
         override init() {
             let config = WKWebViewConfiguration()
+            // Resource ceilings for rendering untrusted pages (the page runs
+            // arbitrary remote JS to surface a client-rendered DOM):
+            //  • Non-persistent store: no cookies/cache/local-storage survive the
+            //    fetch, so one hostile page can't seed state for the next.
+            //  • No media autoplay — avoids spinning up audio/video pipelines for
+            //    a headless text extraction.
+            // The hard wall-clock ceiling stays the 20s navigation watchdog in
+            // load(...) plus the in-JS 200k-char innerText cap, so a page that
+            // never settles can't stall the worker for the whole run budget.
+            config.websiteDataStore = .nonPersistent()
+            config.mediaTypesRequiringUserActionForPlayback = .all
             self.webView = WKWebView(frame: .zero, configuration: config)
             super.init()
             self.webView.navigationDelegate = self

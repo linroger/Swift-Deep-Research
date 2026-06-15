@@ -299,6 +299,47 @@ private struct SettingsRow<Content: View>: View {
 
 // MARK: - Providers
 
+/// Persists live model-discovery results across Settings sheet open/close (and
+/// tab switches, which destroy `ProvidersTab`). Keyed by provider rawValue and
+/// stamped with a fetch date so the discovered catalogue survives without a
+/// re-test, while the curated static list stays the offline fallback.
+/// (discovered-models-lost-1, providers-discovery-state-lost-on-close)
+private enum DiscoveredModelsStore {
+    private static let key = "providerDiscoveredModels.v1"
+
+    private struct Entry: Codable {
+        var models: [String]
+        var fetchedAt: Date
+    }
+
+    /// Load the persisted per-provider discovered lists into a typed dictionary.
+    static func load() -> [ProviderRegistry.ProviderID: [String]] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let raw = try? JSONDecoder().decode([String: Entry].self, from: data) else { return [:] }
+        var out: [ProviderRegistry.ProviderID: [String]] = [:]
+        for (k, v) in raw {
+            if let id = ProviderRegistry.ProviderID(rawValue: k), !v.models.isEmpty {
+                out[id] = v.models
+            }
+        }
+        return out
+    }
+
+    /// Persist (or overwrite) one provider's discovered models with a fresh stamp.
+    static func save(_ models: [String], for provider: ProviderRegistry.ProviderID) {
+        guard !models.isEmpty else { return }
+        var raw: [String: Entry] = [:]
+        if let data = UserDefaults.standard.data(forKey: key),
+           let existing = try? JSONDecoder().decode([String: Entry].self, from: data) {
+            raw = existing
+        }
+        raw[provider.rawValue] = Entry(models: models, fetchedAt: Date())
+        if let encoded = try? JSONEncoder().encode(raw) {
+            UserDefaults.standard.set(encoded, forKey: key)
+        }
+    }
+}
+
 private struct ProvidersTab: View {
     @Environment(AppEnvironment.self) private var env
     @State private var ollamaModels: [String] = []
@@ -360,6 +401,11 @@ private struct ProvidersTab: View {
             lmStudioHostString = env.configuration.lmStudioHost.absoluteString
             customHostString = env.configuration.customEndpointBaseURL?.absoluteString ?? ""
             qwenHostString = env.configuration.qwenBaseURL.absoluteString
+            // Re-hydrate previously discovered model lists so reopening Settings
+            // (or switching tabs, which destroys this view) doesn't revert to the
+            // static catalogue until the user re-tests each provider. Don't clobber
+            // a list discovered earlier this session.
+            if discovered.isEmpty { discovered = DiscoveredModelsStore.load() }
         }
         .onChange(of: env.configuration.orchestratorProvider) { _, _ in
             Task { if usesOllama { await fetchOllamaModels() } }
@@ -576,6 +622,9 @@ private struct ProvidersTab: View {
             let models = try await ModelDiscovery.fetchModels(provider: provider,
                                                               config: env.configuration)
             discovered[provider] = models
+            // Persist so the live catalogue survives sheet close/open and tab
+            // switches (otherwise the @State is discarded and re-discovery is forced).
+            DiscoveredModelsStore.save(models, for: provider)
             discoveryStates[provider] = .ok
             commitDiscoveredDefault(provider: provider, models: models)
         } catch {
@@ -1027,6 +1076,12 @@ private struct BudgetTab: View {
                     presetButton("Thorough", isOn: env.configuration.budget == .thorough) {
                         env.configuration.budget = .thorough
                     }
+                    // Non-interactive indicator: highlights when the caps have been
+                    // hand-tuned away from every preset, so a manual nudge no longer
+                    // looks like "nothing is selected". (budget-preset-desync-no-custom-state)
+                    if isCustomBudget {
+                        customIndicator("Custom")
+                    }
                 }
                 .padding(12)
             }
@@ -1060,8 +1115,44 @@ private struct BudgetTab: View {
                             .frame(minWidth: 30, alignment: .trailing)
                     }
                 }
+                // The wall-clock cap actually aborts runs (BudgetMeter.checkWallClock),
+                // and the previous fixed caps killed local-Ollama synthesis mid-run.
+                // Expose it (in minutes) so users can extend it. (budget-preset-desync-no-custom-state)
+                SettingsRow("Wall-clock limit", icon: "clock") {
+                    Stepper(value: wallClockMinutes, in: 1...60) {
+                        Text("\(wallClockMinutes.wrappedValue) min")
+                            .monospacedDigit()
+                            .frame(minWidth: 50, alignment: .trailing)
+                    }
+                }
             }
         }
+    }
+
+    /// True when the caps have been hand-tuned away from every built-in preset.
+    private var isCustomBudget: Bool {
+        let b = env.configuration.budget
+        return b != .fast && b != .standard && b != .thorough
+    }
+
+    /// Bridges the `Duration` wall-clock cap to an Int-minutes Stepper, rounding
+    /// to whole minutes for display (sub-minute precision isn't useful here).
+    private var wallClockMinutes: Binding<Int> {
+        Binding(
+            get: { max(1, Int((env.configuration.budget.maxWallClock.components.seconds + 30) / 60)) },
+            set: { env.configuration.budget.maxWallClock = .seconds($0 * 60) }
+        )
+    }
+
+    /// A read-only "Custom" capsule styled like a selected preset.
+    private func customIndicator(_ label: String) -> some View {
+        Text(label)
+            .font(.callout.weight(.medium))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .background(Color.accentColor, in: Capsule())
+            .foregroundStyle(.white)
+            .help("Caps differ from every preset. Pick a preset to reset.")
     }
 
     private func presetButton(_ label: String, isOn: Bool, action: @escaping () -> Void) -> some View {
@@ -1097,6 +1188,11 @@ private struct IterationTab: View {
                     presetButton("Thorough", isOn: env.configuration.iteration == .thorough) {
                         env.configuration.iteration = .thorough
                     }
+                    // Mirror the budget tab: a manual round/reflection tweak no
+                    // longer reads as "nothing selected". (budget-preset-desync-no-custom-state)
+                    if isCustomIteration {
+                        customIndicator("Custom")
+                    }
                 }
                 .padding(12)
             }
@@ -1126,6 +1222,23 @@ private struct IterationTab: View {
                 }
             }
         }
+    }
+
+    /// True when rounds/reflection have been hand-tuned away from every preset.
+    private var isCustomIteration: Bool {
+        let i = env.configuration.iteration
+        return i != .fast && i != .standard && i != .thorough
+    }
+
+    /// A read-only "Custom" capsule styled like a selected preset.
+    private func customIndicator(_ label: String) -> some View {
+        Text(label)
+            .font(.callout.weight(.medium))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .background(Color.accentColor, in: Capsule())
+            .foregroundStyle(.white)
+            .help("Settings differ from every preset. Pick a preset to reset.")
     }
 
     private func presetButton(_ label: String, isOn: Bool, action: @escaping () -> Void) -> some View {
@@ -1392,7 +1505,10 @@ private struct ForecastTab: View {
                     SettingsRow("Provider", icon: "cpu") {
                         Picker("", selection: $selectedProvider) {
                             ForEach(info.providers ?? []) { p in
-                                Text(p.label ?? p.id).tag(p.id)
+                                // Annotate options that require a key the backend
+                                // doesn't yet have, so the user can tell a CLI/no-key
+                                // provider from one that will fail without a key.
+                                Text(optionLabel(p, info: info)).tag(p.id)
                             }
                         }
                         .labelsHidden()
@@ -1405,6 +1521,16 @@ private struct ForecastTab: View {
                                 .frame(maxWidth: 300)
                         }
                     }
+                    // Up-front eligibility warning: the picker lets you select a
+                    // key-requiring provider even when no key is configured, which
+                    // would only surface as an opaque failure at run time.
+                    if selectedProviderMissingKey(info) {
+                        Label("This provider needs an API key — enter one above before applying.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 12)
+                    }
                     HStack {
                         if let providerMessage {
                             Text(providerMessage)
@@ -1416,6 +1542,7 @@ private struct ForecastTab: View {
                         Button("Apply") { Task { await applyProvider() } }
                             .buttonStyle(.bordered).controlSize(.small)
                             .disabled(providerBusy || selectedProvider.isEmpty
+                                      || selectedProviderMissingKey(info)
                                       || selectedProvider == info.current && providerKey.isEmpty)
                     }
                     .padding(12)
@@ -1557,6 +1684,26 @@ private struct ForecastTab: View {
 
     private func selectedProviderNeedsKey(_ info: MFProviderInfo) -> Bool {
         (info.providers ?? []).first(where: { $0.id == selectedProvider })?.needs_key == true
+    }
+
+    /// A key-requiring provider has no usable key when it isn't the currently
+    /// configured one (whose key the backend already holds) and the entry field
+    /// is empty. The backend only reports `has_api_key` for `current`, so for any
+    /// other selection we require the user to supply a key before applying.
+    private func selectedProviderMissingKey(_ info: MFProviderInfo) -> Bool {
+        guard selectedProviderNeedsKey(info) else { return false }
+        let keyEntered = !providerKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let isConfiguredCurrent = selectedProvider == info.current && info.has_api_key == true
+        return !keyEntered && !isConfiguredCurrent
+    }
+
+    /// Picker label that flags a key-requiring provider the backend can't yet use,
+    /// so the gap is visible before selection rather than only at run time.
+    private func optionLabel(_ p: MFProvider, info: MFProviderInfo) -> String {
+        let base = p.label ?? p.id
+        guard p.needs_key == true else { return base }
+        let configured = p.id == info.current && info.has_api_key == true
+        return configured ? base : "\(base) — needs key"
     }
 
     private func keyPlaceholder(_ info: MFProviderInfo) -> String {

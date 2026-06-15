@@ -789,3 +789,34 @@ AppEnvironment decomposition, no-tests-1). Work top-down in EXECPLAN2.md.
 
   CATALOG PROGRESS: 101 / 150 findings done (67%). Branch audit-remediation-batch5
   (commits 21a2f2a, 39063fe, 20dc322, + this batch8). Not yet pushed/merged.
+
+  ========================================================================
+  SESSION 2026-06-15 (continuation) — Batch 9: tractable P2/P3 tail (+22
+  findings, BUILD SUCCEEDED Debug/macOS 0/0). 4-agent workflow over disjoint
+  files (research tools; security keychain/subprocess; forecast/settings/graph
+  UI; engine/budget/provider) + main-loop SourceCache fix. One main-loop bug
+  caught: the SourceCache agent compared Task values with === (Task is a value
+  type) — wrapped the in-flight task in a reference InFlightBox so identity
+  comparison is valid. Also fixed a 'try? unused' warning in WebReaderTool.
+
+  Research tools: PDF/HTML size caps (50MB/8MB) pre-parse; read_pdf points the
+  worker at fetch_url on HTML; readability-lite (article/main/density + boiler-
+  plate strip); arXiv UA + 1req/3s limiter + empty-feed hint; SourceCache no
+  longer poisons sibling awaiters on a shared fetch's failure/cancellation
+  (in-flight slot via reference box, fall-through to own attempt); non-persistent
+  WKWebView store + media gating. Security: keychain items now AfterFirstUnlock-
+  ThisDeviceOnly + kSecAttrSynchronizable:false (device-bound, no iCloud sync),
+  accessibility re-pinned on update path; subprocess launch validates interpreter/
+  script path (exists+regular+owned-by-user+not-world-writable). Forecast/UI:
+  discovered models persist across sheet close (DiscoveredModelsStore); forecast
+  provider picker annotates 'needs key' + gates Apply; budget/iteration tabs show
+  'Custom' + a maxWallClock stepper; forecast sidebar selection drives navigation;
+  KnowledgeGraphView rebuilds only on real graph change + precomputes degree/
+  palette/adjacency. Engine: Gemini/Anthropic now actually retry a pre-stream
+  429/5xx (streamingBegan flag → RetryPolicy); Reflector retries like Planner;
+  engine event stream is .bufferingNewest(8192) not .unbounded; separate
+  reflectionPass counter; cross-turn SourceCache pre-warm from accumulatedSources.
+  Deferred: engine-no-budget-charge-on-failed-llm (WorkerAgent/Synthesizer).
+
+  CATALOG PROGRESS: 123 / 150 findings done (82%). Branch audit-remediation-batch5
+  (commits 21a2f2a, 39063fe, 20dc322, 2bcbb8d, + this batch9).

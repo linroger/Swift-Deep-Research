@@ -13,8 +13,16 @@ import Foundation
 /// Cache keys normalize the URL: trailing slash removed, fragment stripped,
 /// common tracking query parameters dropped.
 public actor SourceCache {
+    /// Reference wrapper for an in-flight fetch. `Task` is a value type with no
+    /// identity, so to tell "is the slot still MY task vs a sibling's fresher
+    /// one?" we compare boxes by `===`.
+    private final class InFlightBox: Sendable {
+        let task: Task<FetchedSource, Error>
+        init(_ task: Task<FetchedSource, Error>) { self.task = task }
+    }
+
     private var cached: [String: FetchedSource] = [:]
-    private var inFlight: [String: Task<FetchedSource, Error>] = [:]
+    private var inFlight: [String: InFlightBox] = [:]
     /// Insertion order of `cached` keys, for FIFO eviction.
     private var order: [String] = []
     /// Cap on retained results. Each `FetchedSource` can hold tens of KB of
@@ -40,13 +48,43 @@ public actor SourceCache {
                       using extractor: @Sendable @escaping (URL) async throws -> FetchedSource) async throws -> (source: FetchedSource, wasCached: Bool) {
         let key = Self.normalize(url)
         if let cached = cached[key] { return (cached, true) }
-        if let task = inFlight[key] {
-            return (try await task.value, true)
+
+        // Join an in-flight fetch for this URL when one exists, but isolate this
+        // caller's outcome from the shared task's *failure* and from this
+        // caller's *own* cancellation:
+        //  • If the shared task throws (e.g. a transient network blip the first
+        //    worker hit), a joining waiter does NOT inherit that failure — it
+        //    falls through to its own fresh attempt below. Previously one
+        //    transient error failed every concurrent requester of the URL.
+        //  • If THIS caller is cancelled while awaiting, that's our problem
+        //    alone; the shared task keeps running for its other waiters. The
+        //    `Task {}` we create is unstructured, so it never inherits a
+        //    caller's cancellation in the first place.
+        if let box = inFlight[key] {
+            do {
+                return (try await box.task.value, true)
+            } catch is CancellationError {
+                // Our await was cancelled (not the shared work) — propagate so the
+                // worker stops; don't fall through and start more work.
+                throw CancellationError()
+            } catch {
+                // Shared task failed for the first awaiter. Re-check the caches:
+                // the completed task may already have populated `cached`, or a
+                // newer in-flight task may have replaced the failed one.
+                if let cached = cached[key] { return (cached, true) }
+                if let newer = inFlight[key], newer !== box {
+                    return (try await newer.task.value, true)
+                }
+                // Otherwise fall through and make our own fresh attempt.
+            }
         }
-        let task = Task { try await extractor(url) }
-        inFlight[key] = task
-        defer { inFlight[key] = nil }
-        let result = try await task.value
+
+        let box = InFlightBox(Task { try await extractor(url) })
+        inFlight[key] = box
+        // Clear the slot only if it still points at *our* task, so we don't wipe
+        // out a fresher in-flight task started by a sibling after ours failed.
+        defer { if inFlight[key] === box { inFlight[key] = nil } }
+        let result = try await box.task.value
         store(key: key, value: result)
         return (result, false)
     }

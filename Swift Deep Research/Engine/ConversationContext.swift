@@ -70,4 +70,31 @@ public struct ConversationContext: Sendable, Codable {
     public var seenURLs: Set<URL> {
         Set(accumulatedSources.map(\.url))
     }
+
+    /// Compact "already-seen sources" note for the worker context on follow-up
+    /// turns. Listing the exact URLs already fetched in prior turns lets a worker
+    /// prefer *new* sources rather than re-issuing the same fetches — and any URL
+    /// it does fetch again is served from the pre-seeded `SourceCache` at no
+    /// network cost (engine-cache-not-used-for-cross-turn). Empty on the first
+    /// turn (no prior sources) so it never bloats the round-1 worker prompt.
+    public func seenSourcesNote(limit: Int = 30) -> String {
+        guard !accumulatedSources.isEmpty else { return "" }
+        // De-dupe while preserving order; prefer breadth across distinct URLs.
+        var seen = Set<String>()
+        var lines: [String] = []
+        for source in accumulatedSources {
+            let url = source.url.absoluteString
+            if !seen.insert(url).inserted { continue }
+            let title = source.title.isEmpty ? url : Clip.clip(source.title, to: 100)
+            lines.append("- \(title) — \(url)")
+            if lines.count >= limit { break }
+        }
+        guard !lines.isEmpty else { return "" }
+        return """
+        These sources were already fetched in earlier turns of this session and \
+        are cached (re-reading them is free, but prefer finding NEW sources unless \
+        a known one is essential):
+        \(lines.joined(separator: "\n"))
+        """
+    }
 }

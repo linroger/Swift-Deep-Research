@@ -51,15 +51,20 @@ public struct AnthropicClient: LLMClient {
                     continuation.finish(throwing: error)
                     return
                 }
-                // Pre-response transient retry: reasoning models can idle before
-                // the first token and drop the connection. Retry only while the
-                // server has NOT yet responded, so streamed output is never
-                // duplicated. Once any byte arrives, a drop is fatal (no retry).
+                // Transient retry: reasoning models can idle before the first
+                // token and drop the connection, and the gateway can return a
+                // transient 429/5xx. Retry as long as we have NOT yet started
+                // streaming tokens to the consumer, so output is never
+                // duplicated. checkOK throws an EngineFailure(.providerFailure)
+                // ("Anthropic HTTP 503", overloaded, ...) BEFORE any token is
+                // yielded, so a transient one is safely retried; once the SSE
+                // loop begins, a drop is mid-stream and fatal (no retry).
+                // RetryPolicy.isTransient is the single source of truth.
                 let maxAttempts = 3
                 var attempt = 0
                 while true {
                     attempt += 1
-                    var serverResponded = false
+                    var streamingBegan = false
                     do {
                         var url = URLRequest(url: baseURL.appending(path: "/v1/messages"))
                         url.httpMethod = "POST"
@@ -69,8 +74,10 @@ public struct AnthropicClient: LLMClient {
                         url.httpBody = body
 
                         let (bytes, response) = try await session.bytes(for: url)
-                        serverResponded = true   // headers arrived; HTTP errors are not retried here
                         try await Self.checkOK(response: response, bytes: bytes)
+                        // Past the status gate: a later drop is mid-stream and
+                        // must not be retried (partial output already delivered).
+                        streamingBegan = true
 
                         var toolBlockIDs: [Int: String] = [:]
                         var inputTokens = 0
@@ -86,7 +93,7 @@ public struct AnthropicClient: LLMClient {
                         continuation.finish(throwing: CancellationError())
                         return
                     } catch {
-                        if !serverResponded, attempt < maxAttempts, RetryPolicy.isTransient(error) {
+                        if !streamingBegan, attempt < maxAttempts, RetryPolicy.isTransient(error) {
                             try? await Task.sleep(for: .seconds(Double(attempt) * 0.7))
                             continue
                         }

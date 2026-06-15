@@ -7,9 +7,20 @@ struct ForecastSidebar: View {
     @Environment(AppEnvironment.self) private var env
 
     var body: some View {
+        // Wire the List's native selection (keyboard arrows, VoiceOver, click
+        // highlight) to actually drive navigation: the setter resolves the
+        // selected pipelineID to a local record (or an un-imported backend
+        // pipeline) and opens it, so system-driven selection isn't discarded.
         List(selection: Binding(
             get: { env.forecast?.pipelineID },
-            set: { _ in }
+            set: { newID in
+                guard let newID, newID != env.forecast?.pipelineID else { return }
+                if let record = records.first(where: { $0.pipelineID == newID }) {
+                    env.openForecast(record: record)
+                } else if let summary = remotePipelines.first(where: { $0.pipeline_id == newID }) {
+                    env.openBackendPipeline(summary)
+                }
+            }
         )) {
             Section {
                 Button {
@@ -34,8 +45,11 @@ struct ForecastSidebar: View {
                     ForEach(records) { record in
                         ForecastSidebarRow(record: record,
                                            isActive: env.forecast?.pipelineID == record.pipelineID)
+                            // Tag with the pipelineID so List's native selection
+                            // (keyboard/VoiceOver/click) maps to the binding above
+                            // and opens this forecast through the setter.
+                            .tag(record.pipelineID)
                             .contentShape(Rectangle())
-                            .onTapGesture { env.openForecast(record: record) }
                             .contextMenu {
                                 Button(role: .destructive) {
                                     delete(record)
@@ -48,8 +62,10 @@ struct ForecastSidebar: View {
                 Section {
                     ForEach(remotePipelines) { summary in
                         BackendPipelineRow(summary: summary)
+                            // Same pipelineID-keyed tag so an un-imported backend
+                            // pipeline is selectable/openable via native selection.
+                            .tag(summary.pipeline_id)
                             .contentShape(Rectangle())
-                            .onTapGesture { env.openBackendPipeline(summary) }
                             .contextMenu {
                                 Button {
                                     env.openBackendPipeline(summary)

@@ -64,13 +64,18 @@ public struct GeminiClient: LLMClient {
                     continuation.finish(throwing: error)
                     return
                 }
-                // Pre-response transient retry (see AnthropicClient for rationale):
-                // retry only before the server responds so output is never dup'd.
+                // Transient retry (see AnthropicClient for shared rationale):
+                // retry a transient failure as long as we have NOT yet started
+                // streaming tokens to the consumer, so output is never dup'd.
+                // Crucially this includes an HTTP 429/5xx thrown right after the
+                // status check — the body is unread at that point, so a retry is
+                // safe. RetryPolicy.isTransient is the single source of truth for
+                // which EngineFailure messages ("Gemini HTTP 503", etc.) qualify.
                 let maxAttempts = 3
                 var attempt = 0
                 while true {
                     attempt += 1
-                    var serverResponded = false
+                    var streamingBegan = false
                     do {
                         var req = URLRequest(url: url)
                         req.httpMethod = "POST"
@@ -79,11 +84,15 @@ public struct GeminiClient: LLMClient {
                         req.httpBody = body
 
                         let (bytes, response) = try await session.bytes(for: req)
-                        serverResponded = true
                         if let http = response as? HTTPURLResponse, !(200..<300 ~= http.statusCode) {
+                            // Thrown BEFORE any token is yielded, so the catch
+                            // below may safely retry a transient 429/5xx.
                             throw EngineFailure(kind: .providerFailure,
                                                 message: "Gemini HTTP \(http.statusCode)")
                         }
+                        // Past the status gate: from here a drop is mid-stream and
+                        // must not be retried (partial output already delivered).
+                        streamingBegan = true
 
                         // Track the last per-candidate finishReason (and any
                         // promptFeedback.blockReason) so a truncated or
@@ -101,7 +110,7 @@ public struct GeminiClient: LLMClient {
                         continuation.finish(throwing: CancellationError())
                         return
                     } catch {
-                        if !serverResponded, attempt < maxAttempts, RetryPolicy.isTransient(error) {
+                        if !streamingBegan, attempt < maxAttempts, RetryPolicy.isTransient(error) {
                             try? await Task.sleep(for: .seconds(Double(attempt) * 0.7))
                             continue
                         }

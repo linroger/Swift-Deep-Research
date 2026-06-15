@@ -16,6 +16,11 @@ public actor KeychainStore {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account.rawValue,
+            // Pin synchronizable=false on the lookup too, so the query matches the
+            // device-only items written by set() deterministically (a query that
+            // omits this attribute matches either, but keeping it explicit and
+            // consistent avoids ambiguity if a synced item ever co-exists).
+            kSecAttrSynchronizable as String: false,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
@@ -43,11 +48,20 @@ public actor KeychainStore {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account.rawValue
+            kSecAttrAccount as String: account.rawValue,
+            // Pin device-only (non-syncable) so the lookup matches the items we add
+            // below and so an existing synced item can never be silently updated.
+            kSecAttrSynchronizable as String: false
         ]
+        // These attributes are applied on BOTH the SecItemUpdate path (re-pinning
+        // accessibility on every write, so an item created before this hardening
+        // gets upgraded the next time it's set) and the SecItemAdd path (via the
+        // merge below). AfterFirstUnlockThisDeviceOnly keeps paid-API / Zep keys
+        // bound to this Mac: never iCloud-synced and not restorable to another
+        // device via encrypted backup / Migration Assistant.
         let attributes: [String: Any] = [
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
@@ -70,7 +84,9 @@ public actor KeychainStore {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account.rawValue
+            kSecAttrAccount as String: account.rawValue,
+            // Match the device-only items written by set() (see above).
+            kSecAttrSynchronizable as String: false
         ]
         let status = SecItemDelete(query as CFDictionary)
         if status != errSecSuccess && status != errSecItemNotFound {

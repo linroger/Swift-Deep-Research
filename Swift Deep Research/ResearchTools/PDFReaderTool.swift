@@ -30,6 +30,13 @@ public struct PDFReaderTool: ResearchTool {
         self.session = session
     }
 
+    /// Hard ceiling on the PDF body we will hold in memory + hand to PDFKit.
+    /// PDFs above this are almost always books/scans we'd truncate anyway, and
+    /// an unbounded body lets a malicious/accidental multi-hundred-MB file spike
+    /// memory across up to ~6 parallel workers (zip-bomb-style). 50 MB comfortably
+    /// covers normal academic papers and whitepapers.
+    private static let maxPDFBytes = 50 * 1024 * 1024
+
     public func call(argumentsJSON: String, context: ToolContext) async throws -> ToolOutcome {
         struct Args: Decodable { let url: String; let maxPages: Int? }
         guard let data = argumentsJSON.data(using: .utf8),
@@ -58,12 +65,26 @@ public struct PDFReaderTool: ResearchTool {
                     throw EngineFailure(kind: .toolFailure,
                                         message: "read_pdf: HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
                 }
+                // Reject an oversized PDF before handing it to PDFKit (a
+                // historically CVE-prone parser). We check both the declared
+                // Content-Length and the actual buffered byte count so a server
+                // that omits or under-declares the header can't slip a
+                // hundreds-of-MB body (zip-bomb-style) past the cap and spike
+                // memory across the parallel workers.
+                let declaredLength = Int(http.value(forHTTPHeaderField: "Content-Length") ?? "") ?? 0
+                let effectiveLength = max(declaredLength, bytes.count)
+                guard effectiveLength <= Self.maxPDFBytes else {
+                    throw EngineFailure(kind: .toolFailure,
+                                        message: "read_pdf: PDF too large (\(effectiveLength / (1024 * 1024)) MB, cap \(Self.maxPDFBytes / (1024 * 1024)) MB). Skip this source.")
+                }
                 // A URL that returns an HTML error page with 200 OK would feed
-                // garbage to PDFKit ("not a valid PDF"); detect that early.
+                // garbage to PDFKit ("not a valid PDF"). Detect that early and
+                // tell the worker to retry with fetch_url — the dedicated HTML
+                // tool — rather than emitting a generic failure.
                 if let mime = http.mimeType?.lowercased(),
                    mime.contains("html") || mime.contains("xml") {
                     throw EngineFailure(kind: .toolFailure,
-                                        message: "read_pdf: URL returned \(mime), not a PDF — use fetch_url for HTML pages.")
+                                        message: "read_pdf: \(resolved.absoluteString) returned \(mime), not a PDF. Call fetch_url on this URL instead to read it as an HTML page.")
                 }
                 return try Self.extract(data: bytes, url: resolved, maxPages: maxPages)
             }

@@ -44,12 +44,31 @@ public struct ResearchEngine: Sendable {
         let registry = self.registry
         let config = self.config
         let iteration = self.iteration
-        return AsyncThrowingStream<ResearchEvent, Error>(bufferingPolicy: .unbounded) { continuation in
+        // Bounded backpressure instead of .unbounded: the synthesizer emits one
+        // .tokenDelta per chunk and workers emit per-completion/per-tool events,
+        // while the consumer runs on @MainActor doing SwiftData persistence per
+        // event. If the MainActor stalls under heavy streaming, an unbounded buffer
+        // grows without limit (engine-unbounded-stream-buffer-leak). 8192 is far
+        // above any normal run's in-flight backlog (the UI drains continuously and
+        // already trims token/activity logs downstream), so normal runs never drop
+        // an event; only a pathological stall bounds memory by discarding the
+        // oldest buffered deltas rather than spiking.
+        return AsyncThrowingStream<ResearchEvent, Error>(bufferingPolicy: .bufferingNewest(8192)) { continuation in
             let task = Task {
                 let start = ContinuousClock().now
                 let budget = BudgetMeter(budget: config.budget)
                 let cache = SourceCache()
                 var conversation = context
+                // Pre-warm the per-run cache with sources fetched in earlier turns
+                // of this session so a follow-up turn doesn't re-fetch the same URLs
+                // cold (engine-cache-not-used-for-cross-turn). We seed through the
+                // public fetch() API (extractor just returns the known source), which
+                // populates the result cache under the same normalized key a later
+                // worker fetch will hit. Cheap: no network, just an in-memory insert.
+                for source in conversation.accumulatedSources {
+                    let known = source
+                    _ = try? await cache.fetch(source.url) { _ in known }
+                }
                 let providerName = config.workerProvider.displayName +
                     (config.workerModel.map { " — \($0)" } ?? "")
                 let session = SessionDescriptor(id: sessionID,
@@ -106,6 +125,9 @@ public struct ResearchEngine: Sendable {
                     }
                     for s in round1Batch { dispatchedQuestions.insert(s.question.lowercased()) }
 
+                    // On a follow-up turn, tell round-1 workers which URLs are
+                    // already cached so they prefer new sources (and any re-read of
+                    // a known URL is served from the pre-seeded cache for free).
                     let firstRound = try await Self.runWorkers(
                         subtasks: round1Batch,
                         parentQuery: query,
@@ -116,6 +138,7 @@ public struct ResearchEngine: Sendable {
                         cache: cache,
                         instructions: config.systemPromptAddendum,
                         sourceTarget: perWorkerSourceTarget,
+                        extraContext: conversation.seenSourcesNote(),
                         emit: emit
                     )
                     accumulatedOutputs.append(contentsOf: firstRound)
@@ -134,7 +157,18 @@ public struct ResearchEngine: Sendable {
                     // after round 3 so later rounds keep producing substantive
                     // follow-up subtasks instead of bailing on "ready".
                     if iteration.reflectAfterFirstRound {
+                        // Two distinct, independently-monotonic counters
+                        // (engine-round-counting-mismatch):
+                        //  - `round` is the RESEARCH-iteration number surfaced as
+                        //    "Iteration N of M"; it advances only when a round of
+                        //    workers actually runs (after dedup yields candidates).
+                        //  - `reflectionPass` counts every reflection pass of this
+                        //    loop, so "Reflection round R" stays monotonic even when
+                        //    a pass produces no surviving subtasks and ends the loop.
+                        // Previously both used `round`, so reflectionStarted reused a
+                        // stale pre-increment value and diverged from iterationStarted.
                         var round = 1
+                        var reflectionPass = 0
                         while round < iteration.maxRounds {
                             try Task.checkCancellation()
                             // Stop if the wall-clock budget is about to bust;
@@ -146,7 +180,10 @@ public struct ResearchEngine: Sendable {
                                 break
                             }
 
-                            emit(.reflectionStarted(round: round))
+                            reflectionPass += 1
+                            emit(.reflectionStarted(round: reflectionPass))
+                            // Deepening mode keys off the research-round number (the
+                            // depth of researched material), not the pass count.
                             let mode: Reflector.Mode = (round >= 3) ? .deepening : .gapFinding
                             let critique = try await reflector.critique(
                                 query: query,
@@ -226,7 +263,14 @@ public struct ResearchEngine: Sendable {
                             // build on prior evidence instead of re-researching
                             // cold (the question-text dedup above only avoids
                             // verbatim repeats, not semantic overlap).
-                            let priorContext = WorkerOutput.digest(of: accumulatedOutputs)
+                            // Combine this run's worker digest with the prior-turn
+                            // seen-sources note (empty on a first turn) so deepening
+                            // workers build on both in-run findings and cross-turn
+                            // cached sources.
+                            let seenNote = conversation.seenSourcesNote()
+                            let digest = WorkerOutput.digest(of: accumulatedOutputs)
+                            let priorContext = seenNote.isEmpty ? digest
+                                : (digest.isEmpty ? seenNote : digest + "\n\n" + seenNote)
                             let refinementOutputs = try await Self.runWorkers(
                                 subtasks: toRun,
                                 parentQuery: query,

@@ -16,17 +16,56 @@ struct KnowledgeGraphView: View {
     @State private var selectedNodeID: String?
     @State private var showLabels = false
 
-    // Precomputed lookups (cheap; graph is capped at ~140 nodes).
-    private var nodeByID: [String: GraphVizNode] {
-        Dictionary(graph.nodes.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+    /// Per-graph derived lookups, computed once whenever `graph` changes (see
+    /// `.onChange(of: graph)`), not on every body pass. The 2s forecast poll
+    /// re-runs body during the graph stage, so caching these avoids rebuilding
+    /// degree/colour/adjacency maps continuously on the main thread.
+    @State private var derived: GraphDerived
+
+    init(graph: ForecastGraph) {
+        self.graph = graph
+        // Seed the cache from the initial graph so the first frame already has
+        // correct colours/degrees (no one-frame gray flash before onAppear).
+        _derived = State(initialValue: GraphDerived(graph))
     }
-    private var degree: [String: Int] {
-        var d: [String: Int] = [:]
-        for e in graph.edges { d[e.source, default: 0] += 1; d[e.target, default: 0] += 1 }
-        return d
+
+    /// Cached node/degree/colour/adjacency tables for the current graph.
+    private struct GraphDerived {
+        var nodeByID: [String: GraphVizNode] = [:]
+        var degree: [String: Int] = [:]
+        var colorByType: [String: Color] = [:]
+        /// node id → edges incident on it (drives the inspector connection list).
+        var edgesByNode: [String: [GraphVizEdge]] = [:]
+
+        init(_ graph: ForecastGraph) {
+            nodeByID = Dictionary(graph.nodes.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            for e in graph.edges {
+                degree[e.source, default: 0] += 1
+                degree[e.target, default: 0] += 1
+                edgesByNode[e.source, default: []].append(e)
+                // Skip the second append for a self-loop so an edge isn't listed
+                // twice for the same node (matches the original per-edge filter
+                // and keeps inspector ForEach ids unique).
+                if e.target != e.source { edgesByNode[e.target, default: []].append(e) }
+            }
+            // Resolve the O(types) firstIndex palette lookup once per type here so
+            // node symbols / legend / inspector can index a dictionary instead.
+            for type in graph.entityTypes {
+                colorByType[type] = GraphPalette.color(for: type, in: graph.entityTypes)
+            }
+        }
     }
 
     var body: some View {
+        content
+            // The cache is seeded in init for the first graph; rebuild it only
+            // when the graph value actually changes, not on every body
+            // re-evaluation from the 2s poll.
+            .onChange(of: graph) { _, newGraph in derived = GraphDerived(newGraph) }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         if graph.isEmpty {
             emptyState
         } else {
@@ -45,7 +84,7 @@ struct KnowledgeGraphView: View {
                 .frame(width: geo.size.width, height: geo.size.height)
                 .overlay(alignment: .top) { controlBar }
                 .overlay(alignment: .bottomTrailing) {
-                    if let id = selectedNodeID, let node = nodeByID[id] {
+                    if let id = selectedNodeID, let node = derived.nodeByID[id] {
                         nodeInspector(node)
                             .padding(12)
                             .transition(.move(edge: .trailing).combined(with: .opacity))
@@ -59,8 +98,9 @@ struct KnowledgeGraphView: View {
     // MARK: - Graph canvas
 
     private var graphCanvas: some View {
-        let types = graph.entityTypes
-        let deg = degree
+        // Read the cached degree/colour tables (built once per graph change).
+        let deg = derived.degree
+        let colorByType = derived.colorByType
         return ForceDirectedGraph(states: graphStates) {
             Series(graph.nodes) { node in
                 NodeMark(id: node.id)
@@ -68,7 +108,7 @@ struct KnowledgeGraphView: View {
                     // Grape's tap hit-area equals the drawn radius, so keep a
                     // generous floor — tiny nodes were nearly impossible to tap.
                     .symbolSize(radius: 8.0 + CGFloat(min(deg[node.id] ?? 0, 12)))
-                    .foregroundStyle(GraphPalette.color(for: node.type, in: types))
+                    .foregroundStyle(colorByType[node.type] ?? .gray)
                     .stroke(node.id == selectedNodeID ? .white : .white.opacity(0.35),
                             StrokeStyle(lineWidth: node.id == selectedNodeID ? 2.0 : 0.6))
                     .annotation(showLabels ? node.label : nil, alignment: .bottom, offset: .zero)
@@ -150,7 +190,7 @@ struct KnowledgeGraphView: View {
             ForEach(graph.entityTypes.prefix(10), id: \.self) { type in
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(GraphPalette.color(for: type, in: graph.entityTypes))
+                        .fill(derived.colorByType[type] ?? .gray)
                         .frame(width: 8, height: 8)
                     Text(type).font(.caption2)
                 }
@@ -171,11 +211,13 @@ struct KnowledgeGraphView: View {
     // MARK: - Node inspector
 
     private func nodeInspector(_ node: GraphVizNode) -> some View {
-        let connections = graph.edges.filter { $0.source == node.id || $0.target == node.id }
+        // Use the precomputed adjacency map instead of filtering all edges per render.
+        let connections = derived.edgesByNode[node.id] ?? []
+        let nodeColor = derived.colorByType[node.type] ?? .gray
         return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Circle()
-                    .fill(GraphPalette.color(for: node.type, in: graph.entityTypes))
+                    .fill(nodeColor)
                     .frame(width: 10, height: 10)
                 Text(node.label).font(.headline).lineLimit(2)
                 Spacer(minLength: 8)
@@ -186,7 +228,7 @@ struct KnowledgeGraphView: View {
             }
             Text(node.type)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(GraphPalette.color(for: node.type, in: graph.entityTypes))
+                .foregroundStyle(nodeColor)
             if !node.summary.isEmpty {
                 Text(node.summary)
                     .font(.caption)
@@ -203,7 +245,7 @@ struct KnowledgeGraphView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(connections.prefix(8)) { edge in
                             let otherID = edge.source == node.id ? edge.target : edge.source
-                            let other = nodeByID[otherID]?.label ?? String(otherID.prefix(8))
+                            let other = derived.nodeByID[otherID]?.label ?? String(otherID.prefix(8))
                             HStack(alignment: .top, spacing: 4) {
                                 Image(systemName: edge.source == node.id ? "arrow.right" : "arrow.left")
                                     .font(.caption2)

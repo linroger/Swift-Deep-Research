@@ -27,6 +27,12 @@ public struct ArXivTool: ResearchTool {
         self.session = session
     }
 
+    /// arXiv's API terms ask for a descriptive User-Agent that identifies the
+    /// client and a contact. Without it requests inherit the generic session UA
+    /// and are more likely to be throttled.
+    private static let userAgent =
+        "SwiftDeepResearch/2.0 (arXiv API client; +https://github.com/swift-deep-research)"
+
     public func call(argumentsJSON: String, context: ToolContext) async throws -> ToolOutcome {
         struct Args: Decodable { let query: String; let limit: Int?; let sortBy: String? }
         guard let data = argumentsJSON.data(using: .utf8),
@@ -51,11 +57,26 @@ public struct ArXivTool: ResearchTool {
         components.queryItems = items
         guard let url = components.url else { return .failed(message: "arxiv_search: bad URL") }
 
-        let (atom, response) = try await HTTPClientCommon.dataWithRetry(for: URLRequest(url: url), session: session, label: "arxiv_search")
+        // arXiv asks API clients to (a) identify themselves with a descriptive
+        // User-Agent including a contact, and (b) stay under ~1 request/3s. With
+        // up to ~6 workers fanning out we can blow past that and get throttled,
+        // so we serialize arXiv calls through a process-wide ~3s rate gate.
+        await ArXivRateLimiter.shared.waitForSlot()
+        var request = URLRequest(url: url)
+        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+        let (atom, response) = try await HTTPClientCommon.dataWithRetry(for: request, session: session, label: "arxiv_search")
         guard let http = response as? HTTPURLResponse, (200..<300) ~= http.statusCode else {
             return .failed(message: "arxiv_search: HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
         }
         let entries = AtomParser.parse(data: atom)
+        // arXiv returns HTTP 200 with a valid-but-empty Atom feed for queries
+        // whose syntax it can't satisfy (e.g. a malformed field prefix), so 0
+        // entries is ambiguous between "no matches" and "bad query". Surface a
+        // syntax hint instead of a silent empty success so the worker can refine.
+        if entries.isEmpty {
+            return .ok(summary: "arXiv: 0 papers for \(query) — try simpler terms or arXiv field prefixes (ti:, au:, abs:, cat:).",
+                       payloadJSON: "[]")
+        }
         var discovered: [DiscoveredSource] = []
         for entry in entries {
             guard let pageURL = URL(string: entry.absURL) else { continue }
@@ -71,6 +92,33 @@ public struct ArXivTool: ResearchTool {
         let payload = try JSONEncoder().encode(discovered)
         return .ok(summary: "arXiv: \(discovered.count) papers for \(query)",
                    payloadJSON: String(decoding: payload, as: UTF8.self))
+    }
+}
+
+/// Process-wide courtesy rate limiter for the arXiv API.
+///
+/// arXiv asks clients not to issue more than roughly one request every three
+/// seconds. Because every worker shares this one endpoint, a single shared gate
+/// is enough: each caller awaits until at least `minInterval` has elapsed since
+/// the previous granted slot, then records its own slot time. Serializing here
+/// trades a little fan-out latency for not getting the whole run throttled.
+private actor ArXivRateLimiter {
+    static let shared = ArXivRateLimiter()
+    private let minInterval: Duration = .seconds(3)
+    /// The instant the *next* request is allowed to proceed. Reserved
+    /// synchronously (before any `await`) so concurrent callers each claim a
+    /// distinct, increasing slot rather than all reading the same stale value
+    /// across the actor reentrancy that `Task.sleep` introduces.
+    private var nextAllowed: ContinuousClock.Instant = .now
+
+    func waitForSlot() async {
+        let now = ContinuousClock.now
+        let scheduled = max(now, nextAllowed)
+        // Reserve the slot after this one *before* awaiting, so the next caller
+        // computes its time relative to ours and they fan out by minInterval.
+        nextAllowed = scheduled.advanced(by: minInterval)
+        let delay = now.duration(to: scheduled)
+        if delay > .zero { try? await Task.sleep(for: delay) }
     }
 }
 

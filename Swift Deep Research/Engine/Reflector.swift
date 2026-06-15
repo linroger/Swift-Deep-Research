@@ -18,12 +18,20 @@ import Foundation
 /// subtasks if the reflector returns nothing.
 public struct Reflector: Sendable {
     public let llm: any LLMClient
+    /// Transient-failure retry for the reflection call, matching the Planner.
+    /// A reflection round shouldn't abort the whole run on a single provider
+    /// blip (429/5xx/dropped connection) — the rest of the pipeline (Planner,
+    /// DeerFlow planner) already retries, so the Reflector now does too.
+    public let retry: RetryPolicy
     /// Optional shared meter so each reflection pass (which feeds an 8k-char
     /// draft to the orchestrator LLM) counts toward the run's token cap.
     public let budget: BudgetMeter?
 
-    public init(llm: any LLMClient, budget: BudgetMeter? = nil) {
+    public init(llm: any LLMClient,
+                retry: RetryPolicy = .networkDefault,
+                budget: BudgetMeter? = nil) {
         self.llm = llm
+        self.retry = retry
         self.budget = budget
     }
 
@@ -121,7 +129,9 @@ public struct Reflector: Sendable {
             messages: [.system(system), .user(user)],
             temperature: mode == .deepening ? 0.5 : 0.2
         )
-        let completion = try await llm.complete(req)
+        let completion = try await retry.run({
+            try await llm.complete(req)
+        }, label: "reflector")
         if let budget { try? await budget.chargeTokens(completion.totalTokens) }
         let json = LLMJSON.extractObject(completion.text)
         do {

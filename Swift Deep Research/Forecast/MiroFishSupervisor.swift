@@ -122,18 +122,28 @@ public actor MiroFishSupervisor {
             return status
         }
 
-        let fm = FileManager.default
         let backendDir = repoRoot.appendingPathComponent("backend", isDirectory: true)
-        let runScript = backendDir.appendingPathComponent("run.py")
-        guard fm.fileExists(atPath: runScript.path) else {
-            status = .backendMissing(
-                "MiroFish backend not found at \(runScript.path). Set the correct MiroFish folder in Settings → Forecast.")
+        // code-execution-by-config gate: refuse to exec run.py from a missing,
+        // foreign-owned, or world/group-writable location (see validateLaunch).
+        if let unsafe = Self.validateLaunch(repoRoot: repoRoot,
+                                            scriptRelativePath: "backend/run.py",
+                                            mustBeDirectory: false) {
+            status = .backendMissing("\(unsafe) Set the correct MiroFish folder in Settings → Forecast.")
             return status
         }
 
         guard let invocation = resolveInterpreter(backendDir: backendDir) else {
             status = .interpreterMissing(
                 "No MiroFish Python environment found. Run `uv sync` in \(backendDir.path) (Python ≤3.12), or install `uv`.")
+            return status
+        }
+        // The resolved interpreter is also config-derived (the venv python lives
+        // under repoRoot). Re-validate the actual executable we're about to run so
+        // a tampered venv python can't be launched even if run.py looks fine.
+        if invocation.executable.hasPrefix("/"),
+           let unsafe = Self.validateExecutable(at: URL(fileURLWithPath: invocation.executable),
+                                                mustBeDirectory: false) {
+            status = .interpreterMissing("\(unsafe) Re-provision the MiroFish environment in Settings → Forecast.")
             return status
         }
 
@@ -255,6 +265,14 @@ public actor MiroFishSupervisor {
     nonisolated public static func setupScriptStream(repoRoot: URL) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let script = repoRoot.appendingPathComponent("setup.sh")
+            // code-execution-by-config gate: we're about to `/bin/bash setup.sh`
+            // from a config-supplied folder. Refuse a missing / foreign-owned /
+            // world-writable repo or script before executing it (see validateLaunch).
+            if let unsafe = validateLaunch(repoRoot: repoRoot, scriptRelativePath: "setup.sh",
+                                           mustBeDirectory: false) {
+                continuation.finish(throwing: SetupScriptError.launchFailed(unsafe))
+                return
+            }
             guard FileManager.default.fileExists(atPath: script.path) else {
                 continuation.finish(throwing: SetupScriptError.scriptMissing(script.path))
                 return
@@ -362,6 +380,14 @@ public actor MiroFishSupervisor {
     public func repairEnvironment(repoRoot: URL) async throws -> String {
         let fm = FileManager.default
         let backendDir = repoRoot.appendingPathComponent("backend", isDirectory: true)
+        // code-execution-by-config gate: repair runs `uv venv`/`uv sync` with cwd
+        // under repoRoot and (re)creates the venv we later exec. Refuse a missing /
+        // foreign-owned / world-writable repo before provisioning it.
+        if let unsafe = Self.validateLaunch(repoRoot: repoRoot,
+                                            scriptRelativePath: "backend/run.py",
+                                            mustBeDirectory: false) {
+            throw RepairError.backendMissing(unsafe)
+        }
         guard fm.fileExists(atPath: backendDir.appendingPathComponent("run.py").path) else {
             throw RepairError.backendMissing(backendDir.path)
         }
@@ -449,6 +475,58 @@ public actor MiroFishSupervisor {
             throw RepairError.stepFailed(step: label, log: output)
         }
         return "$ \(label)\n" + output + "\n"
+    }
+
+    // MARK: - Config-path safety (code-execution-by-config)
+
+    /// `repoRoot` comes from a persisted Settings string (default
+    /// `~/Downloads/mirofish/...`), and we then exec `setup.sh` / `run.py` / the
+    /// venv python found *inside* it. Pointing the app at an attacker-droppable
+    /// folder would therefore auto-run that folder's code. This gate makes the
+    /// risk proportionate for a local desktop app: before launching anything we
+    /// require the directory (and the specific file we're about to run) to exist,
+    /// be a regular file/dir owned by the current user, and not be writable by
+    /// group or other (so another local account can't swap the script underneath
+    /// us). It is intentionally a permissions/ownership check, not a path
+    /// allowlist — users legitimately keep MiroFish anywhere.
+    nonisolated static func validateExecutable(at url: URL, mustBeDirectory: Bool) -> String? {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else {
+            return "\(url.lastPathComponent) not found at \(url.path)."
+        }
+        guard isDir.boolValue == mustBeDirectory else {
+            return mustBeDirectory
+                ? "\(url.path) is not a directory."
+                : "\(url.path) is not a regular file."
+        }
+        guard let attrs = try? fm.attributesOfItem(atPath: url.path) else {
+            return "Couldn't read attributes of \(url.path)."
+        }
+        // Reject anything owned by another user — a path the current user can't
+        // vouch for shouldn't be auto-executed.
+        if let owner = attrs[.ownerAccountID] as? NSNumber,
+           owner.uint32Value != getuid() {
+            return "\(url.path) is owned by another user; refusing to execute it. Move MiroFish into your own home directory."
+        }
+        // Reject group- or world-writable scripts/dirs (0o022): a writable-by-others
+        // location is exactly the "attacker can drop/replace code" case.
+        if let perms = attrs[.posixPermissions] as? NSNumber,
+           (perms.uint16Value & 0o022) != 0 {
+            return "\(url.path) is writable by other users (unsafe permissions); refusing to execute it. Run `chmod go-w` on it, or move MiroFish out of a shared folder."
+        }
+        return nil
+    }
+
+    /// Validate `repoRoot` plus the specific file we're about to run beneath it.
+    /// Returns nil when safe, or a user-facing rejection message.
+    nonisolated static func validateLaunch(repoRoot: URL, scriptRelativePath: String,
+                                           mustBeDirectory: Bool) -> String? {
+        if let rootError = validateExecutable(at: repoRoot, mustBeDirectory: true) {
+            return rootError
+        }
+        let target = repoRoot.appendingPathComponent(scriptRelativePath)
+        return validateExecutable(at: target, mustBeDirectory: mustBeDirectory)
     }
 
     // MARK: - Interpreter resolution
