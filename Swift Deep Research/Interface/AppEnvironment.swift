@@ -149,7 +149,13 @@ public final class AppEnvironment {
             forecast = nil
         }
         let pipelineID = record.pipelineID
-        try? store.deleteForecast(record)
+        do {
+            try store.deleteForecast(record)
+        } catch {
+            // Don't swallow silently — a failed local delete leaves a phantom row
+            // in the sidebar with no signal to the user or logs.
+            Log.engine.error("Failed to delete forecast \(pipelineID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
         let client = makeMiroFishClient()
         Task.detached {
             try? await client.deletePipeline(pipelineID)

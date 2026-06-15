@@ -255,3 +255,13 @@ public struct WorkerOutput: Sendable {
     public let summary: String
     public let sources: [FetchedSource]
 }
+
+public extension WorkerOutput {
+    /// Compact digest of prior worker findings, threaded into later-round (native
+    /// engine) and sequential (DeerFlow) workers as `extraContext` so they build
+    /// on earlier evidence instead of restarting cold.
+    static func digest(of outputs: [WorkerOutput]) -> String {
+        outputs.map { "## \($0.subtask.question)\n\(Clip.clip($0.summary, to: 2_000))" }
+               .joined(separator: "\n\n")
+    }
+}

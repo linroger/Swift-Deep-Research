@@ -174,6 +174,12 @@ public struct ResearchEngine: Sendable {
                                 estimatedComplexity: plan.estimatedComplexity,
                                 estimatedTokenBudget: plan.estimatedTokenBudget
                             )
+                            // Thread a digest of everything found so far into the
+                            // follow-up workers so deepening/gap-filling rounds
+                            // build on prior evidence instead of re-researching
+                            // cold (the question-text dedup above only avoids
+                            // verbatim repeats, not semantic overlap).
+                            let priorContext = WorkerOutput.digest(of: accumulatedOutputs)
                             let refinementOutputs = try await Self.runWorkers(
                                 subtasks: Array(newSubtasks.prefix(config.budget.maxWorkers)),
                                 parentQuery: query,
@@ -184,6 +190,7 @@ public struct ResearchEngine: Sendable {
                                 cache: cache,
                                 instructions: config.systemPromptAddendum,
                                 sourceTarget: perWorkerSourceTarget,
+                                extraContext: priorContext,
                                 emit: emit
                             )
                             accumulatedOutputs.append(contentsOf: refinementOutputs)
@@ -232,6 +239,7 @@ public struct ResearchEngine: Sendable {
                                    cache: SourceCache,
                                    instructions: String,
                                    sourceTarget: Int,
+                                   extraContext: String = "",
                                    emit: @escaping @Sendable (ResearchEvent) -> Void) async throws -> [WorkerOutput] {
         // Each worker is isolated: a single worker that throws (budget bust,
         // exhausted-retry network drop, etc.) must NOT abort its siblings or the
@@ -255,7 +263,7 @@ public struct ResearchEngine: Sendable {
                 )
                 group.addTask {
                     do {
-                        return try await worker.run(subtask: subtask, parentQuery: parentQuery)
+                        return try await worker.run(subtask: subtask, parentQuery: parentQuery, extraContext: extraContext)
                     } catch is CancellationError {
                         throw CancellationError()
                     } catch {

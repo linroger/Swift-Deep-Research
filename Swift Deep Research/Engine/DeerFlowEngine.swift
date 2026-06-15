@@ -152,7 +152,7 @@ public struct DeerFlowEngine: Sendable {
                             let stepTools = stepKind == .processing
                                 ? tools.filter { ["calculator", "current_datetime", "knowledge_base"].contains($0.spec.name) }
                                 : tools
-                            let observations = Self.observationDigest(from: allOutputs)
+                            let observations = WorkerOutput.digest(of: allOutputs)
                             let worker = WorkerAgent(
                                 id: WorkerID.make(subtask.question),
                                 llm: workerLLM,
@@ -480,12 +480,6 @@ public struct DeerFlowEngine: Sendable {
 
     /// Digest of everything found so far, threaded into the next step's prompt.
     /// Clipped per-step so a long run doesn't blow the context window.
-    private static func observationDigest(from outputs: [WorkerOutput]) -> String {
-        outputs.map { o in
-            "## \(o.subtask.question)\n\(Clip.clip(o.summary, to: 2_000))"
-        }.joined(separator: "\n\n")
-    }
-
     private static func decodeFetchedSources(_ payload: String) -> [FetchedSource] {
         guard let data = payload.data(using: .utf8) else { return [] }
         struct Envelope: Decodable { let fetchedSources: [FetchedSource]? }

@@ -616,3 +616,10 @@ AppEnvironment decomposition, no-tests-1). Work top-down in EXECPLAN2.md.
   kb-host-contract-mismatch (sidecar launched with explicit --host). New files this
   session: Shared/URLSafety.swift, Shared/TaskTimeout.swift, Shared/LLMJSON.swift +
   EXECPLAN2.md. SESSION TOTAL: 26 findings (2 P0, 18 P1, 6 P2). Final build clean.
+
+  [batch 4, same session] +3 (+1 partial) (green, logs/r2-*): sec-keychain-no-error-
+  surface-11 + keychain-set-failure-silent-6 (KeychainStore logs OSStatus), native-
+  engine-dedup-gap-1 (later rounds get WorkerOutput.digest extraContext; shared with
+  DeerFlow), error-handling-consistency-1 partial (deleteForecast logs). SESSION TOTAL:
+  29 findings (2 P0, 18 P1, 9 P2). Committed to branch audit-remediation-execplan2,
+  pushed, merged to main.

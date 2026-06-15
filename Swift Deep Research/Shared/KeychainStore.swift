@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import OSLog
 
 /// Thin Keychain wrapper for API keys. Stored as kSecClassGenericPassword,
 /// scoped per service name. No third-party dependency — pure Security.framework.
@@ -20,9 +21,17 @@ public actor KeychainStore {
         ]
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess,
-              let data = item as? Data,
-              let str = String(data: data, encoding: .utf8) else {
+        guard status == errSecSuccess else {
+            // errSecItemNotFound is the normal "no key configured" case. Anything
+            // else (e.g. errSecInteractionNotAllowed when the Mac is locked) is a
+            // real failure that callers otherwise can't distinguish from "missing
+            // key" — log the status code (never the secret) so it's diagnosable.
+            if status != errSecItemNotFound {
+                Log.provider.error("Keychain read failed for \(account.rawValue, privacy: .public): OSStatus \(status)")
+            }
+            return nil
+        }
+        guard let data = item as? Data, let str = String(data: data, encoding: .utf8) else {
             return nil
         }
         return str
@@ -44,7 +53,14 @@ public actor KeychainStore {
         if status == errSecItemNotFound {
             var add = query
             add.merge(attributes) { _, new in new }
-            return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
+            let addStatus = SecItemAdd(add as CFDictionary, nil)
+            if addStatus != errSecSuccess {
+                Log.provider.error("Keychain add failed for \(account.rawValue, privacy: .public): OSStatus \(addStatus)")
+            }
+            return addStatus == errSecSuccess
+        }
+        if status != errSecSuccess {
+            Log.provider.error("Keychain update failed for \(account.rawValue, privacy: .public): OSStatus \(status)")
         }
         return status == errSecSuccess
     }
@@ -56,7 +72,11 @@ public actor KeychainStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account.rawValue
         ]
-        return SecItemDelete(query as CFDictionary) == errSecSuccess
+        let status = SecItemDelete(query as CFDictionary)
+        if status != errSecSuccess && status != errSecItemNotFound {
+            Log.provider.error("Keychain delete failed for \(account.rawValue, privacy: .public): OSStatus \(status)")
+        }
+        return status == errSecSuccess
     }
 }
 

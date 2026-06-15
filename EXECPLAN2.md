@@ -12,7 +12,7 @@
 
 _Updated 2026-06-15. Working top-down; every change validated by a clean `xcodebuild` (Debug, macOS)._
 
-**Done this session (26):** 2 P0, 18 P1, 6 P2 — all building green.
+**Done this session (29):** 2 P0, 18 P1, 9 P2 (+1 P2 partial: error-handling-consistency-1) — all building green.
 
 - [x] `iface-pertoken-save-1` (P0) — Skip per-token SwiftData saves; persist only meaningful events
 - [x] `mirofish-supervisor-1` (P0) — Launch backend as setsid process-group leader; killpg reaps DeerFlow/OASIS tree
@@ -578,7 +578,7 @@ Grouped by severity, then subsystem. `[v]` = verdict (confirmed/adjusted). Effor
   - **Impact:** Users never see the 'Cache hit' activity that the UI is wired for, so the parallel-dedup optimization is invisible. More importantly, cache hits/duplicate URLs burn the per-worker source budget (maxSourcesPerWorker), prematurely triggering 'Source cap reached' on runs where workers legitimately share URLs.  
   - **Fix:** Have fetch() return whether the result was a hit (or take an onCacheHit closure / emit) and emit .sourceCacheHit; and only call registerSource on a genuine miss. Simplest: move the budget reservation inside the cache miss path, or return a (FetchedSource, wasCached) tuple and have the tool releaseSource on a hit.  
   - **Verify:** Verified. grep for sourceCacheHit across *.swift (excluding logs) shows it is only DEFINED (ResearchEvent.swift:17,43) and CONSUMED (AppEnvironment.swift:552,636,666) — never emitted/yielded. SourceCache.fetch (SourceCache.swift:35-37) returns cached/in-flight values with no signal. registerSource is called BEFORE cache.fetch in every tool (e.g. WebReaderTool.swift:48 then :56; same in PDF/Wikipedia/Reddit at :40/:48, :105/:111, :141/:147), so a cache hit still consumes a worker source slot. Token charge (WebReaderTool.swift:69) also re-runs on a cache hit. Both budget claims hold. P2 appropriate.  
-- [ ] **`keychain-set-failure-silent-6`** — Keychain set/delete failures are silently dropped (Bool ignored at call sites)  
+- [x] **`keychain-set-failure-silent-6`** — Keychain set/delete failures are silently dropped (Bool ignored at call sites)  
   - **Where:** `Swift Deep Research/Shared/KeychainStore.swift:31-60; Interface/SettingsSheet.swift:860-915; Forecast/ForecastOnboarding.swift:190`  
   - **Category:** robustness · **Effort:** S · **Confidence:** high · **Verdict:** confirmed  
   - **Problem:** set/delete return Bool but discard the OSStatus (no logging of the actual error code), and the @discardableResult lets callers ignore it. SettingsSheet.swift:862/915 and ForecastOnboarding.swift:190 call `await KeychainStore.shared.set(value, for: account)` and never check the return. If the write fails (e.g. SecItemUpdate returns an error other than errSecItemNotFound, or SecItemAdd fails under a locked keychain / entitlement issue), the user believes the key was saved but get() later returns nil, producing a downstream 'API key missing' failure with no clue why.  
@@ -1221,7 +1221,7 @@ Grouped by severity, then subsystem. `[v]` = verdict (confirmed/adjusted). Effor
   - **Impact:** High cognitive load and real risk of mis-wiring: e.g. someone could assume forecast obeys EngineConfiguration's orchestrator/worker/synthesis providers, when it actually only obeys forecastAssignment. The deerflowModel mapping is also lossy (every non-native provider maps to deerflowModel 'claude' at ModelProviderManager.swift:157-198), which may silently route the backend to the wrong model family.  
   - **Fix:** Rename to disambiguate (e.g. in-process flow → 'PlanExecuteEngine', backend → 'MiroFishForecast') and add a short architecture note in handoff.md/README mapping the three flows to their config sources. Audit the deerflowModel='claude' fallback (ModelProviderManager.swift:157,167,187,192,198) — verify the backend actually honors LLM_PROVIDER/LLM_MODEL_NAME over DEERFLOW_MODEL for OpenAI-compatible providers, else the backend may ignore the user's chosen model.  
   - **Verify:** Verified the three distinct 'DeerFlow' concepts: (1) in-process Swift DeerFlowEngine selected via ResearchFlow.deerflow (EngineConfiguration.swift:11-12 enum case .deerflow; DeerFlowEngine.swift:25 struct); (2) the external MiroFish backend's DeerFlow subprocess, configured by ModelProviderManager via DEERFLOW_MODEL / deerflowModel env seeding (ModelProviderManager.swift:133-138 payload field, :235 env var, per-provider mapping :157-198); (3) the forecast ModelRole driving that backend (ModelRole.forecast). EngineConfiguration's doc comment doesn't disambiguate that selecting 'deerflow' runs in-process while the visually-similar forecast path hits the Python backend over HTTP/.env. Real naming/conceptual ambiguity. P3 (documentation/clarity improvement) is appropriate.  
-- [ ] **`native-engine-dedup-gap-1`** — Native engine dedups follow-up subtasks by question text but never threads accumulated sources into later-round workers  
+- [x] **`native-engine-dedup-gap-1`** — Native engine dedups follow-up subtasks by question text but never threads accumulated sources into later-round workers  
   - **Where:** `Engine/ResearchEngine.swift:172-205 (round loop, runWorkers call) vs DeerFlowEngine.swift:155,168 (observationDigest extraContext)`  
   - **Category:** correctness · **Effort:** S · **Confidence:** medium · **Verdict:** confirmed  
   - **Problem:** DeerFlow threads prior observations into each sequential step via `extraContext` (DeerFlowEngine.swift:155 observationDigest → worker.run(extraContext:)), so later steps build on earlier findings. The native engine's multi-round loop (ResearchEngine.swift:193-205) re-runs `runWorkers` for new subtasks but passes no extraContext — every follow-up worker starts cold with no memory of what rounds 1..N-1 already found, even though `accumulatedOutputs` is available right there. The only cross-round guard is a lowercased question-string dedup (:172-173), which misses semantically-duplicate-but-differently-worded subtasks.  
@@ -1276,7 +1276,7 @@ Grouped by severity, then subsystem. `[v]` = verdict (confirmed/adjusted). Effor
 
 #### Cross-cutting: Security & Process/Network Safety
 
-- [ ] **`sec-keychain-no-error-surface-11`** — KeychainStore swallows all OSStatus errors, returning nil/false silently  
+- [x] **`sec-keychain-no-error-surface-11`** — KeychainStore swallows all OSStatus errors, returning nil/false silently  
   - **Where:** `Swift Deep Research/Shared/KeychainStore.swift:13-60`  
   - **Category:** robustness · **Effort:** S · **Confidence:** medium · **Verdict:** confirmed  
   - **Problem:** get() returns nil and set()/delete() return Bool with the underlying OSStatus discarded (no logging of the SecItem* status). A failure such as errSecInteractionNotAllowed (item not accessible because device is locked — directly caused by the AfterFirstUnlock choice in sec-keychain-accessibility-4) is indistinguishable from 'no key configured'. Callers like WebSearchTool.makeDefault and mirofishPayload then silently treat a transient Keychain failure as 'no key', degrading the workflow with no diagnostic.  
