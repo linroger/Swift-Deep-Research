@@ -709,3 +709,41 @@ AppEnvironment decomposition, no-tests-1). Work top-down in EXECPLAN2.md.
 
   CATALOG PROGRESS: 61 / 150 findings done (41%). Branch audit-remediation-batch5
   (commits 21a2f2a batch5, + this batch6). Not yet pushed/merged.
+
+  ========================================================================
+  SESSION 2026-06-15 (continuation) — Batch 7: DeerFlow correctness + UI
+  responsiveness (+20 findings, BUILD SUCCEEDED Debug/macOS, 0 errors/0
+  warnings). 4-agent workflow over disjoint files (DeerFlowEngine;
+  AppEnvironment+ForecastRun; view-perf: DraftCard/SessionSidebar/Research-
+  ConsoleView/ForecastOnboardingView; view-misc: SessionExporter/MainScene/
+  DocumentUploadView). Main-loop fixup: the deinit-cancel finding hit a Swift 6
+  snag — a nonisolated deinit can't touch a MainActor @Observable Task property;
+  resolved with @ObservationIgnored + nonisolated(unsafe) on streamTask/pollTask
+  (Task is Sendable; assigned only on MainActor, read at end-of-life — no race),
+  which also clears the spurious 'no effect' warning.
+
+  DeerFlow (deerflow-2,3,4,5*,6,7*,8,10,11,12): recency-windowed observationDigest
+  (last 5, 9KB cap → ends O(steps^2)); fast preset forces >=1 research step
+  before honoring hasEnoughContext; budget-headroom check skips a doomed re-plan;
+  processing steps keep web tools narrowed (*WorkerAgent prompt-gating deferred);
+  only running steps fold into the emitted plan; planner parse failure emits a
+  visible warning (*LLMJSON brace-scan hardening deferred to shared util);
+  wall-clock bust ends with reflectionConcluded; KB stays first-class via kbEnabled
+  even when title list fails/empty; investigation tool calls counted vs per-worker
+  budget; maxStepsPerPlan (fast2/std4/thorough6) decoupled from maxWorkers.
+
+  UI: EventEnvelope reuses one JSONEncoder + encodes payload directly (no
+  AnyJSON round-trip); continueResearch archives the real prior question via a
+  new activeQuery (was self.query → mislabeled multi-turn transcripts); LiveSession
+  .start() uses a graceful guard not a crashing precondition; LiveSession/ForecastRun
+  deinit cancel their tasks; DraftCard throttles per-token inline-citation
+  re-tokenization to ~1/120ms with a guaranteed trailing flush (O(n^2)→O(n));
+  SessionSidebar memoizes a per-session search blob keyed by id/updatedAt;
+  ResearchConsoleView/ForecastOnboardingView key list rows on stable content id
+  not enumerated offset; SessionExporter renders real markdown→HTML (escaped,
+  dependency-free) + unicode-preserving filename; MainScene inspector auto-reveal
+  is per-session one-shot; DocumentUploadView drop uses a single MainActor hop and
+  surfaces load errors via kb.lastError.
+
+  CATALOG PROGRESS: 81 / 150 findings done (54%). Branch audit-remediation-batch5
+  (commits 21a2f2a, 39063fe, + this batch7). Not yet pushed/merged.

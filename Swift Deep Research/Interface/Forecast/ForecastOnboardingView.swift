@@ -213,8 +213,12 @@ struct ForecastOnboardingView: View {
     private func console(_ onboarding: ForecastOnboarding) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 1) {
-                ForEach(Array(onboarding.consoleLines.enumerated()), id: \.offset) { _, line in
-                    Text(line.isEmpty ? " " : line)
+                // Key on stable content-derived ids rather than the enumerated
+                // offset: consoleLines trims from the front past 600 lines, so
+                // offsets shift and offset-keyed rows would all rebuild. Pairing
+                // each line with an occurrence index keeps unchanged rows stable.
+                ForEach(Self.identifiedConsoleLines(onboarding.consoleLines)) { row in
+                    Text(row.line.isEmpty ? " " : row.line)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -226,6 +230,24 @@ struct ForecastOnboardingView: View {
         }
         .frame(height: 180)
         .background(Color.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// A console line with a content-derived identity stable across front-trims.
+    /// The setup script emits no per-line id, so identity is the line text plus
+    /// an occurrence index (the Nth identical line), keeping duplicate blank/
+    /// repeated lines distinct while preserving identity as the buffer scrolls.
+    private struct OnboardingConsoleLine: Identifiable {
+        let id: String
+        let line: String
+    }
+
+    private static func identifiedConsoleLines(_ lines: [String]) -> [OnboardingConsoleLine] {
+        var seen: [String: Int] = [:]
+        return lines.map { line in
+            let occurrence = seen[line, default: 0]
+            seen[line] = occurrence + 1
+            return OnboardingConsoleLine(id: "\(occurrence)\u{1F}\(line)", line: line)
+        }
     }
 
     // MARK: Step 4 — launch

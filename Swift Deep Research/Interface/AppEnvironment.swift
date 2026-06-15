@@ -346,7 +346,16 @@ public final class LiveSession: Identifiable {
     public var maxRounds: Int = 1
     public var lastCritique: Reflector.Critique?
 
-    public enum Status: String, Sendable { case idle, planning, working, synthesizing, reflecting, complete, failed, cancelled }
+    public enum Status: String, Sendable {
+        case idle, planning, working, synthesizing, reflecting, complete, failed, cancelled
+        /// Active phases where a stream task is expected to be running.
+        var isInflight: Bool {
+            switch self {
+            case .planning, .working, .synthesizing, .reflecting: true
+            case .idle, .complete, .failed, .cancelled: false
+            }
+        }
+    }
 
     public struct ActivityEntry: Sendable, Identifiable {
         public let id = UUID()
@@ -387,21 +396,42 @@ public final class LiveSession: Identifiable {
     }
 
     private let store: ResearchStore
-    private var streamTask: Task<Void, Never>?
+    // `@ObservationIgnored` (no view observes a Task handle) + `nonisolated(unsafe)`
+    // so the nonisolated `deinit` can cancel it. Assigned only on the MainActor and
+    // read from deinit at end-of-life when no other reference exists (no real race);
+    // a `Task` handle is Sendable.
+    @ObservationIgnored private nonisolated(unsafe) var streamTask: Task<Void, Never>?
     private var storedSession: StoredSession?
     private var draftTurn: StoredTurn?
     private var eventSequence: Int = 0
     private var conversation: ConversationContext = ConversationContext()
+    /// The question driving the *current* turn. Unlike the immutable `query`
+    /// (the original session prompt), this advances with each follow-up, so the
+    /// archived transcript labels every turn with the actual question asked.
+    private var activeQuery: String
 
     public init(query: String, configuration: EngineConfiguration, store: ResearchStore) {
         self.sessionID = UUID()
         self.query = query
+        self.activeQuery = query
         self.configuration = configuration
         self.store = store
     }
 
+    /// A run is in flight when its stream task exists and the status hasn't yet
+    /// reached a terminal state. Single source of truth for both `start()` and
+    /// `continueResearch()` so the re-entrancy rule lives in one place.
+    private var isRunning: Bool {
+        streamTask != nil && status.isInflight
+    }
+
     public func start() {
-        precondition(streamTask == nil, "LiveSession already started")
+        // A graceful early-return, not a `precondition` — a double-start must not
+        // crash the app on a user-facing action; just ignore the redundant call.
+        guard !isRunning else {
+            Log.engine.warning("LiveSession.start() ignored: a run is already in flight")
+            return
+        }
         status = .planning
         do {
             let providerName = configuration.workerProvider.displayName
@@ -418,15 +448,19 @@ public final class LiveSession: Identifiable {
     /// Follow-up turn. Resets per-turn state (workers, draft, citations) but
     /// preserves `conversation` and `turnHistory` so the planner has memory.
     public func continueResearch(query: String) {
-        guard streamTask == nil || status == .complete || status == .failed || status == .cancelled else {
-            return
-        }
-        // Archive the prior draft into the transcript before resetting.
+        // Refuse a follow-up while a turn is still streaming; uses the same
+        // `isRunning` rule as `start()` rather than re-deriving the condition.
+        guard !isRunning else { return }
+        // Archive the prior draft into the transcript before resetting. Use
+        // `activeQuery` — the question that actually produced this draft — not
+        // `self.query` (the immutable original prompt), so 2nd+ follow-ups don't
+        // mislabel every archived turn with the first question's text.
         if !draftMarkdown.isEmpty {
+            let priorQuery = activeQuery
             turnHistory.append(TurnRecord(
                 id: UUID(),
                 role: .user,
-                query: self.query,
+                query: priorQuery,
                 markdown: "",
                 citations: [],
                 createdAt: .now
@@ -434,12 +468,14 @@ public final class LiveSession: Identifiable {
             turnHistory.append(TurnRecord(
                 id: UUID(),
                 role: .assistant,
-                query: self.query,
+                query: priorQuery,
                 markdown: draftMarkdown,
                 citations: citations,
                 createdAt: .now
             ))
         }
+        // This follow-up's question becomes the active one for the next archive.
+        activeQuery = query
         // Reset per-turn UI state; keep sources and conversation memory.
         plan = nil
         workers.removeAll()
@@ -496,6 +532,19 @@ public final class LiveSession: Identifiable {
         if status != .complete { status = .cancelled }
     }
 
+    /// Defense-in-depth: if the last reference is dropped without an explicit
+    /// `cancel()`, stop the in-flight engine run so a leaked stream doesn't keep
+    /// burning tokens. `deinit` is nonisolated, but a `Task` handle is `Sendable`
+    /// and safe to cancel from any isolation, so we cancel it directly.
+    deinit {
+        streamTask?.cancel()
+    }
+
+    /// One reused encoder for all persisted events — avoids a fresh `JSONEncoder`
+    /// allocation per event on the MainActor during streaming. Confined to the
+    /// MainActor (LiveSession is `@MainActor`), so single-threaded reuse is safe.
+    private static let eventEncoder = JSONEncoder()
+
     /// Whether an event warrants a durable `StoredEvent` row. Transient,
     /// high-frequency streaming deltas are excluded so the persistence layer
     /// isn't hit thousands of times per run on the MainActor (see `ingest`).
@@ -518,7 +567,11 @@ public final class LiveSession: Identifiable {
         // on `.draftReady`) and the meaningful timeline events below; the token
         // stream is reconstructable from the draft and is never replayed verbatim.
         if let storedSession, Self.shouldPersist(event) {
-            let payload = (try? JSONEncoder().encode(EventEnvelope(event: event)))
+            // Reuse one shared encoder (Self.eventEncoder) instead of allocating a
+            // fresh JSONEncoder per event, and let `EventEnvelope` encode the inner
+            // value straight into the payload — no encode→string→AnyJSON.parse→
+            // re-encode round-trip — so the durable record costs a single pass.
+            let payload = (try? Self.eventEncoder.encode(EventEnvelope(event: event)))
                 .flatMap { String(data: $0, encoding: .utf8) } ?? ""
             try? store.appendEvent(kind: eventKind(event),
                                    summary: eventSummary(event),
@@ -699,32 +752,43 @@ public final class LiveSession: Identifiable {
 }
 
 /// Codable wrapper so events can be persisted in `StoredEvent.payloadJSON`.
+/// Only the three event kinds with a durable payload carry `data`; everything
+/// else encodes `{kind, timestamp}` with no payload work. The payload value is
+/// encoded straight into the output — no intermediate `AnyJSON.parse` round-trip —
+/// so building the record is a single encode pass.
 private struct EventEnvelope: Encodable {
     let kind: String
     let timestamp: Date
-    let data: AnyJSON?
+    /// Type-erased payload value, encoded directly into the `data` key. `nil` for
+    /// events that don't carry a durable payload.
+    private let data: AnyEncodable?
+
+    private enum CodingKeys: String, CodingKey { case kind, timestamp, data }
 
     init(event: ResearchEvent) {
         self.timestamp = .now
         switch event {
         case .planEmitted(let p):
             self.kind = "planEmitted"
-            self.data = Self.encodeAny(p)
+            self.data = AnyEncodable(p)
         case .draftReady(let d):
             self.kind = "draftReady"
-            self.data = Self.encodeAny(d)
+            self.data = AnyEncodable(d)
         case .citationAdded(let c):
             self.kind = "citationAdded"
-            self.data = Self.encodeAny(c)
+            self.data = AnyEncodable(c)
         default:
             self.kind = String(describing: event).prefix(while: { $0 != "(" }).description
             self.data = nil
         }
     }
+}
 
-    private static func encodeAny<T: Encodable>(_ value: T) -> AnyJSON? {
-        guard let data = try? JSONEncoder().encode(value),
-              let str = String(data: data, encoding: .utf8) else { return nil }
-        return try? AnyJSON.parse(str)
-    }
+/// Minimal type eraser that encodes the wrapped value as-is, so `EventEnvelope`
+/// can nest heterogeneous payloads (plan / draft / citation) without the prior
+/// encode→string→`AnyJSON.parse`→re-encode round-trip.
+private struct AnyEncodable: Encodable {
+    private let encodeValue: (Encoder) throws -> Void
+    init<T: Encodable>(_ value: T) { self.encodeValue = value.encode }
+    func encode(to encoder: Encoder) throws { try encodeValue(encoder) }
 }

@@ -34,13 +34,18 @@ struct ResearchConsoleView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 2) {
-                            ForEach(Array(run.researchLines.enumerated()), id: \.offset) { idx, line in
-                                Text(line)
+                            // Key on stable content-derived ids (not the enumerated
+                            // offset): researchLines is fully replaced by a sliding
+                            // 200-line window each poll, so identical content lands
+                            // on new offsets and offset-keyed rows would all rebuild.
+                            // Content-keyed rows keep identity across the window shift
+                            // so SwiftUI diffs appends instead of the whole list.
+                            ForEach(Self.identified(run.researchLines)) { row in
+                                Text(row.line)
                                     .font(.system(.caption, design: .monospaced))
-                                    .foregroundStyle(colorFor(line))
+                                    .foregroundStyle(colorFor(row.line))
                                     .textSelection(.enabled)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .id(idx)
                             }
                             Color.clear.frame(height: 1).id(-1)
                         }
@@ -53,6 +58,25 @@ struct ResearchConsoleView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// A console line paired with a content-derived identity that is stable
+    /// across the sliding 200-line window. The backend supplies no per-line
+    /// sequence number, so identity is the line text plus an occurrence index
+    /// (the Nth identical line) — duplicate lines stay distinct, and an
+    /// unchanged line keeps the same id even as the window scrolls.
+    private struct ConsoleLine: Identifiable {
+        let id: String
+        let line: String
+    }
+
+    private static func identified(_ lines: [String]) -> [ConsoleLine] {
+        var seen: [String: Int] = [:]
+        return lines.map { line in
+            let occurrence = seen[line, default: 0]
+            seen[line] = occurrence + 1
+            return ConsoleLine(id: "\(occurrence)\u{1F}\(line)", line: line)
         }
     }
 

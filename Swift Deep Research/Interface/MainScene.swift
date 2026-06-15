@@ -16,6 +16,11 @@ public struct MainScene: View {
     @State private var showDocuments: Bool = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .doubleColumn
     @State private var showInspector: Bool = false
+    /// Identity of the session/run for which the inspector has already been
+    /// auto-revealed, so the reveal fires at most once per context and a manual
+    /// close isn't fought by the next status change. nil means "not yet
+    /// revealed for the current context".
+    @State private var autoRevealedContext: String?
 
     public init() {}
 
@@ -68,6 +73,10 @@ public struct MainScene: View {
                         env.live = nil
                         env.selectedSessionID = nil
                         query = ""
+                        // Clear inspector state so it doesn't leak into the next
+                        // session (the auto-reveal will re-arm for fresh context).
+                        showInspector = false
+                        autoRevealedContext = nil
                     } label: {
                         Label("New Research", systemImage: "square.and.pencil")
                     }
@@ -99,9 +108,21 @@ public struct MainScene: View {
                 .help("Settings (⌘,)")
             }
         }
+        .onChange(of: inspectorContextID) { _, newContext in
+            // Context changed (New Research, picked another session, run ended):
+            // re-arm the one-shot auto-reveal and don't let inspector state from
+            // the previous session leak into the new one.
+            autoRevealedContext = nil
+            if newContext == nil { showInspector = false }
+        }
         .onChange(of: env.live?.status) { _, newStatus in
-            // Auto-reveal inspector once the engine has something to show.
-            if let s = newStatus, s != LiveSession.Status.idle, !showInspector {
+            // Auto-reveal the inspector once per context the first time the
+            // engine has something to show. Tracking the revealed context means
+            // a later status change won't fight a manual close, and the reveal
+            // doesn't re-fire for a session it already handled.
+            guard let context = inspectorContextID, autoRevealedContext != context else { return }
+            if let s = newStatus, s != LiveSession.Status.idle {
+                autoRevealedContext = context
                 showInspector = true
             }
         }
@@ -169,6 +190,17 @@ public struct MainScene: View {
     }
 
     // MARK: - Session helpers
+
+    /// Stable identity of the context the inspector is bound to: the live run's
+    /// sessionID while a run is active, otherwise the selected stored session.
+    /// nil when neither exists (e.g. after New Research) so the inspector can be
+    /// dismissed and the auto-reveal re-armed. The "live:" / "stored:" prefixes
+    /// keep the two namespaces distinct.
+    private var inspectorContextID: String? {
+        if let live = env.live { return "live:\(live.sessionID.uuidString)" }
+        if let id = env.selectedSessionID { return "stored:\(id.uuidString)" }
+        return nil
+    }
 
     private var currentStoredSession: StoredSession? {
         guard let id = env.selectedSessionID else { return nil }

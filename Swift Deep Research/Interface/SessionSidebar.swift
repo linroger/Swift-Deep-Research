@@ -8,6 +8,10 @@ struct SessionSidebar: View {
     @Environment(\.modelContext) private var modelContext
     let sessions: [StoredSession]
     @State private var search: String = ""
+    /// Caches a precomputed lowercased searchable blob per session so the search
+    /// filter doesn't re-lowercase every query/title/turn/source on each
+    /// keystroke (each body re-eval). Invalidated per session by `updatedAt`.
+    @State private var searchIndex = SessionSearchIndex()
 
     var body: some View {
         @Bindable var env = env
@@ -67,13 +71,10 @@ struct SessionSidebar: View {
     private var filtered: [StoredSession] {
         guard !search.trimmingCharacters(in: .whitespaces).isEmpty else { return sessions }
         let needle = search.lowercased()
-        return sessions.filter { session in
-            if session.query.lowercased().contains(needle) { return true }
-            if session.titleSummary.lowercased().contains(needle) { return true }
-            for turn in session.turns where turn.markdown.lowercased().contains(needle) { return true }
-            for src in session.sources where src.title.lowercased().contains(needle) || src.snippet.lowercased().contains(needle) { return true }
-            return false
-        }
+        // Match against a per-session blob that's lowercased once and cached, so
+        // a keystroke is O(sessions × one contains) rather than re-lowercasing
+        // every turn's full markdown and every source on every body re-eval.
+        return sessions.filter { searchIndex.blob(for: $0).contains(needle) }
     }
 
     @ViewBuilder
@@ -184,5 +185,29 @@ private struct LiveSessionRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+/// Memoizes a lowercased searchable blob per session for the sidebar filter.
+/// Building the blob walks every turn's markdown and every source once; the
+/// result is cached by session id and rebuilt only when the session's
+/// `updatedAt` changes, so per-keystroke filtering is a single `contains` over
+/// the cached string instead of re-lowercasing the whole corpus each body pass.
+/// MainActor-isolated because it is only ever read/mutated from the view body.
+@MainActor
+private final class SessionSearchIndex {
+    private struct Entry { let stamp: Date; let blob: String }
+    private var cache: [UUID: Entry] = [:]
+
+    func blob(for session: StoredSession) -> String {
+        if let entry = cache[session.id], entry.stamp == session.updatedAt {
+            return entry.blob
+        }
+        var parts: [String] = [session.query, session.titleSummary]
+        for turn in session.turns { parts.append(turn.markdown) }
+        for src in session.sources { parts.append(src.title); parts.append(src.snippet) }
+        let blob = parts.joined(separator: "\n").lowercased()
+        cache[session.id] = Entry(stamp: session.updatedAt, blob: blob)
+        return blob
     }
 }

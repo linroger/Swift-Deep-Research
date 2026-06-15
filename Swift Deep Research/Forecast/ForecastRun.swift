@@ -77,7 +77,11 @@ public final class ForecastRun: Identifiable {
     private let client: MiroFishClient
     private let store: ResearchStore
     private var record: ForecastRecord?
-    private var pollTask: Task<Void, Never>?
+    // `@ObservationIgnored` (no view observes a Task handle) + `nonisolated(unsafe)`
+    // so the nonisolated `deinit` can cancel it. The handle is only assigned on the
+    // MainActor and read from deinit at end-of-life when no other reference exists,
+    // so the cross-isolation access has no real race; a `Task` is Sendable.
+    @ObservationIgnored private nonisolated(unsafe) var pollTask: Task<Void, Never>?
     private var agentLogCursor = 0
     private var lastPersistedReportLength = 0
 
@@ -136,6 +140,14 @@ public final class ForecastRun: Identifiable {
                 }
             }
         }
+    }
+
+    /// Defense-in-depth: if the last reference is dropped without an explicit
+    /// `cancel()`/`detach()`, stop the 2s status-poll loop so it doesn't keep
+    /// hitting the backend. `deinit` is nonisolated, but a `Task` handle is
+    /// `Sendable` and safe to cancel from any isolation.
+    deinit {
+        pollTask?.cancel()
     }
 
     /// Resume a failed/cancelled pipeline. MiroFish reuses completed stage

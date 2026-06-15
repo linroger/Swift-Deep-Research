@@ -85,7 +85,11 @@ public struct DeerFlowEngine: Sendable {
                     // DeerFlow's max_plan_iterations, scaled by the iteration
                     // preset: fast = 1 (single plan), standard = 2, thorough = 3.
                     let maxPlanIterations = max(1, min(iteration.maxRounds, 3))
-                    let maxSteps = max(1, min(4, config.budget.maxWorkers))
+                    // Sequential steps-per-plan is its own cost model (wall-clock
+                    // dominated), distinct from parallel-fan-out maxWorkers. Derive
+                    // it from the iteration tier so thorough actually plans deeper
+                    // chains: fast(maxRounds 1)→2, standard(3)→4, thorough(6)→6.
+                    let maxSteps = Self.maxStepsPerPlan(forMaxRounds: iteration.maxRounds)
                     var planIteration = 0
 
                     planning: while planIteration < maxPlanIterations {
@@ -97,6 +101,21 @@ public struct DeerFlowEngine: Sendable {
                             emit(.reflectionConcluded(continuing: false, remainingGaps: 0))
                             break planning
                         }
+                        // deerflow-4: before a re-plan round-trip, check budget
+                        // headroom. checkWallClock only throws once ALREADY over cap,
+                        // so without this the engine can spend a planner call + a full
+                        // step batch right at the edge and bust mid-step. On a non-first
+                        // iteration with little budget left, stop now and let the
+                        // reporter synthesize from what we already have.
+                        if planIteration > 1 {
+                            let snapshot = await budget.snapshot
+                            let wallNearlyGone = await budget.remainingWallClock < .seconds(20)
+                            if snapshot.tokenFraction >= 0.9 || wallNearlyGone {
+                                emit(.warning("Budget nearly exhausted — skipping further planning and synthesizing the report now."))
+                                emit(.reflectionConcluded(continuing: false, remainingGaps: 0))
+                                break planning
+                            }
+                        }
                         emit(.iterationStarted(round: planIteration, of: maxPlanIterations))
 
                         let dfPlan = try await Self.plan(
@@ -105,21 +124,53 @@ public struct DeerFlowEngine: Sendable {
                             investigation: planIteration == 1 ? investigation.markdown : "",
                             priorObservations: allOutputs.dropFirst().map(\.summary),
                             conversation: conversation,
-                            knowledgeBaseDocs: investigation.knowledgeBaseDocTitles,
+                            // deerflow-10: the verbose doc-list only adds value on the
+                            // first plan; on re-plan the planner already saw it, so pass
+                            // it empty to avoid prompt bloat while still flagging the KB
+                            // exists via kbEnabled.
+                            knowledgeBaseDocs: planIteration == 1 ? investigation.knowledgeBaseDocTitles : [],
+                            kbEnabled: config.useKnowledgeBase,
                             maxSteps: maxSteps,
                             instructions: config.systemPromptAddendum,
                             budget: budget,
-                            isReplan: planIteration > 1
+                            isReplan: planIteration > 1,
+                            emit: emit
                         )
 
-                        let newSubtasks = dfPlan.steps.map { step in
+                        var planSteps = dfPlan.steps
+                        // deerflow-3: guarantee the fast preset (single plan
+                        // iteration) actually researches. On the FIRST iteration,
+                        // if the planner short-circuits to "enough context" before
+                        // any worker has run, synthesizing from the background
+                        // snippets alone is materially weaker than the native fast
+                        // flow. When it emitted steps, run them anyway; when it
+                        // emitted none, force one direct research step.
+                        let noStepsRunYet = allOutputs.count <= 1  // only the investigation
+                        if planIteration == 1 && noStepsRunYet && planSteps.isEmpty {
+                            // Whether the planner declared sufficiency or simply emitted
+                            // no steps, fast mode must still do real research rather than
+                            // synthesize from background snippets alone.
+                            planSteps = [DFStep(title: query,
+                                                description: "Research the user's question directly to ground the report in cited findings.",
+                                                stepType: .research,
+                                                suggestedQueries: [query])]
+                        }
+                        // Honor sufficiency only after at least one step batch has run.
+                        let stopAfterPlan = (dfPlan.hasEnoughContext || planSteps.isEmpty)
+                            && !(planIteration == 1 && noStepsRunYet && !planSteps.isEmpty)
+
+                        let newSubtasks = planSteps.map { step in
                             ResearchPlan.Subtask(
                                 question: step.title,
                                 rationale: step.description,
                                 suggestedQueries: step.suggestedQueries
                             )
                         }
-                        executedSubtasks.append(contentsOf: newSubtasks)
+                        // deerflow-6: only fold steps that will actually run into the
+                        // emitted plan. Appending before the short-circuit advertised
+                        // subtasks that produced no observations.
+                        let runningSubtasks = stopAfterPlan ? [] : newSubtasks
+                        executedSubtasks.append(contentsOf: runningSubtasks)
                         let plan = ResearchPlan(
                             userQuery: query,
                             restatement: dfPlan.thought.isEmpty ? dfPlan.title : dfPlan.thought,
@@ -131,9 +182,9 @@ public struct DeerFlowEngine: Sendable {
                         aggregatePlan = plan
                         emit(.planEmitted(plan))
 
-                        if dfPlan.hasEnoughContext || newSubtasks.isEmpty {
-                            // Planner judged the gathered context sufficient —
-                            // hand off to the reporter.
+                        if stopAfterPlan {
+                            // Planner judged the gathered context sufficient (and at
+                            // least one step batch has run) — hand off to the reporter.
                             emit(.reflectionConcluded(continuing: false, remainingGaps: 0))
                             break planning
                         }
@@ -145,14 +196,31 @@ public struct DeerFlowEngine: Sendable {
                             do {
                                 try await budget.checkWallClock()
                             } catch {
+                                // deerflow-8: balance any outstanding reflection state
+                                // before bailing mid-batch, mirroring the top-of-loop
+                                // guard, so the activity feed doesn't look stuck.
                                 emit(.warning("Wall-clock budget reached — stopping after step \(index) of \(newSubtasks.count)."))
+                                emit(.reflectionConcluded(continuing: false, remainingGaps: 0))
                                 break planning
                             }
-                            let stepKind = dfPlan.steps[index].stepType
+                            // Index planSteps (not dfPlan.steps): planSteps carries the
+                            // forced direct step the deerflow-3 guard may have injected,
+                            // so it stays aligned with newSubtasks one-for-one.
+                            let stepKind = planSteps[index].stepType
+                            // Processing steps compute from earlier findings only —
+                            // narrow away web_search/fetch_url. (The WorkerAgent prompt
+                            // still names web tools in its strategy; gating that text on
+                            // tool presence is a WorkerAgent concern — see deerflow-5.)
                             let stepTools = stepKind == .processing
                                 ? tools.filter { ["calculator", "current_datetime", "knowledge_base"].contains($0.spec.name) }
                                 : tools
-                            let observations = WorkerOutput.digest(of: allOutputs)
+                            // Bound the threaded observations to a recency window so a
+                            // long thorough run (≈13 outputs) doesn't carry every prior
+                            // finding into every step — token cost would otherwise grow
+                            // O(steps²). The planner already owns cross-step gap analysis
+                            // (it gets priorObservations + the investigation), so workers
+                            // only need the most recent evidence to build on.
+                            let observations = Self.observationDigest(of: allOutputs)
                             let worker = WorkerAgent(
                                 id: WorkerID.make(subtask.question),
                                 llm: workerLLM,
@@ -273,12 +341,21 @@ public struct DeerFlowEngine: Sendable {
         // Private knowledge base first — DeerFlow's RAG-resources precedence.
         if config.useKnowledgeBase {
             let kbClient = SeekDBClient(host: config.seekdbHost)
-            if let docs = try? await kbClient.listDocuments() {
-                kbDocTitles = docs.map(\.title)
+            do {
+                kbDocTitles = try await kbClient.listDocuments().map(\.title)
+            } catch {
+                // deerflow-10: a transient list failure must not silently demote the
+                // KB from a first-class planner resource. The planner is still told a
+                // KB is available (via the kbEnabled flag) even with an empty title
+                // list, and the user sees why the doc list is missing.
+                emit(.warning("Knowledge base document list unavailable (\(error.localizedDescription)); the planner will still be told to query it."))
             }
             if let kbTool = tools.first(where: { $0.spec.name == "knowledge_base" }) {
                 let args = #"{"query": \#(LLMJSON.quoted(query)), "k": 6}"#
                 let invocation = ToolInvocation(name: "knowledge_base", argumentsJSON: args)
+                // deerflow-11: route through the per-worker tool-call budget like a
+                // real worker, so the investigation's calls are capped and counted.
+                try? await budget.registerToolCall(by: id)
                 emit(.toolInvoked(id, invocation))
                 let outcome: ToolOutcome
                 do {
@@ -298,6 +375,8 @@ public struct DeerFlowEngine: Sendable {
         if let search = tools.first(where: { $0.spec.name == "web_search" }) {
             let args = #"{"query": \#(LLMJSON.quoted(query))}"#
             let invocation = ToolInvocation(name: "web_search", argumentsJSON: args)
+            // deerflow-11: count this against the per-worker tool-call budget too.
+            try? await budget.registerToolCall(by: id)
             emit(.toolInvoked(id, invocation))
             let outcome: ToolOutcome
             do {
@@ -388,20 +467,38 @@ public struct DeerFlowEngine: Sendable {
                              priorObservations: [String],
                              conversation: ConversationContext,
                              knowledgeBaseDocs: [String],
+                             kbEnabled: Bool,
                              maxSteps: Int,
                              instructions: String,
                              budget: BudgetMeter,
-                             isReplan: Bool) async throws -> DFPlan {
+                             isReplan: Bool,
+                             emit: @Sendable (ResearchEvent) -> Void) async throws -> DFPlan {
         let extra = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
         let appendix = extra.isEmpty ? "" : "\n\n# User instructions (honor unless they conflict with safety)\n\(extra)"
-        let kbNote = knowledgeBaseDocs.isEmpty ? "" : """
+        // deerflow-10: when the KB is enabled but the title list is unavailable
+        // (transient SeekDB list failure) or omitted on re-plan, still tell the
+        // planner a private KB exists so RAG-resource precedence isn't lost.
+        let kbNote: String
+        if !knowledgeBaseDocs.isEmpty {
+            kbNote = """
 
-        # Private knowledge base resources
-        The user has uploaded private documents the research steps can search with the \
-        `knowledge_base` tool: \(knowledgeBaseDocs.prefix(20).joined(separator: " | ")). \
-        When a step may be answered by these documents, say so in its description and \
-        instruct the researcher to query the knowledge base FIRST, then corroborate on the web.
-        """
+            # Private knowledge base resources
+            The user has uploaded private documents the research steps can search with the \
+            `knowledge_base` tool: \(knowledgeBaseDocs.prefix(20).joined(separator: " | ")). \
+            When a step may be answered by these documents, say so in its description and \
+            instruct the researcher to query the knowledge base FIRST, then corroborate on the web.
+            """
+        } else if kbEnabled {
+            kbNote = """
+
+            # Private knowledge base resources
+            A private knowledge base is available via the `knowledge_base` tool. When a step \
+            may be answered by the user's private documents, instruct the researcher to query \
+            the knowledge base FIRST, then corroborate on the web.
+            """
+        } else {
+            kbNote = ""
+        }
         let system = """
         You are a professional Deep Research planner following the DeerFlow methodology. \
         Study the question and the context gathered so far, then either declare the context \
@@ -453,7 +550,14 @@ public struct DeerFlowEngine: Sendable {
         let json = LLMJSON.extractObject(completion.text)
         guard let data = json.data(using: .utf8),
               let wire = try? JSONDecoder().decode(DFPlanWire.self, from: data) else {
+            // deerflow-7: surface degraded planning to the user, not just the log,
+            // so a persistently malformed planner is visible rather than silent.
+            // (The brace-scan in LLMJSON.extractObject is shared; hardening it to be
+            // string-literal-aware is out of this file's scope.)
             Log.engine.warning("DeerFlow planner JSON parse failed; falling back to a single direct step. Raw: \(completion.text, privacy: .public)")
+            emit(.warning(isReplan
+                ? "Planner output couldn't be parsed on re-plan — finishing with the findings gathered so far."
+                : "Planner output couldn't be parsed — researching the question directly."))
             return DFPlan(
                 title: query,
                 thought: "Planner output could not be parsed — researching the question directly.",
@@ -477,6 +581,34 @@ public struct DeerFlowEngine: Sendable {
     }
 
     // MARK: - Helpers
+
+    /// Sequential steps allowed per plan iteration, keyed off the iteration
+    /// preset's `maxRounds` (fast 1 / standard 3 / thorough 6) rather than the
+    /// parallel-fan-out `maxWorkers`. DeerFlow steps run one-at-a-time and each
+    /// threads an observation digest, so this is a latency-bounded budget, not a
+    /// parallelism one. Maps fast→2, standard→4, thorough→6.
+    private static func maxStepsPerPlan(forMaxRounds maxRounds: Int) -> Int {
+        switch maxRounds {
+        case ..<2: return 2   // fast preset
+        case 2...3: return 4  // standard preset
+        default: return 6     // thorough preset
+        }
+    }
+
+    /// Recency-windowed digest of prior outputs, threaded into the next step's
+    /// prompt as `extraContext`. Unlike `WorkerOutput.digest` (which maps EVERY
+    /// entry with no count cap), this keeps only the most recent `window` outputs
+    /// and caps the aggregate at `charBudget`, mirroring the suffix() recency
+    /// pattern in `ConversationContext.plannerPreamble`. The planner separately
+    /// owns full cross-step gap analysis, so workers don't need the entire history.
+    private static func observationDigest(of outputs: [WorkerOutput],
+                                          window: Int = 5,
+                                          charBudget: Int = 9_000) -> String {
+        let recent = outputs.suffix(window)
+        let perEntry = max(1_000, charBudget / max(recent.count, 1))
+        return recent.map { "## \($0.subtask.question)\n\(Clip.clip($0.summary, to: perEntry))" }
+                     .joined(separator: "\n\n")
+    }
 
     /// Digest of everything found so far, threaded into the next step's prompt.
     /// Clipped per-step so a long run doesn't blow the context window.

@@ -310,18 +310,55 @@ struct DocumentUploadView: View {
     }
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
-        var consumedAny = false
-        for provider in providers {
-            guard provider.canLoadObject(ofClass: URL.self) else { continue }
-            consumedAny = true
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                guard let url else { return }
-                Task { @MainActor in
+        // Keep only providers that can actually vend a file URL; the drop is
+        // "accepted" iff at least one qualifies. NSItemProvider is non-Sendable,
+        // so it must not be captured into the @MainActor Task below — we hand the
+        // filtered array to a nonisolated loader via a `sending` parameter and
+        // let only the resolved URLs (Sendable) cross back to the main actor.
+        let fileProviders = providers.filter { $0.canLoadObject(ofClass: URL.self) }
+        guard !fileProviders.isEmpty else { return false }
+        // Resolve every URL, then ingest them through a single awaited loop so the
+        // files import in drop order with shared progress/error state, instead of
+        // each load completion racing its own MainActor task. Load failures
+        // surface via kb.lastError rather than being silently dropped.
+        Task { @MainActor in
+            for result in await Self.loadURLs(from: fileProviders) {
+                switch result {
+                case .success(let url):
                     await kb.ingestFile(at: url)
+                case .failure(let error):
+                    kb.lastError = "Couldn't read a dropped file: \(error.localizedDescription)"
                 }
             }
         }
-        return consumedAny
+        return true
+    }
+
+    /// Resolves each provider's file URL, preserving drop order. Runs off the
+    /// main actor; the providers are `sending`-transferred in so the non-Sendable
+    /// NSItemProviders never cross into the MainActor Task. Only the resulting
+    /// `[Result<URL, Error>]` (Sendable) is returned across the boundary.
+    private nonisolated static func loadURLs(
+        from providers: sending [NSItemProvider]
+    ) async -> [Result<URL, Error>] {
+        var results: [Result<URL, Error>] = []
+        for provider in providers {
+            do {
+                let url = try await withCheckedThrowingContinuation { continuation in
+                    _ = provider.loadObject(ofClass: URL.self) { url, error in
+                        if let url {
+                            continuation.resume(returning: url)
+                        } else {
+                            continuation.resume(throwing: error ?? CocoaError(.fileReadUnknown))
+                        }
+                    }
+                }
+                results.append(.success(url))
+            } catch {
+                results.append(.failure(error))
+            }
+        }
+        return results
     }
 
     private static var supportedContentTypes: [UTType] {

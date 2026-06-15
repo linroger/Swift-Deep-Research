@@ -8,11 +8,22 @@ struct DraftCard: View {
     let discovered: [DiscoveredSource]
 
     @State private var showAllSources = false
+    /// Throttled copy of `markdown` that drives the expensive inline-citation
+    /// render. The live draft grows by one token at a time; re-tokenizing the
+    /// whole document on every token is O(n²) over a synthesis. Coalescing the
+    /// updates to ~at-most-every-120ms (trailing edge guaranteed) breaks the
+    /// per-token work while still flushing the final, complete text.
+    @State private var renderedMarkdown: String = ""
+    @State private var throttleActive = false
+    /// The most recent `markdown` value, mirrored into @State so the deferred
+    /// trailing-edge flush reads the latest text (a SwiftUI view value can't
+    /// read its own up-to-date `let` props from a captured closure).
+    @State private var latestMarkdown: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            InlineCitationsView(markdown: stripFinalSourcesSection(from: markdown),
+            InlineCitationsView(markdown: stripFinalSourcesSection(from: renderedMarkdown),
                                 sources: orderedSources,
                                 discovered: discovered,
                                 citations: citations)
@@ -27,6 +38,34 @@ struct DraftCard: View {
         }
         .padding(16)
         .glassCard()
+        // Seed the throttled copy immediately so a stored/complete draft renders
+        // in full on first appearance (no streaming, no delay).
+        .onAppear {
+            latestMarkdown = markdown
+            if renderedMarkdown != markdown { renderedMarkdown = markdown }
+        }
+        .onChange(of: markdown) { _, newValue in scheduleRender(newValue) }
+    }
+
+    /// Coalesce per-token markdown updates: render the latest value at most once
+    /// per cooldown window, always flushing the final value on the trailing
+    /// edge so the completed draft is never left stale.
+    private func scheduleRender(_ latest: String) {
+        latestMarkdown = latest   // always track the newest text for the flush
+        guard throttleActive else {
+            // Leading edge: render now and open a cooldown window.
+            renderedMarkdown = latest
+            throttleActive = true
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(120))
+                throttleActive = false
+                // Trailing edge: flush the newest value accumulated meanwhile.
+                if renderedMarkdown != latestMarkdown { renderedMarkdown = latestMarkdown }
+            }
+            return
+        }
+        // Within cooldown: drop the intermediate render; the trailing-edge flush
+        // above will pick up `latestMarkdown` when the window closes.
     }
 
     private var header: some View {

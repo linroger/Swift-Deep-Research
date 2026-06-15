@@ -83,13 +83,19 @@ public enum SessionExporter {
         for turn in session.turns.sorted(by: { $0.createdAt < $1.createdAt }) {
             let header = turn.role == "user" ? "Question" : "Synthesis"
             body += "<section class=\"turn turn-\(turn.role)\"><h2>\(header)</h2>"
-            body += "<pre class=\"md\">\(escapeHTML(turn.markdown))</pre></section>"
+            // Render the markdown to real HTML so headings, lists, emphasis and
+            // links display as structure rather than as raw markdown source.
+            // Inline [N] citation markers become in-page anchors to the source
+            // archive list below.
+            body += markdownToHTML(turn.markdown)
+            body += "</section>"
         }
         var sources = ""
         if !session.sources.isEmpty {
             sources = "<section class=\"sources\"><h2>Source archive</h2><ol>"
-            for s in session.sources.sorted(by: { $0.fetchedAt < $1.fetchedAt }) {
-                sources += "<li><a href=\"\(escapeHTML(s.urlString))\">\(escapeHTML(s.title))</a>"
+            for (i, s) in session.sources.sorted(by: { $0.fetchedAt < $1.fetchedAt }).enumerated() {
+                // id anchor lets inline [N] markers in the body link here.
+                sources += "<li id=\"src-\(i + 1)\"><a href=\"\(escapeHTML(s.urlString))\">\(escapeHTML(s.title))</a>"
                 if !s.providerHint.isEmpty { sources += " — <em>\(escapeHTML(s.providerHint))</em>" }
                 sources += "</li>"
             }
@@ -105,11 +111,13 @@ public enum SessionExporter {
         body { font: 15px/1.55 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 24px; color: #1d1d1f; }
         h1 { font-size: 28px; }
         h2 { font-size: 18px; margin-top: 28px; border-bottom: 1px solid #e5e5e7; padding-bottom: 4px; }
-        pre.md { white-space: pre-wrap; word-wrap: break-word; font: inherit; }
         a { color: #0066cc; }
+        a.cite { font-size: 0.85em; vertical-align: super; text-decoration: none; }
+        code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; background: #f5f5f7; padding: 1px 4px; border-radius: 4px; }
+        blockquote { margin: 0 0 12px 0; padding-left: 12px; border-left: 3px solid #e5e5e7; color: #3c3c43; }
         .meta { color: #6e6e73; font-size: 12px; }
         .turn-user { background: #f5f5f7; padding: 16px; border-radius: 12px; }
-        ol { padding-left: 1.5em; }
+        ul, ol { padding-left: 1.5em; }
         </style>
         </head>
         <body>
@@ -196,12 +204,24 @@ public enum SessionExporter {
     // MARK: - Helpers
 
     private static func filename(session: StoredSession, ext: String) -> String {
-        let safe = session.query
-            .lowercased()
-            .replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        // Slug the query for the filename. Keep unicode letters/digits (so a
+        // non-Latin query yields a meaningful name rather than collapsing to the
+        // generic stub) and collapse everything else to hyphens.
+        let slug = session.query.lowercased().unicodeScalars.map { scalar -> Character in
+            (CharacterSet.alphanumerics.contains(scalar)) ? Character(scalar) : "-"
+        }
+        var safe = String(slug)
+        // Collapse runs of hyphens introduced by the mapping above.
+        safe = safe.replacingOccurrences(of: "-+", with: "-", options: .regularExpression)
+        safe = safe.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         let stub = String(safe.prefix(50))
-        return stub.isEmpty ? "research.\(ext)" : "\(stub).\(ext)"
+        // Fall back to a timestamp so concurrent exports of an empty/symbol-only
+        // query don't all collide on the same generic filename.
+        if stub.isEmpty {
+            let stamp = Int(session.createdAt.timeIntervalSince1970)
+            return "research-\(stamp).\(ext)"
+        }
+        return "\(stub).\(ext)"
     }
 
     private static func escapeHTML(_ s: String) -> String {
@@ -210,6 +230,174 @@ public enum SessionExporter {
         out = out.replacingOccurrences(of: "<", with: "&lt;")
         out = out.replacingOccurrences(of: ">", with: "&gt;")
         out = out.replacingOccurrences(of: "\"", with: "&quot;")
+        return out
+    }
+
+    // MARK: - Minimal markdown → HTML
+
+    /// Converts the common markdown constructs the synthesizer emits — ATX
+    /// headings, unordered/ordered lists, blockquotes, and paragraphs with
+    /// inline emphasis/links/code — into real HTML. Deliberately small and
+    /// dependency-free (the export path is `Foundation`-only); any line that
+    /// isn't a recognised block falls through as an escaped paragraph, so no
+    /// content is ever lost.
+    private static func markdownToHTML(_ markdown: String) -> String {
+        var html = ""
+        // Split into lines, then group consecutive list items / paragraph runs.
+        let lines = markdown.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        var i = 0
+
+        func flushParagraph(_ buffer: inout [String]) {
+            guard !buffer.isEmpty else { return }
+            let joined = buffer.joined(separator: " ")
+            html += "<p>\(inlineMarkdownToHTML(joined))</p>"
+            buffer.removeAll()
+        }
+
+        var paragraph: [String] = []
+        while i < lines.count {
+            let raw = lines[i]
+            let line = raw.trimmingCharacters(in: .whitespaces)
+
+            if line.isEmpty {
+                flushParagraph(&paragraph)
+                i += 1
+                continue
+            }
+
+            // ATX heading (#..######).
+            if let hashes = headingLevel(line) {
+                flushParagraph(&paragraph)
+                let text = line.drop(while: { $0 == "#" }).trimmingCharacters(in: .whitespaces)
+                html += "<h\(hashes)>\(inlineMarkdownToHTML(text))</h\(hashes)>"
+                i += 1
+                continue
+            }
+
+            // Unordered list block (-, *, +).
+            if isUnorderedItem(line) {
+                flushParagraph(&paragraph)
+                html += "<ul>"
+                while i < lines.count {
+                    let item = lines[i].trimmingCharacters(in: .whitespaces)
+                    guard isUnorderedItem(item) else { break }
+                    let content = item.dropFirst().trimmingCharacters(in: .whitespaces)
+                    html += "<li>\(inlineMarkdownToHTML(content))</li>"
+                    i += 1
+                }
+                html += "</ul>"
+                continue
+            }
+
+            // Ordered list block (1. 2. …).
+            if orderedItemContent(line) != nil {
+                flushParagraph(&paragraph)
+                html += "<ol>"
+                while i < lines.count {
+                    let item = lines[i].trimmingCharacters(in: .whitespaces)
+                    guard let content = orderedItemContent(item) else { break }
+                    html += "<li>\(inlineMarkdownToHTML(content))</li>"
+                    i += 1
+                }
+                html += "</ol>"
+                continue
+            }
+
+            // Blockquote.
+            if line.hasPrefix(">") {
+                flushParagraph(&paragraph)
+                let content = line.dropFirst().trimmingCharacters(in: .whitespaces)
+                html += "<blockquote>\(inlineMarkdownToHTML(content))</blockquote>"
+                i += 1
+                continue
+            }
+
+            // Otherwise accumulate into the current paragraph.
+            paragraph.append(line)
+            i += 1
+        }
+        flushParagraph(&paragraph)
+        return html
+    }
+
+    /// Returns the heading level (1...6) for an ATX heading line, or nil.
+    private static func headingLevel(_ line: String) -> Int? {
+        var count = 0
+        for ch in line {
+            if ch == "#" { count += 1 } else { break }
+        }
+        guard count >= 1, count <= 6 else { return nil }
+        // Require a space after the hashes to avoid matching "#tag".
+        let after = line.dropFirst(count)
+        return after.first == " " ? count : nil
+    }
+
+    private static func isUnorderedItem(_ line: String) -> Bool {
+        guard let first = line.first, first == "-" || first == "*" || first == "+" else { return false }
+        return line.dropFirst().first == " "
+    }
+
+    /// Returns the content of an ordered-list item ("1. foo" -> "foo"), or nil.
+    private static func orderedItemContent(_ line: String) -> String? {
+        var digits = ""
+        var idx = line.startIndex
+        while idx < line.endIndex, line[idx].isNumber {
+            digits.append(line[idx])
+            idx = line.index(after: idx)
+        }
+        guard !digits.isEmpty, idx < line.endIndex, line[idx] == "." else { return nil }
+        let rest = line[line.index(after: idx)...]
+        guard rest.first == " " else { return nil }
+        return rest.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Renders inline markdown — links, bold, italic, code — and turns inline
+    /// `[N]` citation markers into in-page anchors to the source archive.
+    /// Operates on escaped text so user content can't inject markup.
+    private static func inlineMarkdownToHTML(_ text: String) -> String {
+        var out = escapeHTML(text)
+
+        // Links: [label](url). Run before bare [N] linkification so anchor text
+        // isn't mistaken for a citation marker.
+        out = out.replacingOccurrences(
+            of: #"\[([^\]]+)\]\(([^)\s]+)\)"#,
+            with: "<a href=\"$2\">$1</a>",
+            options: .regularExpression
+        )
+        // Inline code spans.
+        out = out.replacingOccurrences(
+            of: #"`([^`]+)`"#,
+            with: "<code>$1</code>",
+            options: .regularExpression
+        )
+        // Bold (**text** or __text__).
+        out = out.replacingOccurrences(
+            of: #"\*\*([^*]+)\*\*"#,
+            with: "<strong>$1</strong>",
+            options: .regularExpression
+        )
+        out = out.replacingOccurrences(
+            of: #"__([^_]+)__"#,
+            with: "<strong>$1</strong>",
+            options: .regularExpression
+        )
+        // Italic (*text* or _text_).
+        out = out.replacingOccurrences(
+            of: #"\*([^*]+)\*"#,
+            with: "<em>$1</em>",
+            options: .regularExpression
+        )
+        out = out.replacingOccurrences(
+            of: #"(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])"#,
+            with: "<em>$1</em>",
+            options: .regularExpression
+        )
+        // Bare [N] citation markers → anchor to the matching source archive item.
+        out = out.replacingOccurrences(
+            of: #"\[(\d+)\]"#,
+            with: "<a href=\"#src-$1\" class=\"cite\">[$1]</a>",
+            options: .regularExpression
+        )
         return out
     }
 }
