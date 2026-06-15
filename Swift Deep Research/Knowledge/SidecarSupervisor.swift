@@ -520,12 +520,20 @@ public actor SidecarSupervisor {
 
     // MARK: - Health probing
 
+    /// Dedicated ephemeral probe session. `URLSession.shared` carries a shared
+    /// cache/cookie store and a 60s default timeout, neither of which we want for
+    /// a fast localhost liveness check — and the rest of the KB stack already uses
+    /// ephemeral sessions (SeekDBClient), so probing through .shared was the lone
+    /// inconsistency (kb-probe-shared-session). One cached session avoids rebuilding
+    /// configuration on every poll iteration.
+    private static let probeSession = HTTPClientCommon.defaultSession(timeout: 2)
+
     private func probeHealth(host: URL) async -> Bool {
         var req = URLRequest(url: host.appendingPathComponent("health"))
         req.timeoutInterval = 1.5
         req.httpMethod = "GET"
         do {
-            let (_, response) = try await URLSession.shared.data(for: req)
+            let (_, response) = try await Self.probeSession.data(for: req)
             return (response as? HTTPURLResponse)?.statusCode == 200
         } catch {
             return false

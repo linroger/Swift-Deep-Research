@@ -72,23 +72,52 @@ public struct RedditTool: ResearchTool {
 
     // MARK: - Search
 
+    /// Subreddit names are limited to ASCII letters, digits, and underscore
+    /// (Reddit's own rule). The LLM controls `args.subreddit`, so we validate it
+    /// against this charset before it ever touches the URL path — see
+    /// `sec-reddit-subreddit-injection-7`. Without this, a value like
+    /// `foo?x=1`, `foo#frag`, or `foo/../../x` is concatenated into the base
+    /// string *before* `URLComponents(string:)` parses it, which lets the
+    /// untrusted value alter the path/query/fragment of the request.
+    private static let subredditAllowed = CharacterSet(charactersIn:
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+
     private func search(query: String, subreddit: String?, limit: Int, context: ToolContext) async throws -> ToolOutcome {
-        let base: String
-        if let sub = subreddit, !sub.isEmpty {
-            base = "https://www.reddit.com/r/\(sub)/search.json"
+        // Build the components on a fixed base, then set the path structurally so
+        // the subreddit can never re-parse into a different path/query/host.
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "www.reddit.com"
+        var restrictToSub = false
+        if let raw = subreddit?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            let sub = raw.hasPrefix("r/") ? String(raw.dropFirst(2)) : raw   // tolerate a leading "r/"
+            guard sub.count <= 50,
+                  sub.unicodeScalars.allSatisfy({ Self.subredditAllowed.contains($0) }) else {
+                return .failed(message: "reddit search: invalid subreddit '\(raw)' (letters, digits, and underscore only)")
+            }
+            // `path` performs its own percent-encoding, and the validated charset
+            // contains no path/query/fragment delimiters regardless.
+            components.path = "/r/\(sub)/search.json"
+            restrictToSub = true
         } else {
-            base = "https://www.reddit.com/search.json"
+            components.path = "/search.json"
         }
-        var components = URLComponents(string: base)!
         var items = [
             URLQueryItem(name: "q", value: query),
             URLQueryItem(name: "limit", value: String(limit)),
             URLQueryItem(name: "sort", value: "relevance"),
             URLQueryItem(name: "type", value: "link")
         ]
-        if subreddit != nil { items.append(URLQueryItem(name: "restrict_sr", value: "true")) }
+        if restrictToSub { items.append(URLQueryItem(name: "restrict_sr", value: "true")) }
         components.queryItems = items
-        guard let url = components.url else { return .failed(message: "reddit: bad URL") }
+        guard let url = components.url, url.host?.lowercased() == "www.reddit.com" else {
+            return .failed(message: "reddit: bad URL")
+        }
+        // Defense in depth: the constructed URL is LLM-influenced, so run it
+        // through the shared SSRF guard before issuing the request.
+        if let reason = URLSafety.blockReason(for: url) {
+            return .failed(message: "reddit search: refusing to fetch \(url.absoluteString) — \(reason).")
+        }
 
         var req = URLRequest(url: url)
         req.setValue("application/json", forHTTPHeaderField: "Accept")

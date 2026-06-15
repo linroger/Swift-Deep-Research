@@ -54,7 +54,17 @@ public actor SeekDBClient {
     }
 
     public func delete(id: String) async throws {
-        let _: AcknowledgedResponse = try await request("/documents/\(id)", method: "DELETE")
+        // Percent-encode the id as a single path segment before interpolating it
+        // into the URL. Doc ids are server-derived `doc-<sha1>` today (URL-safe),
+        // but `upsert(id:)` lets a caller supply an arbitrary id; one containing a
+        // space, '/', '#', or '?' would otherwise make `URL(string:)` return nil
+        // (surfacing as a misleading SeekDBError.unreachable) or route to the wrong
+        // path. `.urlPathAllowed` minus '/' keeps a slash from splitting the segment.
+        // Mirrors the escaping KnowledgeBaseTool already does for kb:// ids.
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove("/")
+        let escaped = id.addingPercentEncoding(withAllowedCharacters: allowed) ?? id
+        let _: AcknowledgedResponse = try await request("/documents/\(escaped)", method: "DELETE")
     }
 
     public func reset() async throws {

@@ -86,12 +86,20 @@ public struct OpenAICompatibleClient: LLMClient {
                             // Drain the error body so we can extract the provider's
                             // own message (e.g. DeepSeek's "Insufficient Balance").
                             // A 4xx/5xx is a definitive answer — never retry it.
+                            // Bound the drain by a raw-byte budget rather than by
+                            // newlines: `bytes.lines` only yields on a `\n`, so a
+                            // gateway that returns an error payload with no newline
+                            // would stall until the inactivity timeout. Accumulate
+                            // raw bytes up to a hard cap, then stop, regardless of
+                            // newline placement.
                             serverResponded = true
-                            var errBody = ""
-                            for try await line in bytes.lines {
-                                errBody += line + "\n"
-                                if errBody.count > 1200 { break }
+                            var errBytes = Data()
+                            let errByteCap = 2048
+                            for try await byte in bytes {
+                                errBytes.append(byte)
+                                if errBytes.count >= errByteCap { break }
                             }
+                            let errBody = String(decoding: errBytes, as: UTF8.self)
                             throw Self.httpError(status: http.statusCode,
                                                  body: errBody,
                                                  provider: identity.displayName)
@@ -102,9 +110,20 @@ public struct OpenAICompatibleClient: LLMClient {
                         for try await event in SSEParser.stream(bytes) {
                             serverResponded = true   // past the safe-retry window
                             if event.data == "[DONE]" {
-                                for (_, call) in toolBuffer { continuation.yield(.toolCallEnd(id: call.id)) }
-                                continuation.yield(.finished(reason: .stop))
-                                sawTerminal = true
+                                // `[DONE]` is the loop-break sentinel. Most servers
+                                // send it AFTER a delta carrying `finish_reason`,
+                                // which already yielded a terminal `.finished` and
+                                // flushed toolCallEnd in `parseEvent`. Re-emitting a
+                                // second `.finished(reason: .stop)` here would clobber
+                                // a `tool_calls` finish to `.stop` for any consumer
+                                // that trusts finishReason. So only synthesize the
+                                // terminal finish (and flush tool buffers) when no
+                                // explicit finish_reason was seen yet.
+                                if !sawTerminal {
+                                    for (_, call) in toolBuffer { continuation.yield(.toolCallEnd(id: call.id)) }
+                                    continuation.yield(.finished(reason: .stop))
+                                    sawTerminal = true
+                                }
                                 break
                             }
                             try Self.parseEvent(data: event.data,
@@ -240,14 +259,31 @@ public struct OpenAICompatibleClient: LLMClient {
         return URL(string: s + "/v1/chat/completions") ?? base
     }
 
-    /// Sibling `/v1/models` URL for discovery.
+    /// Sibling `/models` URL for discovery. Derives from the user-entered base
+    /// the same way `resolveChatCompletionsURL` does, rather than string-mutating
+    /// the resolved chat URL. Mutating the chat URL is fragile: a gateway whose
+    /// chat and models paths don't share a parent (different prefixes, or a
+    /// deployment segment between the base and `/chat/completions`) yields a wrong
+    /// `/models` URL and discovery 404s for an otherwise-working endpoint.
+    ///   - `https://api.deepseek.com`              → …/v1/models
+    ///   - `https://api.deepseek.com/v1`           → …/v1/models
+    ///   - `http://localhost:1234/v1/chat/completions` → strip the chat suffix → …/v1/models
     private static func resolveModelsURL(base: URL) -> URL {
-        let chat = resolveChatCompletionsURL(base: base)
-        var s = chat.absoluteString
-        if let range = s.range(of: "/chat/completions", options: .backwards) {
-            s.replaceSubrange(range, with: "/models")
+        var s = base.absoluteString
+        while s.hasSuffix("/") { s.removeLast() }
+        let lower = s.lowercased()
+        if lower.hasSuffix("/chat/completions") {
+            // Custom endpoint pointing directly at chat — the models sibling lives
+            // next to it under the same parent (the spec-standard layout).
+            if let range = s.range(of: "/chat/completions", options: .backwards) {
+                s.replaceSubrange(range, with: "/models")
+            }
+            return URL(string: s) ?? base
         }
-        return URL(string: s) ?? chat
+        if lower.hasSuffix("/v1") {
+            return URL(string: s + "/models") ?? base
+        }
+        return URL(string: s + "/v1/models") ?? base
     }
 
     /// List models the endpoint advertises via the OpenAI-standard
@@ -466,6 +502,16 @@ public struct OpenAICompatibleClient: LLMClient {
             case "content_filter": .contentFilter
             default: .stop
             }
+            // A terminal finish_reason is the end of the turn. Flush toolCallEnd
+            // for every buffered call here — some gateways (e.g. certain Azure
+            // deployments) send `finish_reason: tool_calls` and then close the
+            // stream WITHOUT a trailing `[DONE]`, in which case the caller's
+            // no-terminal flush is skipped (sawTerminal is now true) and these
+            // ends would otherwise never be emitted. Clearing the buffer after
+            // flushing keeps the caller's `[DONE]`/close branches from re-emitting
+            // a second toolCallEnd for the same calls.
+            for (_, call) in toolBuffer { continuation.yield(.toolCallEnd(id: call.id)) }
+            toolBuffer.removeAll()
             sawFinish = true
             continuation.yield(.finished(reason: reason))
         }

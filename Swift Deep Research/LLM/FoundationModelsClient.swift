@@ -72,17 +72,23 @@ public struct FoundationModelsClient: LLMClient {
         let stream = session.streamResponse(to: userText, options: opts)
         var lastSeen = ""
         for try await partial in stream {
-            // Partial responses arrive as the full text-so-far; emit only the delta.
-            let snapshot = String(describing: partial)
-            if snapshot.hasPrefix(lastSeen) {
-                let delta = String(snapshot.dropFirst(lastSeen.count))
-                if !delta.isEmpty { continuation.yield(.text(delta)) }
-                lastSeen = snapshot
-            } else {
-                continuation.yield(.text(snapshot))
-                lastSeen = snapshot
-            }
+            // Each snapshot carries the aggregated text-so-far. `partial.content` is the
+            // documented String accessor for a ResponseStream<String> snapshot — use it
+            // instead of String(describing:), which is not a stable text contract and could
+            // include type/debug wrapping if the SDK representation changes.
+            let snapshot = partial.content
+            // Emit only the genuinely new suffix. Partials are usually prefix-monotonic, but
+            // whitespace normalization or retraction can break strict prefixing; in that case
+            // we diff against the longest common prefix rather than re-dumping the whole
+            // snapshot (which would duplicate already-streamed text). The delta is the portion
+            // of the new snapshot beyond what we have already emitted.
+            let common = lastSeen.commonPrefix(with: snapshot)
+            let delta = String(snapshot.dropFirst(common.count))
+            if !delta.isEmpty { continuation.yield(.text(delta)) }
+            lastSeen = snapshot
         }
+        // FoundationModels does not surface a token count for the streaming path, so this is a
+        // coarse chars/4 heuristic (≈ English avg) for budget bookkeeping, not a measured count.
         continuation.yield(.usage(promptTokens: 0, completionTokens: lastSeen.count / 4))
         continuation.yield(.finished(reason: .stop))
         continuation.finish()

@@ -89,6 +89,13 @@ public struct OllamaClient: LLMClient {
                     // subsequent tool_result message.
                     var toolCallCounter = 0
                     var emittedCallIDs: [String] = []
+                    // Track terminal-marker arrival so a mid-stream drop after
+                    // 200 OK isn't silently treated as a clean answer. Ollama's
+                    // final NDJSON object carries `"done": true`; if the byte
+                    // stream ends before we see it (model crash, OOM, server
+                    // restart), we surface truncation instead of finishing clean.
+                    var sawDone = false
+                    var producedOutput = false
                     for try await byte in bytes {
                         if byte == 0x0A {
                             let line = String(decoding: buffer, as: UTF8.self)
@@ -101,6 +108,7 @@ public struct OllamaClient: LLMClient {
                             if let msg = obj["message"] as? [String: Any] {
                                 if let text = msg["content"] as? String, !text.isEmpty {
                                     continuation.yield(.text(text))
+                                    producedOutput = true
                                 }
                                 if let calls = msg["tool_calls"] as? [[String: Any]] {
                                     for call in calls {
@@ -131,10 +139,12 @@ public struct OllamaClient: LLMClient {
                                         continuation.yield(.toolCallStart(id: id, name: name))
                                         continuation.yield(.toolCallArgumentsDelta(id: id, delta: argsJSON))
                                         emittedCallIDs.append(id)
+                                        producedOutput = true
                                     }
                                 }
                             }
                             if (obj["done"] as? Bool) == true {
+                                sawDone = true
                                 for id in emittedCallIDs {
                                     continuation.yield(.toolCallEnd(id: id))
                                 }
@@ -157,6 +167,30 @@ public struct OllamaClient: LLMClient {
                             }
                         } else {
                             buffer.append(byte)
+                        }
+                    }
+                    // The byte stream ended without a `"done": true` line. A
+                    // dropped connection mid-generation otherwise masquerades as
+                    // a clean finish and silently truncates the answer. Mirror
+                    // OpenAICompatibleClient: keep any partial output but flag it
+                    // as cut short, or surface a hard failure when nothing arrived.
+                    if !sawDone {
+                        if producedOutput {
+                            Log.net.warning("\(identity.displayName, privacy: .public): Ollama stream closed without a done:true marker — output may be truncated.")
+                            // Close out any tool calls left dangling without a
+                            // done line so the worker doesn't wait on them.
+                            for id in emittedCallIDs {
+                                continuation.yield(.toolCallEnd(id: id))
+                            }
+                            continuation.yield(.finished(reason: .length))
+                        } else {
+                            // Nothing arrived before the close — a failed stream,
+                            // not an empty answer. Surface it rather than reporting
+                            // a clean, empty completion.
+                            throw EngineFailure(
+                                kind: .providerFailure,
+                                message: "\(identity.displayName): the model stream ended before any output (dropped connection). Try again."
+                            )
                         }
                     }
                     continuation.finish()

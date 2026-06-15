@@ -64,7 +64,14 @@ public struct WebSearchTool: ResearchTool {
         }
         let limit = min(max(args.limit ?? 6, 1), 12)
 
-        var failures: [String] = []
+        // Track "reachable but no hits" separately from real errors (401/429/
+        // decode failures). Both used to be concatenated into one `.failed`
+        // message, so the LLM could not tell "rephrase the query" from "the keys
+        // are broken". Keeping them apart lets us (a) report a clear final
+        // message and (b) treat an all-empty chain as a successful-but-empty
+        // search rather than a tool failure.
+        var emptyBackends: [String] = []   // backend reachable, returned 0 results
+        var errors: [String] = []          // backend threw (config/network/decode)
         for backend in backends {
             do {
                 let results = try await backend.search(query: args.query, limit: limit, session: session)
@@ -81,16 +88,43 @@ public struct WebSearchTool: ResearchTool {
                     await context.charge(payloadJSON.count / 4)
                     return .ok(summary: summary, payloadJSON: payloadJSON)
                 } else {
-                    failures.append("\(backend.providerID): empty result set")
+                    // Empty set still cascades to the next backend; it is not an
+                    // error, just a backend that had nothing for this query.
+                    emptyBackends.append(backend.providerID)
                 }
             } catch {
                 let msg = "\(backend.providerID): \(error.localizedDescription)"
                 Log.tool.warning("\(msg, privacy: .public)")
-                failures.append(msg)
+                errors.append(msg)
                 continue
             }
         }
-        let detail = failures.isEmpty ? "no backends configured" : failures.joined(separator: "; ")
+
+        // No backend produced results. If at least one was reachable and simply
+        // returned nothing (and none errored), this is a legitimate empty search
+        // — surface it as `.ok` with an empty payload and a rephrase hint so the
+        // worker treats it as "no web results" rather than a broken tool.
+        if errors.isEmpty && !emptyBackends.isEmpty {
+            let payload = SearchResultsPayload(query: args.query,
+                                              provider: emptyBackends.joined(separator: "+"),
+                                              results: [])
+            let payloadJSON = String(decoding: (try? JSONEncoder().encode(payload)) ?? Data(), as: UTF8.self)
+            let summary = "No web results for “\(args.query)” (searched: \(emptyBackends.joined(separator: ", "))). Try rephrasing the query."
+            return .ok(summary: summary, payloadJSON: payloadJSON)
+        }
+
+        // Real errors occurred. Report them distinctly from any empty backends so
+        // the LLM can tell a misconfigured/blocked provider from one that simply
+        // had no hits.
+        var detail: String
+        if errors.isEmpty && emptyBackends.isEmpty {
+            detail = "no backends configured"
+        } else {
+            var parts: [String] = []
+            if !errors.isEmpty { parts.append("errors — " + errors.joined(separator: "; ")) }
+            if !emptyBackends.isEmpty { parts.append("no results — " + emptyBackends.joined(separator: ", ")) }
+            detail = parts.joined(separator: " | ")
+        }
         return .failed(message: "All search backends failed for “\(args.query)”. \(detail)")
     }
 }
@@ -230,8 +264,20 @@ public struct BraveBackend: SearchBackend {
     public init(apiKey: String) { self.apiKey = apiKey }
 
     public func search(query: String, limit: Int, session: URLSession) async throws -> [DiscoveredSource] {
-        let escaped = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
-        var req = URLRequest(url: URL(string: "https://api.search.brave.com/res/v1/web/search?q=\(escaped)&count=\(limit)")!)
+        // Build the query string with URLComponents/queryItems instead of hand-
+        // concatenating a `.urlQueryAllowed`-escaped value: `.urlQueryAllowed`
+        // permits `&`, `=`, `+`, `?`, so a query like "AT&T earnings" would
+        // corrupt the parameter boundaries (or, in theory, force-unwrap-crash).
+        // queryItems percent-encodes each value safely — matching ArXiv/Wikipedia.
+        var components = URLComponents(string: "https://api.search.brave.com/res/v1/web/search")
+        components?.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "count", value: String(limit))
+        ]
+        guard let url = components?.url else {
+            throw SearchHTTPError(provider: providerID, status: -1, body: "could not build request URL for query")
+        }
+        var req = URLRequest(url: url)
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue(apiKey, forHTTPHeaderField: "X-Subscription-Token")
         let (data, response) = try await session.data(for: req)
@@ -263,17 +309,24 @@ public struct DuckDuckGoBackend: SearchBackend {
     public init() {}
 
     public func search(query: String, limit: Int, session: URLSession) async throws -> [DiscoveredSource] {
-        // Percent-encode the whole query: the old whitespace→`+` join left `&`,
-        // `#`, `?`, `/` unescaped, which broke the URL for many real queries.
-        let escaped = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
-            ?? query.components(separatedBy: .whitespacesAndNewlines).joined(separator: "+")
-        guard let url = URL(string: "https://html.duckduckgo.com/html/?q=\(escaped)") else { return [] }
+        // Build the URL with URLComponents/queryItems so a query containing `&`,
+        // `=`, `+`, or `?` is encoded per-value rather than corrupting the query
+        // string when concatenated by hand (`.urlQueryAllowed` permits those).
+        var components = URLComponents(string: "https://html.duckduckgo.com/html/")
+        components?.queryItems = [URLQueryItem(name: "q", value: query)]
+        guard let url = components?.url else {
+            Log.tool.warning("ddg: could not build request URL for query")
+            return []
+        }
         var req = URLRequest(url: url)
         req.setValue(HTTPClientCommon.browserUserAgent, forHTTPHeaderField: "User-Agent")
         let (data, response) = try await HTTPClientCommon.dataWithRetry(for: req, session: session, label: "ddg")
         try validate(response, data: data, provider: providerID)
         guard let html = String(data: data, encoding: .utf8)
-                ?? String(data: data, encoding: .isoLatin1) else { return [] }
+                ?? String(data: data, encoding: .isoLatin1) else {
+            Log.tool.warning("ddg: response body was not decodable as UTF-8/Latin-1 (\(data.count, privacy: .public) bytes)")
+            return []
+        }
         // Cheap regex on result links — avoids a SwiftSoup dependency in this path.
         let pattern = #"<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>"#
         let regex = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
@@ -292,6 +345,14 @@ public struct DuckDuckGoBackend: SearchBackend {
                 // `return` only exited the closure for one match).
                 if out.count >= limit { stop.pointee = true }
             }
+        }
+        // DDG is the keyless last-resort backend; a 200 with zero parsed links
+        // almost always means a layout change or an anti-bot/captcha interstitial
+        // (which `validate` can't catch — it only inspects status codes). Log the
+        // body size so a silent scraping break is diagnosable in the activity log
+        // instead of looking like a genuine "no results" outcome.
+        if out.isEmpty {
+            Log.tool.warning("ddg: parsed 0 results from a \(data.count, privacy: .public)-byte 200 response — likely a markup change or anti-bot page, not an empty query")
         }
         return Array(out.prefix(limit))
     }

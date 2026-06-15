@@ -43,9 +43,19 @@ public struct CalculatorTool: ResearchTool {
                 .replacingOccurrences(of: "÷", with: "/")
                 .replacingOccurrences(of: "−", with: "-")
                 .replacingOccurrences(of: "**", with: "^")
-            // Substitute named constants before validation.
-            s = s.replacingOccurrences(of: "pi", with: "\(Double.pi)", options: .caseInsensitive)
-            s = s.replacingOccurrences(of: "e", with: "\(M_E)")
+            // Substitute named constants before validation, but only as
+            // standalone tokens. A naive `replacingOccurrences(of: "e", ...)`
+            // corrupts scientific notation (`1e3` would become `1·2.718…·3`)
+            // and any identifier containing the letter. Word-boundary regex
+            // (`\be\b`) matches the bare constant only: in `1e3` the `e` sits
+            // between two word characters, so there is no boundary and it is
+            // left untouched for NSExpression to parse as an exponent.
+            s = s.replacingOccurrences(of: #"\bpi\b"#,
+                                       with: "\(Double.pi)",
+                                       options: [.regularExpression, .caseInsensitive])
+            s = s.replacingOccurrences(of: #"\be\b"#,
+                                       with: "\(M_E)",
+                                       options: .regularExpression)
             return s
         }()
         for ch in cleaned where !(allowed.contains(ch) || ch.unicodeScalars.allSatisfy(nameSet.contains)) {

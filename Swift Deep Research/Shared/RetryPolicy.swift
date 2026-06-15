@@ -75,12 +75,53 @@ public struct RetryPolicy: Sendable {
             }
         }
         if let engineFailure = error as? EngineFailure {
-            // Retry provider HTTP 429 / 5xx; pattern-match on the message.
+            // Only provider HTTP failures are eligible for retry. Configuration,
+            // tool, planning, synthesis, budget, and cancelled failures are fatal.
             if engineFailure.kind == .providerFailure {
-                let m = engineFailure.message.lowercased()
-                return m.contains("429") || m.contains("503") || m.contains("502") ||
-                       m.contains("500") || m.contains("rate limit")
+                return isTransientProviderMessage(engineFailure.message)
             }
+        }
+        return false
+    }
+
+    /// Classify a provider failure message as transient (retryable) or not.
+    ///
+    /// `EngineFailure` carries no structured status code (see EXECPLAN2
+    /// `retry-enginefailure-string-match-8`), so we fall back to the message.
+    /// The earlier implementation used bare-digit `contains("500")` checks,
+    /// which misclassified bodies/paths/token-counts that merely *contain*
+    /// those digits (e.g. `/v500`, a token count `50000`, or a quoted 200-OK
+    /// body mentioning `502`) and missed worded rate limits ("Too Many
+    /// Requests") that lack the literal digits. We instead match the HTTP
+    /// status only when it appears as a standalone token anchored to an HTTP
+    /// status context, plus recognize the canonical worded reason phrases.
+    private static func isTransientProviderMessage(_ message: String) -> Bool {
+        let lower = message.lowercased()
+
+        // Worded transient reasons that providers surface with or without a
+        // numeric code. These are unambiguous phrases, not bare digits.
+        let transientPhrases = [
+            "rate limit", "too many requests", "service unavailable",
+            "bad gateway", "gateway timeout", "internal server error",
+            "server overloaded", "overloaded", "temporarily unavailable"
+        ]
+        if transientPhrases.contains(where: { lower.contains($0) }) {
+            return true
+        }
+
+        // Numeric HTTP status: match 429 and 5xx only when the code is a
+        // standalone token (word boundaries) AND sits next to HTTP-status
+        // context ("http", "status", "code", or "error" nearby). Anchoring on
+        // context prevents a stray "500" inside a URL or token count from
+        // triggering a retry. A leading "status" keyword may also precede it.
+        // Examples matched: "Anthropic HTTP 429", "status code 503",
+        //                   "HTTP error 502", "503 Service ...".
+        let statusPattern =
+            #"(?:\b(?:http|status|code|error)\b[^0-9]{0,12}(429|5\d{2})\b)"#
+            + #"|(?:\b(429|5\d{2})\b[^0-9]{0,12}\b(?:error|status)\b)"#
+        if let regex = try? Regex(statusPattern),
+           lower.firstMatch(of: regex) != nil {
+            return true
         }
         return false
     }

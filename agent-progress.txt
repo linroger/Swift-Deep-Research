@@ -623,3 +623,43 @@ AppEnvironment decomposition, no-tests-1). Work top-down in EXECPLAN2.md.
   DeerFlow), error-handling-consistency-1 partial (deleteForecast logs). SESSION TOTAL:
   29 findings (2 P0, 18 P1, 9 P2). Committed to branch audit-remediation-execplan2,
   pushed, merged to main.
+
+  ========================================================================
+  SESSION 2026-06-15 (continuation, on main) — Batch 5: provider robustness
+  + security quick wins. Workflow fan-out: 10 agents, one per disjoint file,
+  each verified its findings against CURRENT code (stale line numbers) and
+  edited only its own file. 9 files fixed by agents (18 findings); 1 agent
+  (KnowledgeBase.swift) correctly DEFERRED its 3 findings as misassigned —
+  they live in SeekDBClient/KnowledgeBaseTool/SidecarSupervisor — which I
+  then re-routed and fixed by hand. +21 findings, all BUILD SUCCEEDED
+  (Debug/macOS, 0 errors/0 warnings in app sources).
+
+  Provider stream termination (the meat): OpenAICompatibleClient now emits a
+  single terminal finish (sawTerminal guards the [DONE] branch; parseEvent
+  flushes+clears toolCallEnd on finish_reason so a no-[DONE] close still ends
+  tool calls); Gemini maps per-candidate finishReason (MAX_TOKENS->.length,
+  SAFETY/RECITATION/...->.contentFilter) + round-trips functionCall.id for
+  same-name parallel calls; Ollama detects a no-done:true stream close
+  (truncation -> .length warn, or throw if zero output); FoundationModels
+  uses partial.content + commonPrefix diff instead of String(describing:)+
+  hasPrefix; resolveModelsURL derived from base (not string-replace of chat
+  URL); error-body drain bounded by 2048 raw bytes (no newline-stall).
+  RetryPolicy: typed/worded + context-anchored 429/5xx regex, no bare digits.
+  Search: brave/ddg via URLComponents queryItems; ddg logs 0-parse on 200;
+  empty-but-reachable chain -> .ok empty payload (LLM can tell rephrase from
+  broken keys). Calculator: \be\b/\bpi\b word-boundary (fixes 1e3 corruption
+  + 1.5e-10 NSExpression crash). Reddit: subreddit charset-validate + host
+  pin www.reddit.com + URLSafety guard. SettingsSheet: http/https+host
+  required on commit; reject http to public host for keyed custom endpoint;
+  Test snapshots+rolls back Keychain on failure; config persistence debounced
+  500ms + flush onDisappear. KB: delete id percent-encoded; doc-count nil
+  (health unavailable) distinguished from 0 (empty); probeHealth uses a
+  cached ephemeral session not URLSession.shared.
+
+  CATALOG PROGRESS: 50 / 150 findings done (33%). Next high-value batches:
+  native-engine correctness (dedup/plan-truncation/empty-worker/source-floor),
+  citation integrity (citation-substring, store-duplicate-citations-2),
+  budget/cache (budget-charge-swallowed-4, cache-sourcecachehit-never-emitted-3),
+  UI responsiveness (inline-citations-tokenize, eventenvelope-encode,
+  followup-turnhistory-corrupt). Larger/deferred: engine-dup-1 unification,
+  AppEnvironment decomposition, no-tests-1 (pbxproj risk), sec-sandbox-off-2.

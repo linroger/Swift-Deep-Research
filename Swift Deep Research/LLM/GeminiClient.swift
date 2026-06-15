@@ -85,10 +85,16 @@ public struct GeminiClient: LLMClient {
                                                 message: "Gemini HTTP \(http.statusCode)")
                         }
 
+                        // Track the last per-candidate finishReason (and any
+                        // promptFeedback.blockReason) so a truncated or
+                        // safety-blocked response isn't reported as a clean .stop.
+                        var finishReason: LLMStreamChunk.FinishReason = .stop
                         for try await event in SSEParser.stream(bytes) {
-                            try Self.parseEvent(data: event.data, continuation: continuation)
+                            try Self.parseEvent(data: event.data,
+                                                finishReason: &finishReason,
+                                                continuation: continuation)
                         }
-                        continuation.yield(.finished(reason: .stop))
+                        continuation.yield(.finished(reason: finishReason))
                         continuation.finish()
                         return
                     } catch is CancellationError {
@@ -123,8 +129,12 @@ public struct GeminiClient: LLMClient {
             let functionCall: FnCall?
             let functionResponse: FnResp?
         }
-        struct FnCall: Encodable { let name: String; let args: AnyJSON }
-        struct FnResp: Encodable { let name: String; let response: AnyJSON }
+        // Gemini pairs a functionResponse to its functionCall by `id` when present,
+        // falling back to `name`. Carrying the id makes same-name parallel calls
+        // (e.g. two web_search calls in one turn, which the worker prompt
+        // encourages) disambiguate correctly instead of colliding on name alone.
+        struct FnCall: Encodable { let id: String?; let name: String; let args: AnyJSON }
+        struct FnResp: Encodable { let id: String?; let name: String; let response: AnyJSON }
         struct Tool: Encodable { let functionDeclarations: [FnDecl] }
         struct FnDecl: Encodable {
             let name: String
@@ -150,10 +160,12 @@ public struct GeminiClient: LLMClient {
                     switch block {
                     case .text(let s):
                         parts.append(Part(text: s, functionCall: nil, functionResponse: nil))
-                    case .toolCall(_, let name, let args):
+                    case .toolCall(let id, let name, let args):
                         let argJSON = (try? AnyJSON.parse(args)) ?? .null
                         parts.append(Part(text: nil,
-                                          functionCall: FnCall(name: name, args: argJSON),
+                                          functionCall: FnCall(id: Self.wireCallID(id),
+                                                               name: name,
+                                                               args: argJSON),
                                           functionResponse: nil))
                     case .toolResult: break
                     }
@@ -163,11 +175,13 @@ public struct GeminiClient: LLMClient {
             case .tool:
                 var parts: [Part] = []
                 for block in m.content {
-                    if case .toolResult(_, let name, let output) = block {
+                    if case .toolResult(let callID, let name, let output) = block {
                         let json = (try? AnyJSON.parse(output)) ?? .string(output)
                         parts.append(Part(text: nil,
                                           functionCall: nil,
-                                          functionResponse: FnResp(name: name, response: json)))
+                                          functionResponse: FnResp(id: Self.wireCallID(callID),
+                                                                   name: name,
+                                                                   response: json)))
                     }
                 }
                 if !parts.isEmpty {
@@ -198,6 +212,7 @@ public struct GeminiClient: LLMClient {
     }
 
     private static func parseEvent(data: String,
+                                   finishReason: inout LLMStreamChunk.FinishReason,
                                    continuation: AsyncThrowingStream<LLMStreamChunk, Error>.Continuation) throws {
         guard let bytes = data.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] else { return }
@@ -219,19 +234,63 @@ public struct GeminiClient: LLMClient {
                             } else {
                                 argsJSON = "{}"
                             }
-                            let id = "gemini-fn-\(name)-\(UUID().uuidString.prefix(6))"
+                            // Preserve any Gemini-supplied call id in the wire id so
+                            // the functionResponse we send back can echo the SAME id
+                            // and pair correctly on same-name parallel calls. When
+                            // Gemini omits an id, mint a synthetic one as before.
+                            let geminiID = (fn["id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                            let id = geminiID.map { "gemini-id-\($0)" }
+                                ?? "gemini-fn-\(name)-\(UUID().uuidString.prefix(6))"
                             continuation.yield(.toolCallStart(id: id, name: name))
                             continuation.yield(.toolCallArgumentsDelta(id: id, delta: argsJSON))
                             continuation.yield(.toolCallEnd(id: id))
                         }
                     }
                 }
+                // Map the per-candidate finishReason to the LLM-layer reason. The
+                // last non-empty reason in the stream wins. STOP and the streaming
+                // "still generating" cases stay .stop; truncation/safety surface so
+                // the engine can detect an incomplete answer.
+                if let reason = c["finishReason"] as? String, !reason.isEmpty {
+                    finishReason = mapFinishReason(reason)
+                }
             }
+        }
+        // No candidates but a prompt-level block (safety/recitation on the input)
+        // is itself a non-stop terminal condition; surface it as a content filter.
+        if (obj["candidates"] as? [[String: Any]])?.isEmpty ?? true,
+           let feedback = obj["promptFeedback"] as? [String: Any],
+           let block = feedback["blockReason"] as? String, !block.isEmpty {
+            finishReason = .contentFilter
         }
         if let usage = obj["usageMetadata"] as? [String: Any] {
             let p = usage["promptTokenCount"] as? Int ?? 0
             let c = usage["candidatesTokenCount"] as? Int ?? 0
             continuation.yield(.usage(promptTokens: p, completionTokens: c))
         }
+    }
+
+    /// Translate a Gemini candidate `finishReason` to the unified finish reason.
+    /// MAX_TOKENS → .length; SAFETY/RECITATION/BLOCKLIST/PROHIBITED_CONTENT/SPII →
+    /// .contentFilter; MALFORMED_FUNCTION_CALL/OTHER/unknown → .stop (treated as a
+    /// normal end so the worker still consumes whatever text/tool calls arrived).
+    private static func mapFinishReason(_ raw: String) -> LLMStreamChunk.FinishReason {
+        switch raw {
+        case "MAX_TOKENS": return .length
+        case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
+            return .contentFilter
+        default: return .stop
+        }
+    }
+
+    /// Recover the original Gemini call id from the wire id we synthesized in
+    /// `parseEvent`. Only ids that Gemini itself supplied (encoded with the
+    /// `gemini-id-` prefix) are sent back as `functionCall.id`/`functionResponse.id`;
+    /// purely synthetic ids return nil so we don't send Gemini an id it never issued.
+    private static func wireCallID(_ id: String) -> String? {
+        let prefix = "gemini-id-"
+        guard id.hasPrefix(prefix) else { return nil }
+        let recovered = String(id.dropFirst(prefix.count))
+        return recovered.isEmpty ? nil : recovered
     }
 }

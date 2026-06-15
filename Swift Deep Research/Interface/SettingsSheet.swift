@@ -8,6 +8,12 @@ struct SettingsSheet: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.dismiss) private var dismiss
     @State private var section: Section = .providers
+    /// Pending debounced configuration save. EngineConfiguration is an Equatable
+    /// value type, so every keystroke in the Instructions editor and every Stepper
+    /// tick mutates it and fires onChange. Coalescing the writes here avoids a
+    /// synchronous JSONEncoder().encode + UserDefaults write per keystroke on the
+    /// MainActor. (settings-persist-every-keystroke)
+    @State private var saveTask: Task<Void, Never>?
 
     enum Section: String, CaseIterable, Identifiable {
         case providers, apiKeys, knowledge, forecast, budget, iteration, instructions, about
@@ -65,8 +71,28 @@ struct SettingsSheet: View {
         }
         .frame(minWidth: 920, idealWidth: 980, minHeight: 640, idealHeight: 720)
         .onChange(of: env.configuration) { _, _ in
-            // Persist provider/model/endpoint/budget choices on every edit so
-            // they survive relaunch.
+            // Debounce: cancel any pending save and re-arm. Persist provider/
+            // model/endpoint/budget choices ~500ms after the last edit so a burst
+            // of keystrokes / Stepper ticks collapses into one encode+write.
+            scheduleConfigurationSave()
+        }
+        .onDisappear {
+            // Flush immediately when the sheet closes so the last edits aren't
+            // lost if dismissal beats the debounce interval.
+            saveTask?.cancel()
+            saveTask = nil
+            env.saveConfiguration()
+        }
+    }
+
+    /// Coalesce configuration persistence: replace the in-flight debounce Task so
+    /// only the final state after an idle gap is written. The sleep is cancellation-
+    /// aware, so a superseding edit (or sheet dismissal) skips the stale write.
+    private func scheduleConfigurationSave() {
+        saveTask?.cancel()
+        saveTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
             env.saveConfiguration()
         }
     }
@@ -758,19 +784,48 @@ private struct ProvidersTab: View {
     }
 
     private func commitLMStudioHost() {
+        // Require a real http/https scheme and a non-empty host — mirror the
+        // KnowledgeTab / Qwen validation so a typo like "localhost:1234" (no
+        // scheme) can't be silently accepted as a garbage URL. On rejection the
+        // discovery status surfaces an actionable "Invalid host" message rather
+        // than a later opaque network failure. (host-validation-allows-malformed-urls)
         let trimmed = lmStudioHostString.trimmingCharacters(in: .whitespaces)
-        if let url = URL(string: trimmed), url.scheme != nil {
-            env.configuration.lmStudioHost = url
+        guard let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = url.host, !host.isEmpty else {
+            discoveryStates[.lmstudio] = .error("Invalid host — use http://host:port")
+            return
         }
+        env.configuration.lmStudioHost = url
     }
 
     private func commitCustomHost() {
         let trimmed = customHostString.trimmingCharacters(in: .whitespaces)
         if trimmed.isEmpty {
             env.configuration.customEndpointBaseURL = nil
-        } else if let url = URL(string: trimmed), url.scheme != nil {
-            env.configuration.customEndpointBaseURL = url
+            return
         }
+        // Same scheme/host requirement as LM Studio, plus a cleartext guard: the
+        // custom endpoint carries a real Bearer API key, so refuse plain http://
+        // to a non-loopback host where the key would travel unencrypted. http is
+        // only allowed for loopback/private hosts (local LM Studio / Ollama-style
+        // gateways), which URLSafety.blockReason flags as non-fetchable.
+        // (host-validation-allows-malformed-urls, sec-custom-endpoint-cleartext-5)
+        guard let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = url.host, !host.isEmpty else {
+            discoveryStates[.custom] = .error("Invalid host — use https://host/v1")
+            return
+        }
+        if scheme == "http", URLSafety.blockReason(for: url) == nil {
+            // blockReason == nil means the host is a routable public address, so
+            // cleartext http there would leak the Bearer key. Require https.
+            discoveryStates[.custom] = .error("Use https:// — an API key over http to a public host is sent in cleartext")
+            return
+        }
+        env.configuration.customEndpointBaseURL = url
     }
 
     // MARK: - Qwen (Alibaba Cloud Model Studio)
@@ -905,19 +960,32 @@ private struct APIKeysTab: View {
         }
     }
 
-    /// Validate the typed key: save it, then hit the provider's model endpoint.
+    /// Validate the typed key: temporarily persist it, hit the provider's model
+    /// endpoint, then keep it only on success. `ModelDiscovery` reads the key from
+    /// the Keychain, so we must write the candidate before testing — but pressing
+    /// Test on a mistyped key must not clobber a previously-working key. We snapshot
+    /// the prior Keychain value and restore it if validation fails, so the only way
+    /// a bad key becomes the persisted one is via the explicit Save button.
+    /// (apikey-test-saves-invalid-key)
     private func test(_ account: KeyAccount) {
         guard let provider = Self.provider(for: account) else { return }
         let value = keys[account] ?? ""
         testStates[account] = .testing
         Task {
-            // Persist first so ModelDiscovery (which reads the Keychain) sees it.
+            let previous = await KeychainStore.shared.get(account)
             await KeychainStore.shared.set(value, for: account)
             do {
                 let models = try await ModelDiscovery.fetchModels(provider: provider,
                                                                   config: env.configuration)
                 testStates[account] = .ok(models.count)
             } catch {
+                // Roll back to whatever was there before so a failed test never
+                // leaves a broken key persisted for the next research/forecast run.
+                if let previous {
+                    await KeychainStore.shared.set(previous, for: account)
+                } else {
+                    await KeychainStore.shared.delete(account)
+                }
                 testStates[account] = .fail(error.localizedDescription)
             }
         }

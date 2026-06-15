@@ -70,11 +70,20 @@ public struct KnowledgeBaseTool: ResearchTool {
             // the signal must live there, not only in the UI summary.
             var note: String? = nil
             if hits.isEmpty {
-                let docCount = (try? await client.health().documents) ?? nil
-                if let docCount, docCount > 0 {
-                    note = "No passages matched this query, but the knowledge base has \(docCount) document(s) indexed — try rephrasing, or rely on web_search."
-                } else {
+                // Distinguish three cases, not two: a failed/unavailable health
+                // check (docCount == nil) must NOT be reported as "the KB is
+                // empty" — the documents may well exist but the sidecar was
+                // transiently unreachable, and telling the worker the KB is empty
+                // would wrongly suppress a retry/relevance the user expects.
+                let docCount: Int?
+                do { docCount = try await client.health().documents } catch { docCount = nil }
+                switch docCount {
+                case .some(let n) where n > 0:
+                    note = "No passages matched this query, but the knowledge base has \(n) document(s) indexed — try rephrasing, or rely on web_search."
+                case .some:
                     note = "The knowledge base is empty (no documents indexed). Use web_search instead."
+                case .none:
+                    note = "No passages matched, and the knowledge base status is currently unavailable — rely on web_search."
                 }
             }
             let payload = Payload(
