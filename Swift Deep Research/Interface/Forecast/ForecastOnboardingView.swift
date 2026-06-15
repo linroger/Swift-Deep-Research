@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// First-run setup assistant for the Forecast workspace. Walks through:
-/// environment checks → Zep key → `setup.sh` (live console) → backend launch.
+/// environment checks → `setup.sh` (live console) → backend launch. The knowledge
+/// graph runs locally (Graphiti + embedded FalkorDB), so no graph key is needed.
 /// Presented as a sheet from the workspace, the backend banner, or Settings.
 struct ForecastOnboardingView: View {
     @Environment(AppEnvironment.self) private var env
@@ -39,7 +40,7 @@ struct ForecastOnboardingView: View {
                                                  startPoint: .top, endPoint: .bottom))
             VStack(alignment: .leading, spacing: 2) {
                 Text("Set up Forecast").font(.title3.weight(.bold))
-                Text("One-time setup: install the MiroFish prediction engine's dependencies and start the backend.")
+                Text("One-time setup: install the forecast backend's dependencies and start it. The knowledge graph runs locally — no API key needed.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -81,7 +82,6 @@ struct ForecastOnboardingView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     checksSection(onboarding)
-                    zepSection(onboarding)
                     setupSection(onboarding)
                     launchSection(onboarding)
                 }
@@ -133,38 +133,11 @@ struct ForecastOnboardingView: View {
         }
     }
 
-    // MARK: Step 2 — Zep key
-
-    private func zepSection(_ onboarding: ForecastOnboarding) -> some View {
-        stepCard(number: 2, title: "Zep Cloud API key",
-                 subtitle: "Stores the knowledge graph. Free tier works — app.getzep.com.") {
-            @Bindable var onboarding = onboarding
-            VStack(alignment: .leading, spacing: 8) {
-                if onboarding.zepConfigured {
-                    Label("Key configured — it syncs into MiroFish's .env automatically.",
-                          systemImage: "checkmark.seal.fill")
-                        .font(.caption).foregroundStyle(.green)
-                }
-                HStack(spacing: 8) {
-                    SecureField(onboarding.zepConfigured ? "Replace key (optional)" : "z_…",
-                                text: $onboarding.zepKeyInput)
-                        .textFieldStyle(.roundedBorder)
-                    Button("Save") { Task { await onboarding.saveZepKey() } }
-                        .controlSize(.small)
-                        .disabled(onboarding.zepKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-                if let message = onboarding.zepSaveMessage {
-                    Text(message).font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
-    // MARK: Step 3 — setup script
+    // MARK: Step 2 — setup script
 
     private func setupSection(_ onboarding: ForecastOnboarding) -> some View {
-        stepCard(number: 3, title: "Install dependencies",
-                 subtitle: "Runs MiroFish's setup.sh: backend venv (Python 3.12), DeerFlow research engine + patches. Idempotent — safe to re-run. First run takes several minutes.") {
+        stepCard(number: 2, title: "Install dependencies",
+                 subtitle: "Runs setup.sh: backend venv (Python 3.12), the local Graphiti + FalkorDB graph stack, and the DeerFlow research engine + patches. Idempotent — safe to re-run. First run takes several minutes.") {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     switch onboarding.setupPhase {
@@ -191,7 +164,7 @@ struct ForecastOnboardingView: View {
                         .disabled(!onboarding.canRunSetup || onboarding.setupPhase == .running)
                 }
                 if !onboarding.canRunSetup {
-                    Text("Fix the red items in step 1 first (MiroFish folder and uv are required).")
+                    Text("Fix the red items in step 1 first (the backend folder and uv are required).")
                         .font(.caption2).foregroundStyle(.orange)
                 }
                 if !onboarding.consoleLines.isEmpty {
@@ -250,11 +223,11 @@ struct ForecastOnboardingView: View {
         }
     }
 
-    // MARK: Step 4 — launch
+    // MARK: Step 3 — launch
 
     private func launchSection(_ onboarding: ForecastOnboarding) -> some View {
-        stepCard(number: 4, title: "Start the backend",
-                 subtitle: "Launches MiroFish on \(env.forecastConfig.hostString) and waits for it to answer. Cold start takes up to a minute.") {
+        stepCard(number: 3, title: "Start the backend",
+                 subtitle: "Launches the backend on \(env.forecastConfig.hostString) and waits for it to answer. Cold start takes up to a minute.") {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     statusLabel(onboarding)

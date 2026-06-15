@@ -1083,7 +1083,7 @@ private struct APIKeysTab: View {
         case .moonshot:  .kimi
         case .qwen:      .qwen
         case .custom:    .custom
-        case .tavily, .exa, .brave, .zep: nil
+        case .tavily, .exa, .brave: nil
         }
     }
 }
@@ -1482,7 +1482,7 @@ private struct ForecastTab: View {
         @Bindable var env = env
         VStack(alignment: .leading, spacing: 20) {
             SettingsGroup("Backend status",
-                         footer: "The MiroFish prediction engine runs DeerFlow deep-research, builds the Zep knowledge graph, runs the OASIS multi-agent simulation, and writes the report.") {
+                         footer: "The forecast backend runs DeerFlow deep-research, builds a local Graphiti knowledge graph (embedded FalkorDB, no API key), runs the OASIS multi-agent simulation, and writes the report.") {
                 SettingsRow("Status", icon: "wave.3.right") {
                     HStack(spacing: 6) {
                         if checking { ProgressView().controlSize(.mini) }
@@ -1498,7 +1498,7 @@ private struct ForecastTab: View {
                         env.forecastOnboardingOpen = true
                     }
                     .buttonStyle(.bordered).controlSize(.small)
-                    .help("Guided first-run setup: dependency checks, Zep key, setup.sh, and backend launch.")
+                    .help("Guided first-run setup: dependency checks, setup.sh, and backend launch.")
                     Spacer()
                     Button("Check") { Task { await check() } }
                         .buttonStyle(.bordered).controlSize(.small).disabled(checking)
@@ -1590,11 +1590,11 @@ private struct ForecastTab: View {
                 }
             }
 
-            SettingsGroup("MiroFish location",
-                         footer: "The MiroFish repository folder (contains `backend/run.py`). The backend launches from its own Python ≤3.12 virtualenv (`backend/.venv`) or via `uv`.") {
+            SettingsGroup("Backend location",
+                         footer: "The DeepResearchForecast repository folder (contains `backend/run.py` and `setup.sh`). The backend launches from its own Python ≤3.12 virtualenv (`backend/.venv`) or via `uv`.") {
                 SettingsRow("Folder", icon: "folder") {
                     HStack(spacing: 6) {
-                        TextField("~/Downloads/mirofish/MiroFish-0.1.2", text: $repoPath)
+                        TextField("~/Downloads/DeepResearchForecast", text: $repoPath)
                             .textFieldStyle(.roundedBorder)
                             .frame(maxWidth: 300)
                             .onSubmit { commitRepoPath() }
@@ -1623,10 +1623,10 @@ private struct ForecastTab: View {
                 }
             }
 
-            SettingsGroup("Zep knowledge graph",
-                         footer: "MiroFish stores the knowledge graph in Zep Cloud, which always needs an API key. Enter it under API keys → Zep; it is written into MiroFish's .env so the graph stage can authenticate.") {
+            SettingsGroup("Knowledge graph",
+                         footer: "The knowledge graph runs locally via Graphiti + an embedded FalkorDB — no account, no Docker, no API key. The first forecast downloads a ~470MB multilingual embedding model once, then caches it.") {
                 HStack {
-                    Label("Zep key syncs to MiroFish's .env on launch", systemImage: "arrow.triangle.2.circlepath")
+                    Label("Provider settings sync to the backend's .env on launch", systemImage: "arrow.triangle.2.circlepath")
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button("Sync now") { Task { await env.syncMiroFishEnv() } }

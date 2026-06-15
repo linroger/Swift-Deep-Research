@@ -4,23 +4,24 @@ import AppKit
 /// Auto-launches & supervises the MiroFish prediction backend (Flask, default
 /// :5001) so the Forecast workspace works without the user touching a terminal.
 ///
-/// This mirrors `SidecarSupervisor` (the pyseekdb sidecar), but MiroFish's
-/// dependency stack (camel-oasis / camel-ai / zep-cloud, Python ≤3.12) is far too
-/// heavy to bootstrap a venv on the fly. So instead of installing dependencies we:
+/// This mirrors `SidecarSupervisor` (the pyseekdb sidecar), but the forecast
+/// backend's dependency stack (camel-oasis / camel-ai / graphiti + falkordblite,
+/// Python ≤3.12) is far too heavy to bootstrap a venv on the fly. So instead of
+/// installing dependencies we:
 ///   1. Probe `:5001/health`; if it answers (e.g. the user already ran
 ///      `npm run dev`), attach to it and we're done.
-///   2. Locate the MiroFish repo (configurable; default
-///      `~/Downloads/mirofish/MiroFish-0.1.2`) and its `backend/run.py`.
+///   2. Locate the backend repo (configurable; default
+///      `~/Downloads/DeepResearchForecast`) and its `backend/run.py`.
 ///   3. Launch it with the backend's own venv (`backend/.venv/bin/python`) or,
 ///      failing that, `uv run`.
 ///   4. Poll `/health`. If the process exits early (commonly a broken/3.13 venv
 ///      that can't import camel-ai), surface a precise, actionable `Status`
 ///      rather than hanging — the UI then guides the user to fix the backend.
 ///
-/// The Zep API key (the one credential MiroFish always needs and that has no
-/// runtime settings endpoint) can be merged into MiroFish's `.env` via
-/// `syncEnv` — MiroFish loads `.env` with `override=True`, so an injected child
-/// env var alone would be clobbered; writing `.env` is the reliable path.
+/// The selected LLM provider can be merged into the backend's `.env` via
+/// `syncEnv` — the backend loads `.env` with `override=True`, so an injected child
+/// env var alone would be clobbered; writing `.env` is the reliable path. The
+/// knowledge graph runs locally (Graphiti), so no graph credential is needed.
 public actor MiroFishSupervisor {
     public static let shared = MiroFishSupervisor()
 
@@ -183,10 +184,11 @@ public actor MiroFishSupervisor {
         status = .stopped
     }
 
-    /// Best-effort merge of key/value pairs into MiroFish's root `.env`
+    /// Best-effort merge of key/value pairs into the backend's root `.env`
     /// (`<repoRoot>/.env`, the file `config.py` loads with `override=True`).
-    /// Used to persist the Zep key the user enters in Settings. Existing keys are
-    /// updated in place; new keys are appended. Returns true on success.
+    /// Used to persist the selected LLM provider/keys the user configures in
+    /// Settings (the knowledge graph runs locally, so no graph key is written).
+    /// Existing keys are updated in place; new keys are appended. Returns true on success.
     ///
     /// The blocking file I/O (read → merge → atomic write → chmod 0600) runs in a
     /// `Task.detached` rather than directly on the actor's executor
@@ -245,7 +247,7 @@ public actor MiroFishSupervisor {
         let output = lines.joined(separator: "\n")
         do {
             try output.write(to: url, atomically: true, encoding: .utf8)
-            // This file holds API keys (Zep, LLM providers). Restrict it to the
+            // This file holds API keys (LLM providers). Restrict it to the
             // owner — the default 0644 left secrets world-readable on shared Macs.
             // `atomically: true` writes via a temp file + rename, so permissions
             // must be (re)applied to the final path after the write.
@@ -291,10 +293,12 @@ public actor MiroFishSupervisor {
         }
     }
 
-    /// Run MiroFish's `setup.sh` (idempotent installer: .env scaffold, backend
-    /// venv on Python 3.12, DeerFlow clone + bridge overlay + venv) and stream
-    /// its output line by line. stdin is /dev/null, so the script's interactive
-    /// Zep prompt self-skips — the app injects the key via `syncEnv` instead.
+    /// Run the backend's `setup.sh` (idempotent installer: .env scaffold, backend
+    /// venv on Python 3.12, local Graphiti + FalkorDB graph stack, DeerFlow
+    /// assembly + bridge overlay + venv) and stream its output line by line.
+    /// stdin is /dev/null and we set `SETUP_NONINTERACTIVE=1`, so the script's
+    /// interactive provider/LLM-key picker self-skips and auto-detects instead of
+    /// blocking; the app injects the chosen provider via `syncEnv` instead.
     /// Cancelling the consuming task terminates the script.
     nonisolated public static func setupScriptStream(repoRoot: URL) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
@@ -320,6 +324,11 @@ public actor MiroFishSupervisor {
             env["PATH"] = ["/opt/homebrew/bin", "/usr/local/bin", home + "/.local/bin", home + "/.cargo/bin"]
                 .joined(separator: ":") + ":" + (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
             env["PYTHONUNBUFFERED"] = "1"
+            // The new setup.sh has an interactive provider/LLM-key picker that only
+            // engages on a TTY. stdin is /dev/null below (so it's already non-TTY),
+            // but set this explicitly so the picker auto-detects the provider and
+            // never blocks waiting on input under the app's spawned environment.
+            env["SETUP_NONINTERACTIVE"] = "1"
             process.environment = env
             process.standardInput = FileHandle.nullDevice
 
@@ -728,12 +737,14 @@ public actor MiroFishSupervisor {
             return .failed("Port \(lastPort ?? 5001) is already taken by another process that isn't MiroFish. Quit it, or change the backend URL's port in Settings → Forecast.")
         }
         // run.py prints “配置错误:” + bullets and exits 1 when .env validation fails.
-        if logTail.contains("配置错误") || logTail.contains("ZEP_API_KEY") {
-            var detail = "MiroFish's .env is incomplete."
-            if logTail.contains("ZEP_API_KEY") {
-                detail = "MiroFish needs a Zep Cloud API key. Add it under Settings → API keys → Zep (free at app.getzep.com) — it syncs into MiroFish's .env automatically."
-            } else if logTail.contains("LLM_API_KEY") {
-                detail = "MiroFish's selected LLM provider needs an API key in its .env (LLM_API_KEY), or switch to a CLI-subscription provider in Settings → Forecast."
+        // The graph is local (Graphiti), so there's no Zep-key failure mode anymore;
+        // the remaining validated keys are the LLM provider and GRAPH_BACKEND.
+        if logTail.contains("配置错误") || logTail.contains("GRAPH_BACKEND") {
+            var detail = "The backend's .env is incomplete or invalid."
+            if logTail.contains("LLM_API_KEY") {
+                detail = "The selected LLM provider needs an API key in its .env (LLM_API_KEY), or switch to a CLI-subscription provider in Settings → Forecast."
+            } else if logTail.contains("GRAPH_BACKEND") {
+                detail = "The backend's GRAPH_BACKEND value is invalid in .env — use one of auto, falkordblite, falkordb, kuzu (auto is the default and runs fully embedded)."
             }
             return .failed(detail)
         }
@@ -767,7 +778,7 @@ public actor MiroFishSupervisor {
     }
 
     /// Poll `/health` until it answers, the child exits, or ~120s elapses.
-    /// MiroFish's cold start imports the heavy camel/zep stack, which is slow.
+    /// The backend's cold start imports the heavy camel/graphiti stack, which is slow.
     private func waitForHealthOrExit(host: URL) async -> Bool {
         for _ in 0..<240 {
             try? await Task.sleep(nanoseconds: 500_000_000)

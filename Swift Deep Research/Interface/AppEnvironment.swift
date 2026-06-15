@@ -235,10 +235,11 @@ public final class AppEnvironment {
         }
     }
 
-    /// Make sure the MiroFish backend is reachable, launching it if auto-launch is
-    /// on. Also syncs the user's Zep key into MiroFish's `.env` so the graph stage
-    /// can authenticate (MiroFish reads `.env` with override, so env injection
-    /// alone wouldn't stick).
+    /// Make sure the forecast backend is reachable, launching it if auto-launch is
+    /// on. Also syncs the unified LLM provider into the backend's `.env` so a
+    /// cold-started backend boots onto the user's provider (the backend reads
+    /// `.env` with override, so env injection alone wouldn't stick). The knowledge
+    /// graph runs locally (Graphiti), so no graph credential is synced.
     @discardableResult
     public func ensureForecastBackend() async -> MiroFishSupervisor.Status {
         await syncMiroFishEnv()
@@ -259,13 +260,12 @@ public final class AppEnvironment {
         return status
     }
 
-    /// Write the Zep key (entered under Settings → API keys) and the unified
-    /// forecast LLM provider into MiroFish's `.env`, so a cold-started backend
-    /// boots straight onto the user's configuration.
+    /// Write the unified forecast LLM provider into the backend's `.env`, so a
+    /// cold-started backend boots straight onto the user's configuration. The
+    /// knowledge graph runs locally (Graphiti + embedded FalkorDB), so there is no
+    /// graph credential to sync.
     public func syncMiroFishEnv() async {
-        var updates = await modelProviders.envSeed(config: configuration)
-        let zep = await KeychainStore.shared.get(.zep) ?? ""
-        if !zep.isEmpty { updates["ZEP_API_KEY"] = zep }
+        let updates = await modelProviders.envSeed(config: configuration)
         guard !updates.isEmpty else { return }
         await MiroFishSupervisor.shared.syncEnv(updates, repoRoot: forecastConfig.repoRoot)
     }

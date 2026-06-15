@@ -56,7 +56,7 @@ public actor KeychainStore {
         // These attributes are applied on BOTH the SecItemUpdate path (re-pinning
         // accessibility on every write, so an item created before this hardening
         // gets upgraded the next time it's set) and the SecItemAdd path (via the
-        // merge below). AfterFirstUnlockThisDeviceOnly keeps paid-API / Zep keys
+        // merge below). AfterFirstUnlockThisDeviceOnly keeps paid-API keys
         // bound to this Mac: never iCloud-synced and not restorable to another
         // device via encrypted backup / Migration Assistant.
         let attributes: [String: Any] = [
@@ -108,7 +108,6 @@ public enum KeyAccount: String, Sendable, CaseIterable {
     case tavily    = "tavily.search"
     case exa       = "exa.search"
     case brave     = "brave.search"
-    case zep       = "zep.api"
 
     public var humanLabel: String {
         switch self {
@@ -123,7 +122,6 @@ public enum KeyAccount: String, Sendable, CaseIterable {
         case .tavily:    "Tavily Search API Key"
         case .exa:       "Exa Search API Key"
         case .brave:     "Brave Search API Key"
-        case .zep:       "Zep Cloud API Key (Forecast graph)"
         }
     }
 
@@ -140,7 +138,6 @@ public enum KeyAccount: String, Sendable, CaseIterable {
         case .tavily:    URL(string: "https://app.tavily.com/home")!
         case .exa:       URL(string: "https://dashboard.exa.ai/api-keys")!
         case .brave:     URL(string: "https://api.search.brave.com/app/keys")!
-        case .zep:       URL(string: "https://app.getzep.com/")!
         }
     }
 }

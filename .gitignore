@@ -79,3 +79,21 @@ codebase.md
 # runtime writes into the current working directory (the catalogue folder).
 Swift Deep Research/Assets.xcassets/.claude/
 Swift Deep Research/Assets.xcassets/logs/
+
+# Stale in-repo copies of the OLD backend / web frontend, kept on disk for
+# reference but NOT part of the macOS app (the app drives the backend out of
+# ~/Downloads/DeepResearchForecast over HTTP). Excluded so they don't pollute
+# commits or `git status`.
+/backend/
+/deer-flow/
+/deerflow_bridge/
+/dist/
+/frontend/
+/public/
+/src/
+/tests/
+/MiroFish-0.1.2/
+
+# Release artifacts (built locally, attached to GitHub Releases instead).
+/release/
+*.dmg

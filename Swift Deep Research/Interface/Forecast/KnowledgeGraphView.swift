@@ -2,7 +2,7 @@ import SwiftUI
 import Grape
 import ForceSimulation
 
-/// Renders MiroFish's Zep knowledge graph as an interactive force-directed graph
+/// Renders the backend's local Graphiti knowledge graph as an interactive force-directed graph
 /// using the Grape package. Nodes are coloured by entity type; tapping a node
 /// reveals its details and relationships. Pan/zoom/drag are wired via Grape's
 /// `graphOverlay` + `withGraphDragGesture`.
@@ -273,7 +273,7 @@ struct KnowledgeGraphView: View {
         ContentUnavailableView {
             Label("Knowledge graph pending", systemImage: "point.3.connected.trianglepath.dotted")
         } description: {
-            Text("The temporal knowledge graph appears here once MiroFish finishes extracting entities into Zep.")
+            Text("The temporal knowledge graph appears here once the backend finishes extracting entities into the local Graphiti graph.")
         }
     }
 

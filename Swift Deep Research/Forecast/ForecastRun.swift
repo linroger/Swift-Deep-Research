@@ -380,7 +380,7 @@ public final class ForecastRun: Identifiable {
             if let proj = try? await client.project(pid), let o = proj.ontology { ontology = o }
         }
         // Knowledge graph once a graph id exists. Keep refreshing while the graph
-        // stage is still running (Zep extracts entities incrementally), then stop.
+        // stage is still running (Graphiti extracts entities incrementally), then stop.
         if let gid = state.graph_id, graph == nil || stageStatus(.graph) == .running {
             if let data = try? await client.graphData(gid) {
                 let next = ForecastGraph.from(data)

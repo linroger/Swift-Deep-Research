@@ -1,9 +1,10 @@
 import Foundation
 import Observation
 
-/// Drives the first-run Forecast setup flow: inspect the machine, collect the
-/// one credential MiroFish always needs (Zep), run the repo's idempotent
-/// `setup.sh` with a live console, then launch the backend and verify health.
+/// Drives the first-run Forecast setup flow: inspect the machine, run the repo's
+/// idempotent `setup.sh` with a live console, then launch the backend and verify
+/// health. The knowledge graph runs locally (Graphiti + embedded FalkorDB), so
+/// there is no graph credential to collect here.
 ///
 /// The model is recreated each time the onboarding sheet opens, so all state is
 /// per-presentation; only the "completed" flag persists (UserDefaults).
@@ -29,12 +30,6 @@ public final class ForecastOnboarding {
 
     public private(set) var checks: [Check] = []
     public private(set) var checking = false
-
-    /// True when the Zep key exists in the Keychain or MiroFish's `.env`
-    /// already carries a real (non-placeholder) value.
-    public private(set) var zepConfigured = false
-    public var zepKeyInput: String = ""
-    public private(set) var zepSaveMessage: String?
 
     public private(set) var setupPhase: SetupPhase = .idle
     public private(set) var consoleLines: [String] = []
@@ -74,10 +69,7 @@ public final class ForecastOnboarding {
         checking = true
         defer { checking = false }
 
-        let zepInKeychain = !((await KeychainStore.shared.get(.zep)) ?? "").isEmpty
         let envValues = Self.parseEnv(at: repoRoot.appendingPathComponent(".env"))
-        let zepInEnv = Self.isRealValue(envValues["ZEP_API_KEY"])
-        zepConfigured = zepInKeychain || zepInEnv
 
         var result: [Check] = []
 
@@ -130,12 +122,11 @@ public final class ForecastOnboarding {
                                 state: .warn))
         }
 
-        // 5. Zep Cloud key (graph storage — required for full forecasts).
-        result.append(Check(id: "5-zep", title: "Zep API key",
-                            detail: zepConfigured
-                                ? "Configured."
-                                : "Missing — paste it below (free at app.getzep.com). Research-only runs work without it.",
-                            state: zepConfigured ? .pass : .warn))
+        // 5. Knowledge graph — now runs locally (Graphiti + embedded FalkorDB),
+        //    so there's no cloud account or API key to configure.
+        result.append(Check(id: "5-graph", title: "Knowledge graph",
+                            detail: "Runs locally via Graphiti + embedded FalkorDB — no API key required. The first forecast downloads a ~470MB multilingual embedding model once.",
+                            state: .pass))
 
         // 6–7. What setup.sh will build (informational before the run).
         result.append(Check(id: "6-venv", title: "Backend Python env",
@@ -175,26 +166,11 @@ public final class ForecastOnboarding {
         if let custom = envValues["DEERFLOW_DIR"], !custom.isEmpty {
             return URL(fileURLWithPath: (custom as NSString).expandingTildeInPath)
         }
-        return repoRoot.deletingLastPathComponent().appendingPathComponent("deer-flow")
+        return repoRoot.appendingPathComponent("deer-flow")
     }
 
     private var deerflowOK: Bool {
         FileManager.default.fileExists(atPath: deerflowDir.appendingPathComponent("deerflow_research.py").path)
-    }
-
-    // MARK: - Zep key
-
-    public func saveZepKey() async {
-        let key = zepKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { return }
-        await KeychainStore.shared.set(key, for: .zep)
-        let synced = await MiroFishSupervisor.shared.syncEnv(["ZEP_API_KEY": key], repoRoot: repoRoot)
-        zepKeyInput = ""
-        zepConfigured = true
-        zepSaveMessage = synced
-            ? "Saved to the Keychain and MiroFish's .env."
-            : "Saved to the Keychain; it syncs into .env when the backend starts."
-        await refreshChecks()
     }
 
     // MARK: - Setup script
@@ -246,13 +222,11 @@ public final class ForecastOnboarding {
 
     // MARK: - Backend launch
 
-    /// Final step: sync the Zep key into `.env`, launch, and wait for `/health`.
+    /// Final step: launch the backend and wait for `/health`. The knowledge graph
+    /// runs locally (Graphiti), so there's no credential to sync first.
     public func startBackend() async -> MiroFishSupervisor.Status {
         launching = true
         defer { launching = false }
-        if let zep = await KeychainStore.shared.get(.zep), !zep.isEmpty {
-            await MiroFishSupervisor.shared.syncEnv(["ZEP_API_KEY": zep], repoRoot: repoRoot)
-        }
         let status = await MiroFishSupervisor.shared.ensureRunning(host: config.host, repoRoot: repoRoot)
         backendStatus = status
         if case .running = status {

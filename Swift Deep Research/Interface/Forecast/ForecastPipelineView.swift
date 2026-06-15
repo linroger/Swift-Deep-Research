@@ -42,8 +42,8 @@ struct ForecastPipelineView: View {
         }
     }
 
-    /// Why the run stopped — including MiroFish's preflight bullet lists (missing
-    /// Zep key, missing provider key, …), which arrive as multi-line messages.
+    /// Why the run stopped — including the backend's preflight bullet lists (missing
+    /// provider key, invalid GRAPH_BACKEND, …), which arrive as multi-line messages.
     private func errorBanner(_ message: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")

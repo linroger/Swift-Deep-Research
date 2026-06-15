@@ -3,7 +3,7 @@ import Foundation
 // MARK: - MiroFishClient
 //
 // HTTP client for the MiroFish prediction backend (Flask, default :5001). MiroFish
-// already exposes the unified DeerFlow→ontology→Zep-graph→OASIS-simulation→report
+// already exposes the unified DeerFlow→ontology→Graphiti-graph→OASIS-simulation→report
 // pipeline at `POST /api/research/run`; this client drives it and reads every stage
 // back out so the native macOS UI can render the whole forecast.
 //

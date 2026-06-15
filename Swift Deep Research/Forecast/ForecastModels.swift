@@ -25,7 +25,7 @@ public enum ForecastStageKind: String, CaseIterable, Sendable, Identifiable {
         switch self {
         case .research: "DeerFlow gathers a cited dossier"
         case .ontology: "Extract the actor entity/edge types"
-        case .graph:    "Build the temporal knowledge graph (Zep)"
+        case .graph:    "Build the temporal knowledge graph (Graphiti)"
         case .prepare:  "Turn actors into agents + personas"
         case .run:      "OASIS social simulation (Twitter + Reddit)"
         case .report:   "ReAct agent writes the forecast"
@@ -73,8 +73,8 @@ public struct ForecastStage: Sendable, Identifiable {
 
 // MARK: - Knowledge graph view-model (drives the Grape renderer)
 
-/// A force-graph-ready snapshot built from MiroFish's `/api/graph/data`. Node ids
-/// are the Zep node UUIDs (uniform `String` id type that Grape requires).
+/// A force-graph-ready snapshot built from the backend's `/api/graph/data`. Node
+/// ids are the Graphiti node UUIDs (uniform `String` id type that Grape requires).
 public struct ForecastGraph: Sendable, Codable, Equatable {
     public var nodes: [GraphVizNode]
     public var edges: [GraphVizEdge]
@@ -132,7 +132,7 @@ public struct ForecastGraph: Sendable, Codable, Equatable {
 }
 
 public struct GraphVizNode: Sendable, Codable, Equatable, Identifiable {
-    public let id: String         // Zep node uuid
+    public let id: String         // Graphiti node uuid
     public let label: String
     public let type: String       // entity type → colour
     public let summary: String
@@ -159,8 +159,10 @@ public enum GraphPalette {
 
 // MARK: - Configuration (persisted in UserDefaults)
 
-/// Where the MiroFish backend lives and how to reach it. Defaults match the
-/// documented side-by-side layout under `~/Downloads/mirofish`.
+/// Where the forecast backend lives and how to reach it. Defaults match the
+/// documented layout of the DeepResearchForecast repo under
+/// `~/Downloads/DeepResearchForecast`, where the DeerFlow research engine is
+/// assembled *inside* the repo (`<repo>/deer-flow`) rather than as a sibling.
 public struct ForecastConfiguration: Codable, Sendable, Equatable {
     public var repoRootPath: String
     public var hostString: String
@@ -179,7 +181,7 @@ public struct ForecastConfiguration: Codable, Sendable, Equatable {
 
     public static func suggestedDefault() -> ForecastConfiguration {
         let home = NSHomeDirectory()
-        return ForecastConfiguration(repoRootPath: home + "/Downloads/mirofish/MiroFish-0.1.2")
+        return ForecastConfiguration(repoRootPath: home + "/Downloads/DeepResearchForecast")
     }
 
     public var repoRoot: URL { URL(fileURLWithPath: repoRootPath) }
