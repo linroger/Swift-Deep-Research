@@ -146,6 +146,17 @@ public final class StoredEvent {
     public var kind: String              // ResearchEvent case name
     public var summary: String
     public var payloadJSON: String
+    /// Loss-less Codable snapshot of the full `ResearchEvent` (see
+    /// `ResearchEventSnapshot`), JSON-encoded. `payloadJSON` historically carried
+    /// a structured payload for only a handful of kinds and just `{kind,timestamp}`
+    /// for the rest, so the persisted log could not reconstruct a run. This field
+    /// captures EVERY kind's associated values so the timeline is fully replayable.
+    ///
+    /// Optional with a `nil` default so SwiftData performs a lightweight,
+    /// data-preserving migration: rows written before this field existed simply
+    /// decode it as `nil`, and `decodedSnapshot` falls back to `payloadJSON` for
+    /// those rows — old history is never lost and never crashes on read.
+    public var eventPayloadJSON: String? = nil
     public var occurredAt: Date
     public var session: StoredSession?
 
@@ -154,6 +165,7 @@ public final class StoredEvent {
                 kind: String,
                 summary: String,
                 payloadJSON: String,
+                eventPayloadJSON: String? = nil,
                 occurredAt: Date = .now,
                 session: StoredSession? = nil) {
         self.id = id
@@ -161,7 +173,19 @@ public final class StoredEvent {
         self.kind = kind
         self.summary = summary
         self.payloadJSON = payloadJSON
+        self.eventPayloadJSON = eventPayloadJSON
         self.occurredAt = occurredAt
         self.session = session
+    }
+
+    /// The loss-less event snapshot for this row, if one was persisted. Falls back
+    /// to nothing for legacy rows (whose only payload was the lossy `payloadJSON`),
+    /// so callers can branch on `nil` rather than crashing. Decoding failures are
+    /// swallowed and surface as `nil` — a corrupt payload must never break the
+    /// timeline read path.
+    public var decodedSnapshot: ResearchEventSnapshot? {
+        guard let eventPayloadJSON,
+              let data = eventPayloadJSON.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(ResearchEventSnapshot.self, from: data)
     }
 }

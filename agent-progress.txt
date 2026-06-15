@@ -820,3 +820,46 @@ AppEnvironment decomposition, no-tests-1). Work top-down in EXECPLAN2.md.
 
   CATALOG PROGRESS: 123 / 150 findings done (82%). Branch audit-remediation-batch5
   (commits 21a2f2a, 39063fe, 20dc322, 2bcbb8d, + this batch9).
+
+[2026-06-16] Batch 10 — tractable tail (13 findings). Build green (Debug/macOS,
+  CODE_SIGNING_ALLOWED=NO, 0 errors / 0 warnings). Run as a hybrid: 5 disjoint-file
+  workflow agents + a main-loop budget cluster. NOTE the workflow infra was flaky —
+  3 agents died on transient API socket errors (run 1) and the KB agent stalled
+  again (run 2); their partial edits were reverted and re-run/finished cleanly, so
+  every landed change is build-verified.
+  Engine/budget (main loop): WorkerAgent now (a) gates the next completion on the
+  token cap BEFORE issuing it (charge-before-use), (b) charges a conservative
+  prompt-token estimate when a provider call fails mid-stream so failed-but-billed
+  calls aren't free, and (c) clips re-injected tool-result payloads to 12k chars so
+  the growing message array isn't re-billed multiplicatively each hop — full text
+  still flows to synthesis/citations (engine-no-budget-charge-on-failed-llm,
+  research-tools-charge-after-budget). Synthesizer streams under a wall-clock
+  task-group deadline (catches a hung stream the per-chunk poll can't) and charges
+  token estimates incrementally with an authoritative true-up
+  (budget-wallclock-not-monotonic-check-14). ResearchEngine emit closure got a
+  guardrail comment documenting the audited-safe per-WorkerID ordering
+  (concurrency-emit-closure-reentrancy-ordering, confirm-only).
+  Forecast/concurrency (agent): MiroFishSupervisor.syncEnv moved its blocking .env
+  I/O off the actor via Task.detached (perms 0o600 preserved), and venvIsPython312's
+  blocking waitUntilExit replaced with the async drain pattern; DeerFlowEngine event
+  stream is .bufferingNewest(8192) not .unbounded.
+  Providers (agent): HTTPErrorMapping.swift centralizes the duplicated body-drain +
+  JSON-field + status->guidance mapping for OpenAI-compat/Anthropic/Ollama; messages
+  unchanged so RetryPolicy.isTransient classification is byte-identical.
+  Storage (agent + main-loop consumer): ResearchStore coalesces context.save() onto
+  a 400ms debounce with synchronous flushNow() at durability boundaries and an
+  isolated deinit flush (monotonic saveGeneration token replaces Task identity);
+  event-envelope-lossy-payload-12 adds a Codable ResearchEventSnapshot covering all
+  21 event kinds + an additive StoredEvent.eventPayloadJSON, and AppEnvironment.ingest
+  now calls the loss-less appendEvent(event:) overload (dead EventEnvelope/AnyEncodable/
+  eventKind/eventEncoder removed).
+  KB (agent + main-loop consumer): SidecarSupervisor recovers from EADDRINUSE (adopt a
+  healthy listener via /health, else lsof -ti + SIGTERM/SIGKILL the orphan, distinct
+  actionable .failed); SeekDBClient.upsertBulk posts /documents/bulk (bare array,
+  BulkUnsupported on 404/405) and KnowledgeBase.ingestFiles batches with single-add
+  fallback — DocumentUploadView's picker + drop now call it; PDF extraction falls
+  back to Vision OCR (off-actor Task.detached, 50-page cap, 2x render) and reports a
+  distinct scannedPDFNoText error when truly image-only.
+  Settings (agent): ProvidersTab decomposed into HostEndpointCard + DiscoveryStatusLabel,
+  behavior-preserving.
+  CATALOG PROGRESS: 136 / 150 findings done (91%).

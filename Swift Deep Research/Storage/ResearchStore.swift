@@ -12,6 +12,90 @@ public final class ResearchStore {
         self.container = container
     }
 
+    /// Flush any pending coalesced save before the store is deallocated so the
+    /// final draft / events written during the last debounce window are never
+    /// lost on teardown. `isolated deinit` (Swift 6.2) runs on the MainActor
+    /// executor, so it may safely touch the MainActor-bound context and cancel
+    /// the pending-save task.
+    isolated deinit {
+        saveTask?.cancel()
+        saveTask = nil
+        flushIfDirty()
+    }
+
+    // MARK: - Save coalescing
+    //
+    // Streaming a run drives a high-frequency write stream — every persisted
+    // `ResearchEvent` (appendEvent), each `sourceFetched` (upsertSource), plus
+    // per-draft turn/citation writes. Calling `context.save()` on every one of
+    // those ran a synchronous, SQLite-backed transaction on the MainActor while
+    // the UI was also updating, the dominant cause of jank on long runs. Instead
+    // of saving per mutation, the chatty mutators mark the context dirty and a
+    // single coalescing task performs at most one save per `saveDebounce`.
+    // Durability-critical boundaries (session create/finish, deletes, explicit
+    // `saveChanges`) still flush synchronously so nothing is lost on completion.
+
+    /// Maximum delay before a coalesced save reaches disk. Short enough that a
+    /// crash loses at most this window of streaming events, long enough to absorb
+    /// a burst of token/tool writes into one transaction.
+    private static let saveDebounce: Duration = .milliseconds(400)
+
+    /// True when uncommitted inserts/changes are waiting for the next flush.
+    private var isDirty = false
+
+    /// The in-flight coalescing task, if a flush is already scheduled. Held so it
+    /// can be cancelled (and superseded) and so the `deinit` can guarantee a final
+    /// flush. Not `@Observable`, so no `@ObservationIgnored` is required.
+    private var saveTask: Task<Void, Never>?
+
+    /// Monotonic token identifying the currently-scheduled debounce. A task only
+    /// clears `saveTask` / flushes if its captured token still matches — so a
+    /// superseded or cancelled task that wakes up late can never null out a newer
+    /// task's handle. (`Task` is a value type and can't be compared by identity,
+    /// hence the token.)
+    private var saveGeneration = 0
+
+    /// Record a mutation that should reach disk soon and ensure a single coalesced
+    /// flush is scheduled. Cheap and non-blocking: the actual `context.save()`
+    /// happens once per debounce window on the MainActor.
+    private func scheduleSave() {
+        isDirty = true
+        guard saveTask == nil else { return }
+        saveGeneration += 1
+        let generation = saveGeneration
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.saveDebounce)
+            guard let self, !Task.isCancelled,
+                  self.saveGeneration == generation else { return }
+            self.saveTask = nil
+            self.flushIfDirty()
+        }
+    }
+
+    /// Persist pending changes immediately and cancel any scheduled debounce, used
+    /// at durability-critical boundaries. Safe to call when nothing is dirty.
+    /// Bumping the generation invalidates any in-flight debounce so it can't fire
+    /// a duplicate save after this synchronous flush.
+    private func flushNow() {
+        saveTask?.cancel()
+        saveTask = nil
+        saveGeneration += 1
+        flushIfDirty()
+    }
+
+    /// Save the context iff there are pending changes, clearing the dirty flag.
+    /// A failed save keeps the flag set so the next boundary retries rather than
+    /// silently dropping the batch.
+    private func flushIfDirty() {
+        guard isDirty else { return }
+        do {
+            try context.save()
+            isDirty = false
+        } catch {
+            Log.engine.error("Coalesced SwiftData save failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     public static func makeContainer() throws -> ModelContainer {
         let schema = Schema(ResearchSchema.models)
         let config = ModelConfiguration("DeepResearch.v2",
@@ -50,7 +134,10 @@ public final class ResearchStore {
         let title = String(query.prefix(80))
         let session = StoredSession(query: query, titleSummary: title, providerName: providerName)
         context.insert(session)
-        try context.save()
+        // Durability boundary: the returned session anchors the whole run; persist
+        // it (and any coalesced writes ahead of it) synchronously.
+        isDirty = true
+        flushNow()
         return session
     }
 
@@ -60,12 +147,17 @@ public final class ResearchStore {
         session.status = status.rawValue
         session.totalTokens = totalTokens
         session.updatedAt = .now
-        try context.save()
+        // Run-finish durability boundary: flush synchronously so the terminal
+        // status AND every coalesced event/draft written during the run are on
+        // disk before completion is recorded.
+        isDirty = true
+        flushNow()
     }
 
     public func deleteSession(_ session: StoredSession) throws {
         context.delete(session)
-        try context.save()
+        isDirty = true
+        flushNow()
     }
 
     public func allSessions() throws -> [StoredSession] {
@@ -84,13 +176,16 @@ public final class ResearchStore {
         let turn = StoredTurn(role: role.rawValue, markdown: markdown, session: session)
         context.insert(turn)
         session.updatedAt = .now
-        try context.save()
+        // The returned turn is valid in-context immediately; coalesce the save.
+        // The draft it carries is made durable at the next run-finish flush
+        // (markSession) and by the debounce in between.
+        scheduleSave()
         return turn
     }
 
     public func updateTurnMarkdown(_ turn: StoredTurn, markdown: String) throws {
         turn.markdown = markdown
-        try context.save()
+        scheduleSave()
     }
 
     // MARK: - Sources
@@ -114,7 +209,7 @@ public final class ResearchStore {
             existing.fullText = fetched.extractedText
             existing.fetchedAt = fetched.extractedAt
             if let snippet, existing.snippet.isEmpty { existing.snippet = snippet }
-            try context.save()
+            scheduleSave()
             return existing
         }
         let source = StoredSource(
@@ -128,7 +223,7 @@ public final class ResearchStore {
             session: session
         )
         context.insert(source)
-        try context.save()
+        scheduleSave()
         return source
     }
 
@@ -136,7 +231,7 @@ public final class ResearchStore {
 
     public func attachCitations(_ citations: [Citation], to turn: StoredTurn) throws {
         insertCitations(citations, into: turn)
-        try context.save()
+        scheduleSave()
     }
 
     /// Replace a turn's citations wholesale. Used on a re-draft: multi-round
@@ -152,7 +247,7 @@ public final class ResearchStore {
             context.delete(existing)
         }
         insertCitations(citations, into: turn)
-        try context.save()
+        scheduleSave()
     }
 
     /// Insert citation rows for `turn` without saving, so callers can batch the
@@ -180,18 +275,25 @@ public final class ResearchStore {
                                depth: String) throws -> ForecastRecord {
         let record = ForecastRecord(pipelineID: pipelineID, prompt: prompt, mode: mode, depth: depth)
         context.insert(record)
-        try context.save()
+        // Durability boundary: the returned record is the local handle for a
+        // backend pipeline; persist it synchronously.
+        isDirty = true
+        flushNow()
         return record
     }
 
-    /// Persist mutations the caller made directly on `@Model` objects.
+    /// Persist mutations the caller made directly on `@Model` objects. This is the
+    /// explicit synchronous-flush contract callers rely on, so it also drains any
+    /// pending coalesced save.
     public func saveChanges() throws {
-        try context.save()
+        isDirty = true
+        flushNow()
     }
 
     public func deleteForecast(_ record: ForecastRecord) throws {
         context.delete(record)
-        try context.save()
+        isDirty = true
+        flushNow()
     }
 
     public func allForecasts() throws -> [ForecastRecord] {
@@ -227,6 +329,38 @@ public final class ResearchStore {
             session: session
         )
         context.insert(event)
-        try context.save()
+        // High-frequency during streaming — coalesce. The run-finish flush in
+        // markSession guarantees the full event log is durable on completion.
+        scheduleSave()
+    }
+
+    /// Loss-less event persistence: stores a full `ResearchEventSnapshot` for the
+    /// event so the timeline can be reconstructed for ANY kind — not just the
+    /// three (`planEmitted`/`draftReady`/`citationAdded`) the lossy string envelope
+    /// historically captured. `kind`/`summary` are derived from the event so call
+    /// sites need only supply the event, its sequence, and the session.
+    ///
+    /// `payloadJSON` is filled with the same Codable snapshot for backward
+    /// compatibility (legacy readers expect a non-empty payload string), and the
+    /// new `eventPayloadJSON` carries the canonical loss-less snapshot that
+    /// `StoredEvent.decodedSnapshot` reads.
+    public func appendEvent(event: ResearchEvent,
+                            summary: String,
+                            sequence: Int,
+                            session: StoredSession) throws {
+        let snapshot = ResearchEventSnapshot(event: event)
+        let json = (try? JSONEncoder().encode(snapshot))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        let stored = StoredEvent(
+            id: UUID().uuidString,
+            sequence: sequence,
+            kind: snapshot.kind,
+            summary: summary,
+            payloadJSON: json,
+            eventPayloadJSON: json,
+            session: session
+        )
+        context.insert(stored)
+        scheduleSave()
     }
 }

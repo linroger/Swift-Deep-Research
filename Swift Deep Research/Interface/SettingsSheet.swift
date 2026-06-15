@@ -340,6 +340,11 @@ private enum DiscoveredModelsStore {
     }
 }
 
+/// Discovery / key-test status shared by the providers tab and its extracted
+/// host-endpoint cards. File-scoped (rather than nested in `ProvidersTab`) so the
+/// `HostEndpointCard` / `DiscoveryStatusLabel` subviews can reference it.
+private enum OllamaFetchState: Equatable { case idle, loading, ok, error(String) }
+
 private struct ProvidersTab: View {
     @Environment(AppEnvironment.self) private var env
     @State private var ollamaModels: [String] = []
@@ -352,8 +357,6 @@ private struct ProvidersTab: View {
     @State private var lmStudioHostString: String = ""
     @State private var customHostString: String = ""
     @State private var qwenHostString: String = ""
-
-    enum OllamaFetchState: Equatable { case idle, loading, ok, error(String) }
 
     var body: some View {
         @Bindable var env = env
@@ -512,8 +515,8 @@ private struct ProvidersTab: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
-                        discoveryStatusLabel(discoveryStates[provider.wrappedValue] ?? .idle,
-                                            count: discovered[provider.wrappedValue]?.count ?? 0)
+                        DiscoveryStatusLabel(state: discoveryStates[provider.wrappedValue] ?? .idle,
+                                             count: discovered[provider.wrappedValue]?.count ?? 0)
                     }
                 }
             }
@@ -756,80 +759,43 @@ private struct ProvidersTab: View {
     // MARK: - LM Studio
 
     private var lmStudioCard: some View {
-        SettingsGroup("LM Studio",
-                     footer: "Start LM Studio's local server (Developer tab → Start Server) and load a model.") {
-            SettingsRow("Server URL", icon: "network") {
-                TextField("http://localhost:1234", text: $lmStudioHostString)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 240)
-                    .onSubmit { commitLMStudioHost() }
+        HostEndpointCard(
+            title: "LM Studio",
+            footer: "Start LM Studio's local server (Developer tab → Start Server) and load a model.",
+            hostRowLabel: "Server URL",
+            hostRowIcon: "network",
+            placeholder: "http://localhost:1234",
+            fieldMaxWidth: 240,
+            host: $lmStudioHostString,
+            status: discoveryStates[.lmstudio] ?? .idle,
+            modelCount: discovered[.lmstudio]?.count ?? 0,
+            onApply: { commitLMStudioHost() },
+            onTest: {
+                commitLMStudioHost()
+                Task { await discoverModels(for: .lmstudio) }
             }
-            SettingsRow("Status", icon: "wave.3.right") {
-                discoveryStatusLabel(discoveryStates[.lmstudio] ?? .idle, count: discovered[.lmstudio]?.count ?? 0)
-            }
-            HStack {
-                Spacer()
-                Button("Apply") { commitLMStudioHost() }
-                    .buttonStyle(.bordered).controlSize(.small)
-                Button("Test & list models") {
-                    commitLMStudioHost()
-                    Task { await discoverModels(for: .lmstudio) }
-                }
-                .buttonStyle(.borderedProminent).controlSize(.small)
-            }
-            .padding(12)
-        }
+        )
     }
 
     // MARK: - Custom endpoint
 
     private var customCard: some View {
-        SettingsGroup("Custom endpoint",
-                     footer: "Any OpenAI-compatible server. Paste the base URL (…/v1 optional). Set its API key under API keys → Custom Endpoint.") {
-            SettingsRow("Base URL", icon: "link") {
-                TextField("https://api.example.com/v1", text: $customHostString)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 280)
-                    .onSubmit { commitCustomHost() }
+        HostEndpointCard(
+            title: "Custom endpoint",
+            footer: "Any OpenAI-compatible server. Paste the base URL (…/v1 optional). Set its API key under API keys → Custom Endpoint.",
+            hostRowLabel: "Base URL",
+            hostRowIcon: "link",
+            placeholder: "https://api.example.com/v1",
+            fieldMaxWidth: 280,
+            host: $customHostString,
+            status: discoveryStates[.custom] ?? .idle,
+            modelCount: discovered[.custom]?.count ?? 0,
+            onApply: { commitCustomHost() },
+            onTest: {
+                commitCustomHost()
+                Task { await discoverModels(for: .custom) }
             }
-            SettingsRow("Status", icon: "wave.3.right") {
-                discoveryStatusLabel(discoveryStates[.custom] ?? .idle, count: discovered[.custom]?.count ?? 0)
-            }
-            HStack {
-                Spacer()
-                Button("Apply") { commitCustomHost() }
-                    .buttonStyle(.bordered).controlSize(.small)
-                Button("Test & list models") {
-                    commitCustomHost()
-                    Task { await discoverModels(for: .custom) }
-                }
-                .buttonStyle(.borderedProminent).controlSize(.small)
-            }
-            .padding(12)
-        }
-    }
-
-    @ViewBuilder
-    private func discoveryStatusLabel(_ state: OllamaFetchState, count: Int) -> some View {
-        switch state {
-        case .idle:
-            Text("Not checked").font(.caption).foregroundStyle(.secondary)
-        case .loading:
-            HStack(spacing: 4) {
-                ProgressView().controlSize(.mini)
-                Text("Connecting…").font(.caption).foregroundStyle(.secondary)
-            }
-        case .ok:
-            Label("\(count) model\(count == 1 ? "" : "s")", systemImage: "checkmark.seal.fill")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.green)
-                .labelStyle(.titleAndIcon)
-        case .error(let msg):
-            Label("Failed", systemImage: "exclamationmark.triangle.fill")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.orange)
-                .help(msg)
-        }
+        )
     }
 
     private func commitLMStudioHost() {
@@ -880,29 +846,22 @@ private struct ProvidersTab: View {
     // MARK: - Qwen (Alibaba Cloud Model Studio)
 
     private var qwenCard: some View {
-        SettingsGroup("Qwen endpoint",
-                     footer: "Alibaba Cloud Model Studio (MaaS), OpenAI-compatible. Paste your dedicated host (…/v1 optional). Set the key under API keys → Qwen.") {
-            SettingsRow("Base URL", icon: "link") {
-                TextField("https://….maas.aliyuncs.com", text: $qwenHostString)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 320)
-                    .onSubmit { commitQwenHost() }
+        HostEndpointCard(
+            title: "Qwen endpoint",
+            footer: "Alibaba Cloud Model Studio (MaaS), OpenAI-compatible. Paste your dedicated host (…/v1 optional). Set the key under API keys → Qwen.",
+            hostRowLabel: "Base URL",
+            hostRowIcon: "link",
+            placeholder: "https://….maas.aliyuncs.com",
+            fieldMaxWidth: 320,
+            host: $qwenHostString,
+            status: discoveryStates[.qwen] ?? .idle,
+            modelCount: discovered[.qwen]?.count ?? 0,
+            onApply: { commitQwenHost() },
+            onTest: {
+                commitQwenHost()
+                Task { await discoverModels(for: .qwen) }
             }
-            SettingsRow("Status", icon: "wave.3.right") {
-                discoveryStatusLabel(discoveryStates[.qwen] ?? .idle, count: discovered[.qwen]?.count ?? 0)
-            }
-            HStack {
-                Spacer()
-                Button("Apply") { commitQwenHost() }
-                    .buttonStyle(.bordered).controlSize(.small)
-                Button("Test & list models") {
-                    commitQwenHost()
-                    Task { await discoverModels(for: .qwen) }
-                }
-                .buttonStyle(.borderedProminent).controlSize(.small)
-            }
-            .padding(12)
-        }
+        )
     }
 
     private func commitQwenHost() {
@@ -910,6 +869,79 @@ private struct ProvidersTab: View {
         if let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(),
            scheme == "http" || scheme == "https", url.host != nil {
             env.configuration.qwenBaseURL = url
+        }
+    }
+}
+
+// MARK: - Providers — extracted host-card components
+
+/// One OpenAI-compatible host endpoint (LM Studio / custom server / Qwen): a
+/// base-URL field, a discovery status line, and Apply / Test buttons. The owning
+/// `ProvidersTab` keeps the host string as `@State` and the commit + discovery
+/// logic; this view threads that state through and forwards the two button
+/// actions, so behaviour is identical to the inline cards it replaces.
+private struct HostEndpointCard: View {
+    let title: String
+    let footer: String
+    let hostRowLabel: String
+    let hostRowIcon: String
+    let placeholder: String
+    let fieldMaxWidth: CGFloat
+    @Binding var host: String
+    let status: OllamaFetchState
+    let modelCount: Int
+    let onApply: () -> Void
+    let onTest: () -> Void
+
+    var body: some View {
+        SettingsGroup(title, footer: footer) {
+            SettingsRow(hostRowLabel, icon: hostRowIcon) {
+                TextField(placeholder, text: $host)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: fieldMaxWidth)
+                    .onSubmit(onApply)
+            }
+            SettingsRow("Status", icon: "wave.3.right") {
+                DiscoveryStatusLabel(state: status, count: modelCount)
+            }
+            HStack {
+                Spacer()
+                Button("Apply", action: onApply)
+                    .buttonStyle(.bordered).controlSize(.small)
+                Button("Test & list models", action: onTest)
+                    .buttonStyle(.borderedProminent).controlSize(.small)
+            }
+            .padding(12)
+        }
+    }
+}
+
+/// Renders a provider's discovery / key-test state as a compact status line
+/// (idle / connecting / N models / failed). Pure value-driven view extracted
+/// from `ProvidersTab.discoveryStatusLabel(_:count:)`.
+private struct DiscoveryStatusLabel: View {
+    let state: OllamaFetchState
+    let count: Int
+
+    var body: some View {
+        switch state {
+        case .idle:
+            Text("Not checked").font(.caption).foregroundStyle(.secondary)
+        case .loading:
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text("Connecting…").font(.caption).foregroundStyle(.secondary)
+            }
+        case .ok:
+            Label("\(count) model\(count == 1 ? "" : "s")", systemImage: "checkmark.seal.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.green)
+                .labelStyle(.titleAndIcon)
+        case .error(let msg):
+            Label("Failed", systemImage: "exclamationmark.triangle.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.orange)
+                .help(msg)
         }
     }
 }

@@ -540,11 +540,6 @@ public final class LiveSession: Identifiable {
         streamTask?.cancel()
     }
 
-    /// One reused encoder for all persisted events — avoids a fresh `JSONEncoder`
-    /// allocation per event on the MainActor during streaming. Confined to the
-    /// MainActor (LiveSession is `@MainActor`), so single-threaded reuse is safe.
-    private static let eventEncoder = JSONEncoder()
-
     /// Whether an event warrants a durable `StoredEvent` row. Transient,
     /// high-frequency streaming deltas are excluded so the persistence layer
     /// isn't hit thousands of times per run on the MainActor (see `ingest`).
@@ -567,15 +562,13 @@ public final class LiveSession: Identifiable {
         // on `.draftReady`) and the meaningful timeline events below; the token
         // stream is reconstructable from the draft and is never replayed verbatim.
         if let storedSession, Self.shouldPersist(event) {
-            // Reuse one shared encoder (Self.eventEncoder) instead of allocating a
-            // fresh JSONEncoder per event, and let `EventEnvelope` encode the inner
-            // value straight into the payload — no encode→string→AnyJSON.parse→
-            // re-encode round-trip — so the durable record costs a single pass.
-            let payload = (try? Self.eventEncoder.encode(EventEnvelope(event: event)))
-                .flatMap { String(data: $0, encoding: .utf8) } ?? ""
-            try? store.appendEvent(kind: eventKind(event),
+            // Persist the FULL event via the loss-less overload: the store builds a
+            // Codable `ResearchEventSnapshot` covering every event kind (not just the
+            // three the old string envelope captured) and derives `kind`/payload from
+            // it, so the persisted timeline is reconstructable for any kind
+            // (event-envelope-lossy-payload-12).
+            try? store.appendEvent(event: event,
                                    summary: eventSummary(event),
-                                   payloadJSON: payload,
                                    sequence: eventSequence,
                                    session: storedSession)
             eventSequence += 1
@@ -694,32 +687,6 @@ public final class LiveSession: Identifiable {
         try? store.markSession(storedSession, status: status, totalTokens: totalTokens)
     }
 
-    private func eventKind(_ e: ResearchEvent) -> String {
-        switch e {
-        case .sessionStarted: "sessionStarted"
-        case .iterationStarted: "iterationStarted"
-        case .planEmitted: "planEmitted"
-        case .workerStarted: "workerStarted"
-        case .workerProgress: "workerProgress"
-        case .toolInvoked: "toolInvoked"
-        case .toolResult: "toolResult"
-        case .sourceDiscovered: "sourceDiscovered"
-        case .sourceFetched: "sourceFetched"
-        case .sourceCacheHit: "sourceCacheHit"
-        case .reasoningDelta: "reasoningDelta"
-        case .tokenDelta: "tokenDelta"
-        case .citationAdded: "citationAdded"
-        case .workerCompleted: "workerCompleted"
-        case .draftReady: "draftReady"
-        case .reflectionStarted: "reflectionStarted"
-        case .reflectionEmitted: "reflectionEmitted"
-        case .reflectionConcluded: "reflectionConcluded"
-        case .sessionCompleted: "sessionCompleted"
-        case .warning: "warning"
-        case .error: "error"
-        }
-    }
-
     private func eventSummary(_ e: ResearchEvent) -> String {
         switch e {
         case .sessionStarted(let d): "Session \(d.id) started"
@@ -749,46 +716,4 @@ public final class LiveSession: Identifiable {
         case .error(let f): "✗ \(f.message)"
         }
     }
-}
-
-/// Codable wrapper so events can be persisted in `StoredEvent.payloadJSON`.
-/// Only the three event kinds with a durable payload carry `data`; everything
-/// else encodes `{kind, timestamp}` with no payload work. The payload value is
-/// encoded straight into the output — no intermediate `AnyJSON.parse` round-trip —
-/// so building the record is a single encode pass.
-private struct EventEnvelope: Encodable {
-    let kind: String
-    let timestamp: Date
-    /// Type-erased payload value, encoded directly into the `data` key. `nil` for
-    /// events that don't carry a durable payload.
-    private let data: AnyEncodable?
-
-    private enum CodingKeys: String, CodingKey { case kind, timestamp, data }
-
-    init(event: ResearchEvent) {
-        self.timestamp = .now
-        switch event {
-        case .planEmitted(let p):
-            self.kind = "planEmitted"
-            self.data = AnyEncodable(p)
-        case .draftReady(let d):
-            self.kind = "draftReady"
-            self.data = AnyEncodable(d)
-        case .citationAdded(let c):
-            self.kind = "citationAdded"
-            self.data = AnyEncodable(c)
-        default:
-            self.kind = String(describing: event).prefix(while: { $0 != "(" }).description
-            self.data = nil
-        }
-    }
-}
-
-/// Minimal type eraser that encodes the wrapped value as-is, so `EventEnvelope`
-/// can nest heterogeneous payloads (plan / draft / citation) without the prior
-/// encode→string→`AnyJSON.parse`→re-encode round-trip.
-private struct AnyEncodable: Encodable {
-    private let encodeValue: (Encoder) throws -> Void
-    init<T: Encodable>(_ value: T) { self.encodeValue = value.encode }
-    func encode(to encoder: Encoder) throws { try encodeValue(encoder) }
 }

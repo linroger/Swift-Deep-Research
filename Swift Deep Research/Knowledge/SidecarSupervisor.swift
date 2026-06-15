@@ -277,17 +277,113 @@ public actor SidecarSupervisor {
             || e.contains("[exit 2]")
     }
 
+    /// True when the captured child output indicates the bind port is already
+    /// held by another process. uvicorn surfaces this as an `OSError` whose text
+    /// is "address already in use"; Python also prints `errno 48` (`EADDRINUSE`
+    /// on Darwin). Matching both lets us recover from an orphaned sidecar instead
+    /// of dumping a raw traceback on the user (kb-port-in-use-no-recovery).
+    private var portInUse: Bool {
+        guard let e = lastError?.lowercased() else { return false }
+        return e.contains("address already in use")
+            || e.contains("errno 48")
+            || e.contains("eaddrinuse")
+    }
+
     private func launchAndWait(script: URL, port: Int, host: URL, python: String) async -> Status {
         let launched = launch(script: script, port: port, host: host, python: python)
         guard case .launching = launched else { return launched }
-        return await waitForHealthOrExit(host: host) ? .running : statusAfterExit()
+        if await waitForHealthOrExit(host: host) { return .running }
+        // The first attempt died. If it died because the port was already taken,
+        // try to recover once: a healthy orphan we can adopt, or a wedged orphan
+        // we can reap and relaunch over (kb-port-in-use-no-recovery).
+        if portInUse {
+            if await recoverFromPortConflict(host: host, port: port) {
+                // The port was freed — relaunch over it once.
+                let relaunched = launch(script: script, port: port, host: host, python: python)
+                guard case .launching = relaunched else { return relaunched }
+                return await waitForHealthOrExit(host: host) ? .running : statusAfterExit(port: port)
+            }
+            // Recovery returned false either because a healthy listener was
+            // adopted (no relaunch needed) or because no owner could be freed.
+            // Re-probe once to tell those apart: a healthy adopt is success,
+            // otherwise report the distinct EADDRINUSE failure.
+            if await probeHealth(host: host) { status = .running; return .running }
+        }
+        return statusAfterExit(port: port)
+    }
+
+    /// Recover from an "address already in use" launch failure. Idempotent and
+    /// best-effort:
+    ///   1. Re-probe `/health` once — if a previous sidecar of ours is already
+    ///      listening and healthy, adopt it (no relaunch needed). This is the
+    ///      common debugger-stop / quit+reopen case where the orphan is fine.
+    ///   2. Otherwise the listener is a wedged orphan (or a foreign process):
+    ///      find the PID holding the port via `lsof -ti tcp:PORT` and SIGTERM it,
+    ///      then SIGKILL any stragglers, so the caller can relaunch over a freed
+    ///      port.
+    /// Returns `true` when the port is healthy (adopt) or has been freed (relaunch);
+    /// `false` when no owner could be found/killed (the caller then reports a
+    /// distinct EADDRINUSE failure instead of looping).
+    private func recoverFromPortConflict(host: URL, port: Int) async -> Bool {
+        // 1. Adopt a healthy already-running listener as our sidecar.
+        if await probeHealth(host: host) {
+            status = .running
+            return false   // healthy — no relaunch needed; caller short-circuits below
+        }
+
+        // 2. Locate the PID(s) bound to the port and terminate them. `lsof -ti`
+        //    prints one PID per line with no header, so the output parses cleanly.
+        let pids = await pidsHoldingPort(port)
+        guard !pids.isEmpty else { return false }
+        for pid in pids { kill(pid, SIGTERM) }
+        // Give the orphan a moment to release the socket, then escalate to
+        // SIGKILL for anything still bound so the relaunch doesn't re-collide.
+        for _ in 0..<20 {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            if await pidsHoldingPort(port).isEmpty { return true }
+        }
+        for pid in await pidsHoldingPort(port) { kill(pid, SIGKILL) }
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        return await pidsHoldingPort(port).isEmpty
+    }
+
+    /// PIDs of processes with a listening/bound socket on `port`, via
+    /// `lsof -ti tcp:PORT`. Returns an empty array when nothing holds the port,
+    /// `lsof` is unavailable, or the command times out. We never SIGTERM our own
+    /// supervised child here — `recoverFromPortConflict` only runs after that
+    /// child has already exited (the launch failed), so the survivor is by
+    /// definition a foreign/orphaned listener.
+    private func pidsHoldingPort(_ port: Int) async -> [pid_t] {
+        let (code, out) = await runProcess(executable: "/usr/sbin/lsof",
+                                           args: ["-ti", "tcp:\(port)"],
+                                           timeout: 5)
+        // lsof exits non-zero (1) when no process matches; that's "port free",
+        // not an error. Only parse PIDs from whatever it printed.
+        guard code == 0 || !out.isEmpty else { return [] }
+        let me = ProcessInfo.processInfo.processIdentifier
+        return out.split(whereSeparator: \.isNewline).compactMap { line in
+            guard let value = Int32(line.trimmingCharacters(in: .whitespaces)),
+                  value > 0, value != me else { return nil }
+            return pid_t(value)
+        }
     }
 
     /// After a launch attempt that didn't come up healthy, decide whether the
-    /// failure is a missing-deps problem or a generic failure.
-    private func statusAfterExit() -> Status {
+    /// failure is a missing-deps problem, an unrecoverable port conflict, or a
+    /// generic failure.
+    private func statusAfterExit(port: Int) -> Status {
         if process?.isRunning == true { return .launching }
         if needsDependencies { return .notInstalled(lastError ?? "Missing Python dependencies.") }
+        // A port conflict that survived `recoverFromPortConflict` (we couldn't
+        // adopt a healthy listener and couldn't free the port) gets a distinct,
+        // actionable message instead of dumping the raw uvicorn traceback on the
+        // user (kb-port-in-use-no-recovery).
+        if portInUse {
+            return .failed("Port \(port) is already in use by another process " +
+                "that isn't responding to the knowledge-base health check. " +
+                "Quit any stray `seekdb_sidecar.py`/python process, or free the port " +
+                "(e.g. `lsof -ti tcp:\(port) | xargs kill`), then retry.")
+        }
         return .failed(lastError ?? "Sidecar process exited before becoming healthy.")
     }
 

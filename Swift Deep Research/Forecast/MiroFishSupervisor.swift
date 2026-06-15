@@ -187,12 +187,47 @@ public actor MiroFishSupervisor {
     /// (`<repoRoot>/.env`, the file `config.py` loads with `override=True`).
     /// Used to persist the Zep key the user enters in Settings. Existing keys are
     /// updated in place; new keys are appended. Returns true on success.
+    ///
+    /// The blocking file I/O (read → merge → atomic write → chmod 0600) runs in a
+    /// `Task.detached` rather than directly on the actor's executor
+    /// (concurrency-mirofish-syncenv-blocking-io-on-actor). The actor is only
+    /// re-entered afterward to record a failure into `logTail`. Only Sendable value
+    /// types (`[String: String]`, `URL`) cross the boundary, and the merge result
+    /// is a Sendable value, so there is no data race.
     @discardableResult
-    public func syncEnv(_ pairs: [String: String], repoRoot: URL) -> Bool {
+    public func syncEnv(_ pairs: [String: String], repoRoot: URL) async -> Bool {
         guard !pairs.isEmpty else { return true }
         let envURL = repoRoot.appendingPathComponent(".env")
+        // Hop OFF the actor for the synchronous read/format/write so a slow disk
+        // can't stall concurrent ensureRunning/checkHealth callers serialized on
+        // this actor's executor.
+        let outcome = await Task.detached {
+            Self.writeEnv(pairs: pairs, to: envURL)
+        }.value
+        if case .failure(let message) = outcome {
+            logTail = message
+            return false
+        }
+        return true
+    }
+
+    /// Result of the off-actor `.env` merge/write. A value type so it crosses the
+    /// actor boundary without sharing reference state.
+    private enum EnvWriteOutcome: Sendable {
+        case success
+        case failure(String)
+    }
+
+    /// Pure-Foundation merge + atomic write of `pairs` into the `.env` at `url`,
+    /// then re-apply 0600 permissions. `nonisolated` and `static` so it runs on a
+    /// detached executor with no actor isolation, taking only Sendable value-type
+    /// inputs and returning a Sendable value. The merge semantics (existing keys
+    /// updated in place, new keys appended, single-quote escaping, exact line
+    /// ordering) and the secret-file permission hardening are identical to the
+    /// previous in-actor implementation.
+    private nonisolated static func writeEnv(pairs: [String: String], to url: URL) -> EnvWriteOutcome {
         var lines: [String] = []
-        if let existing = try? String(contentsOf: envURL, encoding: .utf8) {
+        if let existing = try? String(contentsOf: url, encoding: .utf8) {
             lines = existing.components(separatedBy: "\n")
         }
         var remaining = pairs
@@ -202,24 +237,23 @@ public actor MiroFishSupervisor {
             guard !trimmed.hasPrefix("#"), let eq = trimmed.firstIndex(of: "=") else { continue }
             let key = String(trimmed[trimmed.startIndex..<eq]).trimmingCharacters(in: .whitespaces)
             if let value = remaining[key] {
-                lines[i] = "\(key)=\(Self.escapeEnvValue(value))"
+                lines[i] = "\(key)=\(escapeEnvValue(value))"
                 remaining.removeValue(forKey: key)
             }
         }
-        for (k, v) in remaining { lines.append("\(k)=\(Self.escapeEnvValue(v))") }
+        for (k, v) in remaining { lines.append("\(k)=\(escapeEnvValue(v))") }
         let output = lines.joined(separator: "\n")
         do {
-            try output.write(to: envURL, atomically: true, encoding: .utf8)
+            try output.write(to: url, atomically: true, encoding: .utf8)
             // This file holds API keys (Zep, LLM providers). Restrict it to the
             // owner — the default 0644 left secrets world-readable on shared Macs.
             // `atomically: true` writes via a temp file + rename, so permissions
             // must be (re)applied to the final path after the write.
             try? FileManager.default.setAttributes([.posixPermissions: 0o600],
-                                                    ofItemAtPath: envURL.path)
-            return true
+                                                    ofItemAtPath: url.path)
+            return .success
         } catch {
-            logTail = "Failed to update MiroFish .env: \(error.localizedDescription)"
-            return false
+            return .failure("Failed to update MiroFish .env: \(error.localizedDescription)")
         }
     }
 
@@ -230,7 +264,7 @@ public actor MiroFishSupervisor {
     /// escape any embedded single quote with the POSIX `'\''` idiom. Newlines and
     /// carriage returns are stripped (no legitimate API key contains them and they
     /// can't be represented inside a single-quoted line anyway).
-    private static func escapeEnvValue(_ value: String) -> String {
+    private nonisolated static func escapeEnvValue(_ value: String) -> String {
         let sanitized = value
             .replacingOccurrences(of: "\r", with: "")
             .replacingOccurrences(of: "\n", with: "")
@@ -430,8 +464,25 @@ public actor MiroFishSupervisor {
         } catch {
             return false
         }
-        let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
-        process.waitUntilExit()
+        // Drain the pipe off-actor and poll `isRunning` with `Task.sleep` instead
+        // of the blocking `readToEnd()` + `waitUntilExit()`, which held the actor's
+        // cooperative thread for the ~100-300ms a python interpreter takes to start
+        // and print its version (concurrency-mirofish-syncenv-blocking-io-on-actor).
+        // This mirrors the async pattern `runRepairStep` already uses for the same
+        // reason. `--version` is near-instant, but a short wall-clock cap guards
+        // against a wedged interpreter without ever blocking the actor.
+        let drainTask = Task.detached { () -> Data in
+            (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
+        }
+        let deadline = ContinuousClock.now + .seconds(10)
+        while process.isRunning {
+            if ContinuousClock.now > deadline {
+                process.terminate()
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        let data = await drainTask.value
         let version = String(data: data, encoding: .utf8) ?? ""
         return process.terminationStatus == 0 && version.contains("3.12")
     }

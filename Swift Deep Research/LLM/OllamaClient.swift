@@ -65,12 +65,10 @@ public struct OllamaClient: LLMClient {
                     if let http = response as? HTTPURLResponse, !(200..<300 ~= http.statusCode) {
                         // Read the body for the real error message (Ollama
                         // returns 404 + `{"error":"model 'X' not found"}` when
-                        // the requested model isn't pulled, for instance).
-                        var data = Data()
-                        for try await byte in bytes {
-                            data.append(byte)
-                            if data.count > 4096 { break }
-                        }
+                        // the requested model isn't pulled, for instance). The
+                        // cap is 4097 so the bounded read stops at the same point
+                        // the previous `count > 4096` loop did.
+                        let data = try await HTTPErrorMapping.drainBody(from: bytes, cap: 4097)
                         let body = String(data: data, encoding: .utf8) ?? ""
                         let snippet = body.replacingOccurrences(of: "\n", with: " ")
                                           .trimmingCharacters(in: .whitespaces)

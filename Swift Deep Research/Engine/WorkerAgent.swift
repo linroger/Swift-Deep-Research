@@ -125,6 +125,13 @@ public actor WorkerAgent {
             do {
                 try Task.checkCancellation()
                 try await budget.checkWallClock()
+                // Charge-before-use: gate the next billable completion on the token
+                // cap. A worker that crossed its budget while charging the previous
+                // hop's tool payloads stops HERE rather than issuing (and being
+                // billed for) another full completion first. chargeTokens(0) is a
+                // pure cap check (engine-no-budget-charge-on-failed-llm,
+                // research-tools-charge-after-budget).
+                try await budget.chargeTokens(0)
 
                 // No artificial maxTokens cap — workers may need to summarize
                 // long tool outputs, and 1500 was clipping richer responses.
@@ -135,7 +142,24 @@ public actor WorkerAgent {
                 // stops gracefully like any other budget bust.
                 let llm = self.llm
                 let remaining = await budget.remainingWallClock
-                let completion = try await withTimeout(remaining) { try await llm.complete(req) }
+                let completion: LLMCompletion
+                do {
+                    completion = try await withTimeout(remaining) { try await llm.complete(req) }
+                } catch {
+                    // A provider call that partially streamed (or timed out) before
+                    // failing still bills the input tokens, but `complete()` can't
+                    // hand back the partial usage on a throw — so charge a
+                    // conservative estimate of the prompt we sent. Otherwise a
+                    // failed-but-billed call reads as free and the meter drifts below
+                    // real spend (engine-no-budget-charge-on-failed-llm). Skip on
+                    // cancellation (user stop — nothing provider-billed to account)
+                    // and ignore a cap throw from the estimate since we're about to
+                    // stop this worker regardless.
+                    if !(error is CancellationError) && !Task.isCancelled {
+                        try? await budget.chargeTokens(Self.estimatedPromptTokens(messages))
+                    }
+                    throw error
+                }
                 try await budget.chargeTokens(completion.totalTokens)
 
                 if !completion.text.isEmpty {
@@ -230,7 +254,17 @@ public actor WorkerAgent {
                     case .ok(_, let payload): payload
                     case .failed(let m): "ERROR: \(m)"
                     }
-                    messages.append(.toolResult(callID: invocation.id, name: invocation.name, output: output))
+                    // Clip the copy threaded back into the conversation. The full
+                    // message array — every prior tool result included — is re-sent
+                    // to the provider on EVERY hop, so an un-clipped 20–40k-char
+                    // fetch is re-billed multiplicatively across the worker's hops
+                    // (research-tools-charge-after-budget). A generous excerpt is
+                    // ample for the worker to extract facts; the FULL extracted text
+                    // still reaches synthesis and citations via `collectedSources`,
+                    // so no evidence is lost.
+                    messages.append(.toolResult(callID: invocation.id,
+                                                name: invocation.name,
+                                                output: Self.clipForHistory(output)))
 
                     for fetched in Self.fetchedSources(from: outcome)
                         where !collectedSources.contains(where: { $0.id == fetched.id || $0.url == fetched.url }) {
@@ -239,10 +273,10 @@ public actor WorkerAgent {
                 }
                 if capHit { break toolLoop }
                 // Tools charge tokens through the non-throwing `ToolContext.charge`
-                // (try? swallows the cap throw). Re-assert the token cap here so a
-                // tool-heavy hop that crossed the budget stops the worker now
-                // instead of running another full completion.
-                try await budget.chargeTokens(0)
+                // (try? swallows the cap throw), so a tool-heavy hop can cross the
+                // budget silently. The charge-before-use gate at the TOP of the next
+                // iteration re-asserts the token cap and stops the worker before its
+                // next completion, so no explicit re-check is needed here.
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -273,6 +307,36 @@ public actor WorkerAgent {
                             subtask: subtask,
                             summary: lastText,
                             sources: collectedSources)
+    }
+
+    /// Rough prompt-size estimate (~4 chars/token — the same proxy the tools use
+    /// to charge their output) for the messages about to be sent. Charged when a
+    /// provider call fails mid-stream so a failed-but-billed request isn't counted
+    /// as free to the meter (engine-no-budget-charge-on-failed-llm).
+    private static func estimatedPromptTokens(_ messages: [LLMMessage]) -> Int {
+        var chars = 0
+        for message in messages {
+            for block in message.content {
+                switch block {
+                case .text(let t): chars += t.count
+                case .toolCall(_, let name, let args): chars += name.count + args.count
+                case .toolResult(_, let name, let output): chars += name.count + output.count
+                }
+            }
+        }
+        return chars / 4
+    }
+
+    /// Cap on a single tool result's size when re-injected into the worker's
+    /// message history. The full array is re-sent every hop, so an un-clipped
+    /// 20–40k-char fetch is re-billed multiplicatively; a 12k-char excerpt is
+    /// ample for the worker to extract facts (research-tools-charge-after-budget).
+    private static let maxToolResultCharsInHistory = 12_000
+    private static func clipForHistory(_ output: String) -> String {
+        guard output.count > maxToolResultCharsInHistory else { return output }
+        let omitted = output.count - maxToolResultCharsInHistory
+        return String(output.prefix(maxToolResultCharsInHistory))
+            + "\n\n[… \(omitted) characters omitted to bound re-send cost; the full text was kept for synthesis and citations.]"
     }
 
     /// Tool payloads are intentionally heterogeneous: `fetch_url`, `read_pdf`,

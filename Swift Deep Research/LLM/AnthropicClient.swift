@@ -299,14 +299,10 @@ public struct AnthropicClient: LLMClient {
         // Drain a bounded prefix of the error body so the user sees Anthropic's
         // real message (invalid key, model not found, rate limit, overloaded)
         // instead of a bare "HTTP 4xx". Anthropic returns
-        // {"error":{"type":...,"message":...}}.
-        var data = Data()
-        do {
-            for try await b in bytes {
-                data.append(b)
-                if data.count >= 2048 { break }
-            }
-        } catch { /* best-effort: fall back to status-only message */ }
+        // {"error":{"type":...,"message":...}}. The drain is best-effort: a
+        // transport error mid-read falls back to whatever bytes arrived (and a
+        // status-only message), so the user still sees the HTTP code.
+        let data = try await HTTPErrorMapping.drainBody(from: bytes, cap: 2048, bestEffort: true)
         let detail = Self.extractErrorMessage(data)
         throw EngineFailure(kind: .providerFailure,
                             message: "Anthropic HTTP \(http.statusCode)" + (detail.map { ": \($0)" } ?? ""),
@@ -316,13 +312,10 @@ public struct AnthropicClient: LLMClient {
     /// Pull `error.message` from Anthropic's error JSON, falling back to a short
     /// raw-text prefix when the body isn't the expected shape.
     private static func extractErrorMessage(_ data: Data) -> String? {
-        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let err = obj["error"] as? [String: Any],
-           let msg = err["message"] as? String, !msg.isEmpty {
+        if let obj = HTTPErrorMapping.parseJSONObject(from: data),
+           let msg = HTTPErrorMapping.nestedErrorMessage(in: obj) {
             return msg
         }
-        let raw = String(data: data.prefix(500), encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return (raw?.isEmpty == false) ? raw : nil
+        return HTTPErrorMapping.rawTextPrefix(from: data, limit: 500)
     }
 }

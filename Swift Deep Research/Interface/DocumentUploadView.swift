@@ -302,9 +302,11 @@ struct DocumentUploadView: View {
         panel.allowedContentTypes = Self.supportedContentTypes
         if panel.runModal() == .OK {
             Task {
-                for url in panel.urls {
-                    await kb.ingestFile(at: url)
-                }
+                // Batched import: one `/documents/bulk` round-trip instead of N
+                // single-adds, with a single document-list refresh at the end
+                // (kb-bulk-endpoint-unused). `ingestFiles` falls back to single-add
+                // internally for a lone file or an older sidecar.
+                await kb.ingestFiles(at: panel.urls)
             }
         }
     }
@@ -317,18 +319,27 @@ struct DocumentUploadView: View {
         // let only the resolved URLs (Sendable) cross back to the main actor.
         let fileProviders = providers.filter { $0.canLoadObject(ofClass: URL.self) }
         guard !fileProviders.isEmpty else { return false }
-        // Resolve every URL, then ingest them through a single awaited loop so the
-        // files import in drop order with shared progress/error state, instead of
-        // each load completion racing its own MainActor task. Load failures
-        // surface via kb.lastError rather than being silently dropped.
+        // Resolve every dropped URL, then batch-ingest them in one
+        // `/documents/bulk` round-trip (kb-bulk-endpoint-unused) so they import in
+        // drop order with shared progress/error state. A load failure is surfaced
+        // afterward, but only if the ingest itself didn't already set an error, so
+        // a clean import doesn't clobber the dropped-file read error.
         Task { @MainActor in
+            var urls: [URL] = []
+            var loadError: String?
             for result in await Self.loadURLs(from: fileProviders) {
                 switch result {
                 case .success(let url):
-                    await kb.ingestFile(at: url)
+                    urls.append(url)
                 case .failure(let error):
-                    kb.lastError = "Couldn't read a dropped file: \(error.localizedDescription)"
+                    loadError = "Couldn't read a dropped file: \(error.localizedDescription)"
                 }
+            }
+            if !urls.isEmpty {
+                await kb.ingestFiles(at: urls)
+            }
+            if let loadError, kb.lastError == nil {
+                kb.lastError = loadError
             }
         }
         return true

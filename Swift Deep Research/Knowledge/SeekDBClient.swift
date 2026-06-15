@@ -43,14 +43,49 @@ public actor SeekDBClient {
                        text: String,
                        metadata: [String: String]? = nil,
                        id: String? = nil) async throws -> Document {
-        struct Body: Encodable {
-            let id: String?
-            let title: String
-            let text: String
-            let metadata: [String: String]?
-        }
-        let body = Body(id: id, title: title, text: text, metadata: metadata)
+        let body = UpsertBody(id: id, title: title, text: text, metadata: metadata)
         return try await request("/documents", method: "POST", body: body)
+    }
+
+    /// A single document to upsert via the batched `/documents/bulk` endpoint.
+    /// Mirrors the single-`upsert` parameters so callers build the same shape.
+    public struct BulkDocument: Sendable {
+        public let title: String
+        public let text: String
+        public let metadata: [String: String]?
+        public let id: String?
+        public init(title: String,
+                    text: String,
+                    metadata: [String: String]? = nil,
+                    id: String? = nil) {
+            self.title = title
+            self.text = text
+            self.metadata = metadata
+            self.id = id
+        }
+    }
+
+    /// Error thrown when the sidecar predates the `/documents/bulk` endpoint, so
+    /// callers can transparently fall back to a single-add loop. uvicorn answers
+    /// an unknown route with 404; a method mismatch yields 405.
+    public struct BulkUnsupported: Error, Sendable {}
+
+    /// Upsert several documents in one request via POST `/documents/bulk`,
+    /// replacing N single-add round-trips with one batched call (the sidecar
+    /// returns the resulting `Document` records in request order). Throws
+    /// `BulkUnsupported` when the sidecar lacks the endpoint (404/405) so the
+    /// caller can degrade gracefully to the single-add path.
+    public func upsertBulk(_ documents: [BulkDocument]) async throws -> [Document] {
+        // The wire shape is a bare JSON array of UpsertBody objects, matching the
+        // sidecar's `upsert_bulk(bodies: list[UpsertBody])` signature.
+        let bodies = documents.map {
+            UpsertBody(id: $0.id, title: $0.title, text: $0.text, metadata: $0.metadata)
+        }
+        do {
+            return try await request("/documents/bulk", method: "POST", body: bodies)
+        } catch SeekDBError.httpStatus(let code, _) where code == 404 || code == 405 {
+            throw BulkUnsupported()
+        }
     }
 
     public func delete(id: String) async throws {
@@ -107,6 +142,15 @@ public actor SeekDBClient {
         public var title: String {
             metadata?["title"]?.stringValue ?? id
         }
+    }
+
+    /// Wire body for `/documents` and each element of `/documents/bulk`. Mirrors
+    /// the sidecar's `UpsertBody` pydantic model exactly (id/title/text/metadata).
+    private struct UpsertBody: Encodable {
+        let id: String?
+        let title: String
+        let text: String
+        let metadata: [String: String]?
     }
 
     private struct AcknowledgedResponse: Decodable { }

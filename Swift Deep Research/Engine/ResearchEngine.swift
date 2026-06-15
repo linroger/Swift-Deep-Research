@@ -75,6 +75,17 @@ public struct ResearchEngine: Sendable {
                                                query: query,
                                                providerName: providerName)
 
+                // A single @Sendable emit shared by all parallel workers and the
+                // synthesis loop. `AsyncThrowingStream.Continuation.yield` is itself
+                // thread-safe, so concurrent yields from N workers never race — they
+                // only INTERLEAVE in a non-deterministic order. That is intentional
+                // and safe: every consumer keys events by `WorkerID`
+                // (LiveSession.ingest does `workers[id]?…`), and `toolResult` is
+                // matched within a single worker's history by the provider-minted
+                // unique tool-call id — never by global arrival order. Do NOT add any
+                // logic here that assumes a total ordering across workers; if strict
+                // ordering is ever required, route emits through a serializing actor
+                // rather than relying on yield order (concurrency-emit-closure-reentrancy-ordering).
                 let emit: @Sendable (ResearchEvent) -> Void = { event in
                     continuation.yield(event)
                 }

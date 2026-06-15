@@ -40,7 +40,18 @@ public struct DeerFlowEngine: Sendable {
         let registry = self.registry
         let config = self.config
         let iteration = self.iteration
-        return AsyncThrowingStream<ResearchEvent, Error>(bufferingPolicy: .unbounded) { continuation in
+        // Bounded backpressure instead of .unbounded, matching the native
+        // ResearchEngine (concurrency-unbounded-event-stream-mainactor). DeerFlow's
+        // reporter emits one .tokenDelta per synthesis chunk and steps emit
+        // per-tool/per-completion events, while the sole consumer drains on
+        // @MainActor doing SwiftData persistence per event. An unbounded buffer
+        // grows without limit if the MainActor stalls under heavy streaming. 8192
+        // is far above any normal run's in-flight backlog (the UI drains
+        // continuously and already trims token/activity logs downstream), so
+        // normal runs never drop an event; only a pathological stall bounds memory
+        // by discarding the oldest buffered deltas rather than spiking. Finish,
+        // terminal, and error semantics below are unchanged.
+        return AsyncThrowingStream<ResearchEvent, Error>(bufferingPolicy: .bufferingNewest(8192)) { continuation in
             let task = Task {
                 let start = ContinuousClock().now
                 let budget = BudgetMeter(budget: config.budget)
