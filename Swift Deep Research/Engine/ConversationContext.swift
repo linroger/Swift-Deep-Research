@@ -36,7 +36,32 @@ public struct ConversationContext: Sendable, Codable {
         public enum Role: String, Sendable, Codable { case user, assistant }
     }
 
+    /// Upper bound on sources/citations retained across turns, so a long
+    /// multi-turn session doesn't grow unbounded in memory (and in the persisted
+    /// conversation blob). The most-recent entries are kept; `SourceCache` still
+    /// serves full text for evicted sources on demand, and `seenSourcesNote`
+    /// only needs titles+URLs. (E3-sec-5)
+    public static let maxAccumulated = 80
+
     public var isFirstTurn: Bool { priorTurns.isEmpty }
+
+    /// Trim accumulated sources/citations to the most-recent `limit`, de-duping
+    /// sources by URL first so the retained window favors distinct pages.
+    public mutating func capAccumulated(to limit: Int = maxAccumulated) {
+        if accumulatedSources.count > limit {
+            var seen = Set<URL>()
+            // Keep most-recent occurrence of each URL: walk from the end.
+            var kept: [FetchedSource] = []
+            for source in accumulatedSources.reversed() {
+                if seen.insert(source.url).inserted { kept.append(source) }
+                if kept.count >= limit { break }
+            }
+            accumulatedSources = Array(kept.reversed())
+        }
+        if accumulatedCitations.count > limit {
+            accumulatedCitations = Array(accumulatedCitations.suffix(limit))
+        }
+    }
 
     public mutating func appendUserTurn(_ text: String) {
         priorTurns.append(Turn(role: .user, content: text))

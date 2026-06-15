@@ -55,6 +55,7 @@ struct Composer: View {
             .background(.red.opacity(0.15), in: Circle())
             .foregroundStyle(.red)
             .help("Cancel research")
+            .accessibilityLabel("Cancel research")
         } else if canFollowUp {
             HStack(spacing: 6) {
                 Button(action: onNewSession) {
@@ -63,6 +64,7 @@ struct Composer: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Start a fresh session")
+                .accessibilityLabel("Start a fresh session")
                 primaryButton(label: "Follow up", icon: "arrow.up", action: onFollowUp)
             }
         } else {
@@ -83,6 +85,7 @@ struct Composer: View {
         .disabled(!canSubmit)
         .keyboardShortcut(.return, modifiers: .command)
         .help("\(label) (⌘↩)")
+        .accessibilityLabel(label)
     }
 
     private var canSubmit: Bool {

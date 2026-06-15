@@ -596,6 +596,8 @@ public final class LiveSession: Identifiable {
                 }
                 self.conversation.accumulatedSources.append(contentsOf: self.fetchedSources.values)
                 self.conversation.accumulatedCitations.append(contentsOf: self.citations)
+                // Bound multi-turn memory growth (E3-sec-5): keep a recent window.
+                self.conversation.capAccumulated()
             } catch {
                 guard let self else { return }
                 self.streamTask = nil

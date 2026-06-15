@@ -144,6 +144,7 @@ struct ForecastReportView: View {
                 } label: { Label("Copy", systemImage: "doc.on.doc") }
                     .buttonStyle(.borderless)
                     .controlSize(.small)
+                    .accessibilityLabel("Copy report")
             }
             if let outline = report.outline {
                 outlineView(outline)
@@ -272,6 +273,7 @@ struct ForecastChatView: View {
                 }
                 .buttonStyle(.borderless)
                 .disabled(run.chatBusy || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityLabel("Send question")
             }
         }
         .padding(14)

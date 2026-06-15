@@ -204,6 +204,9 @@ private struct NumberedSourceRow: View {
         .help(source.isKnowledgeBase
               ? "\(source.title) — knowledge base\n\n\(String(source.extractedText.prefix(280)))…"
               : "\(source.title)\n\(source.url.absoluteString)\n\n\(String(source.extractedText.prefix(280)))…")
+        .accessibilityLabel(source.isKnowledgeBase
+              ? "Source \(index): \(source.title), knowledge base. Opens reader."
+              : "Source \(index): \(source.title). Opens \(source.url.host ?? source.url.absoluteString).")
         .sheet(isPresented: $showChunk) { KBChunkDetail(source: source) }
     }
 }
@@ -243,6 +246,9 @@ struct CitationChip: View {
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
         .help("\(citation.claim)\n\n“\(citation.exactQuote)”")
+        .accessibilityLabel(isKB
+              ? "Citation from knowledge base: \(citation.claim)"
+              : "Citation from \(citation.sourceTitle): \(citation.claim)")
         .sheet(isPresented: $showChunk) {
             if let kbChunk { KBChunkDetail(source: kbChunk) }
         }
@@ -254,13 +260,28 @@ struct FlowLayout: Layout {
     let spacing: CGFloat
     init(spacing: CGFloat = 6) { self.spacing = spacing }
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    /// Caches each subview's measured size (chips have fixed sizes that don't
+    /// change between the size and placement phases) so every chip is measured
+    /// once per invalidation instead of twice — once in `sizeThatFits` and
+    /// again in `placeSubviews`.
+    struct Cache {
+        var sizes: [CGSize]
+    }
+
+    func makeCache(subviews: Subviews) -> Cache {
+        Cache(sizes: subviews.map { $0.sizeThatFits(.unspecified) })
+    }
+
+    func updateCache(_ cache: inout Cache, subviews: Subviews) {
+        cache.sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
         let maxWidth = proposal.width ?? .infinity
         var line: CGFloat = 0
         var totalHeight: CGFloat = 0
         var lineHeight: CGFloat = 0
-        for view in subviews {
-            let size = view.sizeThatFits(.unspecified)
+        for size in cache.sizes {
             if line + size.width > maxWidth {
                 totalHeight += lineHeight + spacing
                 line = 0; lineHeight = 0
@@ -271,12 +292,12 @@ struct FlowLayout: Layout {
         return CGSize(width: maxWidth, height: totalHeight + lineHeight)
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
         var x: CGFloat = bounds.minX
         var y: CGFloat = bounds.minY
         var lineHeight: CGFloat = 0
-        for view in subviews {
-            let size = view.sizeThatFits(.unspecified)
+        for (index, view) in subviews.enumerated() {
+            let size = cache.sizes[index]
             if x + size.width > bounds.maxX {
                 x = bounds.minX
                 y += lineHeight + spacing

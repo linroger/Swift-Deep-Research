@@ -89,6 +89,24 @@ public actor SourceCache {
         return (result, false)
     }
 
+    /// Seed the result cache with sources already fetched in earlier turns of
+    /// this session, in ONE actor hop instead of one `fetch()` await per source.
+    ///
+    /// Only the most-recent `maxEntries` sources are seeded: anything beyond the
+    /// cap would be evicted by `store`'s FIFO trim before a later worker could
+    /// hit it, so seeding it is pure overhead. We take the *tail* of `sources`
+    /// (callers pass them oldest-first) so the entries most likely to be re-read
+    /// survive. Already-cached keys are left untouched so a fresher in-run result
+    /// isn't clobbered by a stale cross-turn copy.
+    public func seed(_ sources: [FetchedSource]) {
+        let recent = sources.suffix(maxEntries)
+        for source in recent {
+            let key = Self.normalize(source.url)
+            guard cached[key] == nil else { continue }
+            store(key: key, value: source)
+        }
+    }
+
     private func store(key: String, value: FetchedSource) {
         if cached[key] == nil { order.append(key) }
         cached[key] = value

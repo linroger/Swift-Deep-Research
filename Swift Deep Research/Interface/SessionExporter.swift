@@ -201,6 +201,128 @@ public enum SessionExporter {
         return try encoder.encode(out)
     }
 
+    // MARK: - JSON import (round-trips `json(session:)`)
+
+    /// A decoded session ready to be recreated in the store. Mirrors the exact
+    /// shape `json(session:)` writes, so an exported JSON file round-trips back
+    /// into a fresh `StoredSession`. Lives outside SwiftData so decoding stays
+    /// pure `Foundation` and the store owns all `@Model` insertion.
+    public struct ImportedSession: Sendable {
+        public let query: String
+        public let createdAt: Date
+        public let providerName: String
+        public let totalTokens: Int
+        public let status: String
+        public let turns: [Turn]
+        public let sources: [Source]
+
+        public struct Turn: Sendable {
+            public let role: String
+            public let markdown: String
+            public let createdAt: Date
+            public let citations: [Citation]
+            public struct Citation: Sendable {
+                public let url: String
+                public let title: String
+                public let claim: String
+                public let exactQuote: String
+            }
+        }
+        public struct Source: Sendable {
+            public let title: String
+            public let url: String
+            public let snippet: String
+            public let providerHint: String
+            public let fetchedAt: Date
+        }
+    }
+
+    /// Surfaced when an import file isn't a Swift Deep Research session export.
+    /// Carries a short, user-presentable reason so callers can show a clean
+    /// alert instead of crashing on malformed or foreign JSON.
+    public struct ImportError: LocalizedError {
+        public let reason: String
+        public var errorDescription: String? { reason }
+    }
+
+    /// Decode an exported session JSON (the shape `json(session:)` produces) back
+    /// into an `ImportedSession`. Dates are read as `iso8601` to match the
+    /// exporter. Any decoding failure — truncated, malformed, or foreign JSON —
+    /// is mapped to a clean `ImportError` rather than propagating a raw
+    /// `DecodingError`, so the import affordance never crashes on bad input.
+    public static func importJSON(_ data: Data) throws -> ImportedSession {
+        // Decodable mirror of the encoder's private `Out` type. Kept separate so
+        // the encode and decode shapes can diverge intentionally if needed, while
+        // the field names/types here must match `json(session:)` exactly.
+        struct In: Decodable {
+            let query: String
+            let createdAt: Date
+            let providerName: String
+            let totalTokens: Int
+            let status: String
+            let turns: [Turn]
+            let sources: [Source]
+            struct Turn: Decodable {
+                let role: String
+                let markdown: String
+                let createdAt: Date
+                let citations: [Citation]
+                struct Citation: Decodable {
+                    let url: String
+                    let title: String
+                    let claim: String
+                    let exactQuote: String
+                }
+            }
+            struct Source: Decodable {
+                let title: String
+                let url: String
+                let snippet: String
+                let providerHint: String
+                let fetchedAt: Date
+            }
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded: In
+        do {
+            decoded = try decoder.decode(In.self, from: data)
+        } catch {
+            throw ImportError(reason: "This file isn't a valid Swift Deep Research session export.")
+        }
+        return ImportedSession(
+            query: decoded.query,
+            createdAt: decoded.createdAt,
+            providerName: decoded.providerName,
+            totalTokens: decoded.totalTokens,
+            status: decoded.status,
+            turns: decoded.turns.map { t in
+                ImportedSession.Turn(
+                    role: t.role,
+                    markdown: t.markdown,
+                    createdAt: t.createdAt,
+                    citations: t.citations.map { c in
+                        ImportedSession.Turn.Citation(
+                            url: c.url,
+                            title: c.title,
+                            claim: c.claim,
+                            exactQuote: c.exactQuote
+                        )
+                    }
+                )
+            },
+            sources: decoded.sources.map { s in
+                ImportedSession.Source(
+                    title: s.title,
+                    url: s.url,
+                    snippet: s.snippet,
+                    providerHint: s.providerHint,
+                    fetchedAt: s.fetchedAt
+                )
+            }
+        )
+    }
+
     // MARK: - Helpers
 
     private static func filename(session: StoredSession, ext: String) -> String {

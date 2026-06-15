@@ -61,14 +61,12 @@ public struct ResearchEngine: Sendable {
                 var conversation = context
                 // Pre-warm the per-run cache with sources fetched in earlier turns
                 // of this session so a follow-up turn doesn't re-fetch the same URLs
-                // cold (engine-cache-not-used-for-cross-turn). We seed through the
-                // public fetch() API (extractor just returns the known source), which
-                // populates the result cache under the same normalized key a later
-                // worker fetch will hit. Cheap: no network, just an in-memory insert.
-                for source in conversation.accumulatedSources {
-                    let known = source
-                    _ = try? await cache.fetch(source.url) { _ in known }
-                }
+                // cold (engine-cache-not-used-for-cross-turn). A single bounded
+                // `seed` inserts the known sources in one actor hop (capped to the
+                // cache's maxEntries, most-recent first) instead of awaiting once
+                // per source — and it never seeds entries that would be evicted
+                // before a later worker could hit them.
+                await cache.seed(conversation.accumulatedSources)
                 let providerName = config.workerProvider.displayName +
                     (config.workerModel.map { " — \($0)" } ?? "")
                 let session = SessionDescriptor(id: sessionID,
@@ -463,10 +461,42 @@ public struct ResearchEngine: Sendable {
                   rationale: "Deepening: extend the answer forward to where the topic is heading.",
                   suggestedQueries: ["\(q) future", "\(q) roadmap", "\(q) open problems"]),
         ]
-        // round is the upcoming round (>= 2). Slide a 3-wide window; disjoint for
-        // the first three reflection rounds, wrapping gracefully after that (a
-        // wrapped repeat is filtered by the dispatched-set and the round ends).
-        let base = max(0, round - 2) * 3
-        return (0..<3).map { pool[(base + $0) % pool.count] }
+        // round is the upcoming round (>= 2). Slide a 3-wide window. The window
+        // is disjoint for the first three reflection rounds (rounds 2-4, base
+        // 0/3/6 over a 9-angle pool), so those are returned verbatim.
+        //
+        // From round 5 on the window wraps and would re-emit an angle already
+        // dispatched in an earlier round; the asked-question dedup would then
+        // filter the whole batch to empty and the deepening round would
+        // contribute nothing (the failure that collapsed thorough runs). To keep
+        // late fallback rounds productive, append a round-specific qualifier to
+        // each wrapped angle so it survives dedup while still pointing at a fresh
+        // facet of the same direction (engine-dedup-truncates-reflection-rounds).
+        let windowStart = max(0, round - 2) * 3
+        let wrapped = windowStart >= pool.count
+        return (0..<3).map { offset in
+            let angle = pool[(windowStart + offset) % pool.count]
+            guard wrapped else { return angle }
+            // Rotate a sub-facet per slot so the three wrapped angles in a round
+            // also differ from each other, then tag the round number so the same
+            // angle in two different wrapped rounds stays distinct under dedup.
+            let facet = wrapFacets[(windowStart + offset) % wrapFacets.count]
+            return ResearchPlan.Subtask(
+                question: "\(angle.question) Focus specifically on \(facet) (deeper pass \(round)).",
+                rationale: "\(angle.rationale) Round \(round): drill into \(facet) to extend an exhausted angle pool rather than repeat earlier questions.",
+                suggestedQueries: angle.suggestedQueries.map { "\($0) \(facet)" }
+            )
+        }
     }
+
+    /// Rotating sub-facets appended to wrapped fallback angles (round 5+), so a
+    /// re-used deepening direction surfaces a genuinely new slice of the topic
+    /// instead of self-filtering to empty under the asked-question dedup.
+    private static let wrapFacets = [
+        "the most authoritative primary sources",
+        "quantitative evidence and concrete figures",
+        "dissenting or minority viewpoints",
+        "the practical, hands-on implications",
+        "the longer-term outlook"
+    ]
 }

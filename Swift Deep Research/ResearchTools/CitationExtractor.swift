@@ -14,13 +14,32 @@ public struct CitationExtractor: Sendable {
         self.llm = llm
     }
 
+    /// Total corpus character budget shared across all sources shown to the
+    /// auditor. Each source is clipped to an equal share so the prompt stays
+    /// bounded no matter how many sources a run accumulates.
+    private static let maxCorpusChars = 60_000
+    /// Floor on the per-source clip: even with many sources, the auditor should
+    /// see a representative span of each one rather than a useless sliver.
+    private static let perSourceFloor = 4_000
+    /// Ceiling on the per-source clip: with few sources we don't dump an entire
+    /// 20k-char page into the prompt; 12k is a generous representative span.
+    private static let perSourceCeiling = 12_000
+
     public func extract(draft: String,
                         sources: [FetchedSource],
                         budget: BudgetMeter? = nil) async throws -> [Citation] {
+        // Budget the TOTAL corpus across sources so the auditor sees a
+        // representative span of each source while the prompt stays bounded.
+        // The actual grounding check below still runs against each source's
+        // FULL extractedText, not this clipped view.
+        let perSourceClip = min(
+            Self.perSourceCeiling,
+            max(Self.perSourceFloor, Self.maxCorpusChars / max(1, sources.count))
+        )
         let sourceCorpus = sources.enumerated().map { idx, src in
             """
             <source index="\(idx)" url="\(src.url.absoluteString)" title="\(src.title)">
-            \(Clip.clip(src.extractedText, to: 4_000))
+            \(Clip.clip(src.extractedText, to: perSourceClip))
             </source>
             """
         }.joined(separator: "\n\n")

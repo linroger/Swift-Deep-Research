@@ -74,6 +74,7 @@ struct KBChunkDetail: View {
                     Label("Copy", systemImage: "doc.on.doc")
                 }
                 .controlSize(.small)
+                .accessibilityLabel("Copy chunk text")
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)

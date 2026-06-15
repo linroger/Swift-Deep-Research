@@ -153,19 +153,25 @@ struct KnowledgeGraphView: View {
                 Image(systemName: graphStates.isRunning ? "pause.fill" : "play.fill")
             }
             .help(graphStates.isRunning ? "Pause layout" : "Resume layout")
+            .accessibilityLabel("Layout simulation")
+            .accessibilityValue(graphStates.isRunning ? "Running" : "Paused")
             Divider().frame(height: 14)
             Button { graphStates.modelTransform.scaling(by: 1.15) } label: { Image(systemName: "plus.magnifyingglass") }
                 .help("Zoom in")
+                .accessibilityLabel("Zoom in")
             Button { graphStates.modelTransform.scaling(by: 0.87) } label: { Image(systemName: "minus.magnifyingglass") }
                 .help("Zoom out")
+                .accessibilityLabel("Zoom out")
             Button {
                 withAnimation { graphStates.modelTransform = .identity }
             } label: { Image(systemName: "arrow.counterclockwise") }
                 .help("Reset view")
+                .accessibilityLabel("Reset view")
             Divider().frame(height: 14)
             Toggle(isOn: $showLabels) { Image(systemName: "tag") }
                 .toggleStyle(.button)
                 .help("Show node labels")
+                .accessibilityLabel("Show node labels")
         }
         .buttonStyle(.borderless)
         .labelStyle(.iconOnly)
@@ -225,6 +231,7 @@ struct KnowledgeGraphView: View {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
                 .buttonStyle(.borderless)
+                .accessibilityLabel("Close node details")
             }
             Text(node.type)
                 .font(.caption.weight(.semibold))

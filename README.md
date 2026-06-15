@@ -247,6 +247,8 @@ After synthesis, a dedicated `CitationExtractor` re-reads the draft and maps eve
 - Optional (Forecast): a local DeepResearchForecast checkout (with its vendored DeerFlow), e.g. at `~/Downloads/DeepResearchForecast` — its knowledge graph runs locally, so there's no API key; the in-app onboarding assistant runs its `setup.sh` and launches the backend for you
 
 ### Download (.dmg)
+> **Requirements: macOS 26.0 (Tahoe) or later, Apple Silicon.** The app won't launch on earlier macOS.
+
 Grab the latest `Swift-Deep-Research-<version>.dmg` from the [Releases](https://github.com/linroger/Swift-Deep-Research/releases) page, open it, and drag **Swift Deep Research** to **Applications**.
 
 The build is ad-hoc signed (not yet notarized with a Developer ID), so on first launch macOS Gatekeeper flags it as "from an unidentified developer." Open it the first time with **either**:

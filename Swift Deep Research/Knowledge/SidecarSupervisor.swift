@@ -758,41 +758,88 @@ public actor SidecarSupervisor {
     private static let probeSession = HTTPClientCommon.defaultSession(timeout: 2)
 
     private func probeHealth(host: URL) async -> Bool {
+        await probeHealthDetail(host: host).reachable
+    }
+
+    /// Outcome of a single `/health` probe. `reachable` is the only signal the
+    /// launch wait gates on (HTTP 200), so a warming sidecar still counts as up.
+    /// `modelReady` is optional/additive: it carries the sidecar's `model_ready`
+    /// flag when the JSON decodes (nil when the field is absent, the body isn't
+    /// JSON, or the probe failed), purely for diagnostics/logging — it must never
+    /// turn a reachable sidecar into a failure (E3-kb-9).
+    private struct HealthProbe: Sendable {
+        var reachable: Bool
+        var modelReady: Bool?
+    }
+
+    /// Decodes only the additive `model_ready` field; missing/extra keys are
+    /// ignored so this never breaks against an older sidecar that predates it.
+    private struct ProbeHealthBody: Decodable {
+        let model_ready: Bool?
+    }
+
+    private func probeHealthDetail(host: URL) async -> HealthProbe {
         var req = URLRequest(url: host.appendingPathComponent("health"))
         req.timeoutInterval = 1.5
         req.httpMethod = "GET"
         do {
-            let (_, response) = try await Self.probeSession.data(for: req)
-            return (response as? HTTPURLResponse)?.statusCode == 200
+            let (data, response) = try await Self.probeSession.data(for: req)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                return HealthProbe(reachable: false, modelReady: nil)
+            }
+            // Reachable is decided purely by the 200; decoding model_ready is a
+            // best-effort extra that must not flip the result on a decode miss.
+            let modelReady = (try? JSONDecoder().decode(ProbeHealthBody.self, from: data))?.model_ready
+            return HealthProbe(reachable: true, modelReady: modelReady)
         } catch {
-            return false
+            return HealthProbe(reachable: false, modelReady: nil)
         }
     }
 
+    /// Generous backstop ceiling for the launch wait. This is NOT the primary
+    /// failure signal — process exit is (see below). It only bounds a degenerate
+    /// case where the child never exits *and* never becomes reachable (e.g. a
+    /// wedged interpreter that doesn't crash), so `ensureRunning` can't suspend a
+    /// caller forever. 5 minutes comfortably covers a cold-disk OceanBase init
+    /// plus a first-run embedding-model download on a slow connection.
+    private static let healthWaitCeiling: TimeInterval = 300
+
     /// Poll `/health` until the sidecar answers, the child process exits, or we
-    /// hit a generous ceiling. First-run embedded-mode startup does real work
-    /// before binding (OceanBase engine init + create_database +
+    /// hit the generous backstop ceiling. First-run embedded-mode startup does
+    /// real work before binding (OceanBase engine init + create_database +
     /// get_or_create_collection), which can take well over 15s on a cold disk,
-    /// so a short window produced false "unreachable" results. We keep polling
-    /// as long as the process is alive, up to ~90s, and bail out immediately if
-    /// it exits (e.g. ModuleNotFoundError) so we never wait the full window on a
-    /// launch that already failed.
+    /// so a short window produced false "unreachable" results.
     ///
-    /// Warming tolerance: the sidecar now binds the port and answers /health
-    /// (HTTP 200) immediately, then loads the ~80-90 MB embedding model on a
-    /// background thread (model_ready=false until done). `probeHealth` only
-    /// checks for a 200, so a reachable-but-warming sidecar is treated as a
-    /// successful launch here — a slow first-run model download no longer trips
-    /// a false "unreachable" failure (kb-implicit-embedding-fn). The model
-    /// finishes warming in the background; the first query that arrives before
-    /// it is ready simply loads it lazily.
+    /// Failure signal is process EXIT, not the clock (E3-kb-9). Earlier this
+    /// loop failed after a fixed ~90s even while the child was alive and still
+    /// doing legitimate first-run work (engine init before bind, or a slow model
+    /// download), spuriously reporting a healthy-but-slow launch as failed. We
+    /// now keep polling for as long as the process is alive and only bail out
+    /// (a) immediately when the child exits — e.g. ModuleNotFoundError, so we
+    /// never wait on a launch that already failed — or (b) at the generous
+    /// `healthWaitCeiling` backstop for the rare never-exits/never-binds wedge.
+    ///
+    /// Warming tolerance: the sidecar binds the port and answers /health (HTTP
+    /// 200) immediately, then loads the ~80-90 MB embedding model on a background
+    /// thread (model_ready=false until done). We gate success on reachability
+    /// (200) only, so a reachable-but-warming sidecar is a successful launch here
+    /// — a slow first-run model download no longer trips a false "unreachable"
+    /// failure (kb-implicit-embedding-fn). The model finishes warming in the
+    /// background; the first query that arrives before it is ready loads it
+    /// lazily. The probe also surfaces `model_ready` (additively decoded) for
+    /// diagnostics, but it never gates success here.
     private func waitForHealthOrExit(host: URL) async -> Bool {
-        for _ in 0..<180 {
+        let deadline = Date().addingTimeInterval(Self.healthWaitCeiling)
+        while Date() < deadline {
             try? await Task.sleep(nanoseconds: 500_000_000)
             // A reachable /health is success even while model_ready=false; the
             // embedding model keeps warming in the background.
-            if await probeHealth(host: host) { return true }
-            if process == nil { return false }   // process exited
+            let probe = await probeHealthDetail(host: host)
+            if probe.reachable { return true }
+            // Process exit — not the clock — is the real failure signal. A child
+            // that has gone away (e.g. missing-deps crash) can never become
+            // healthy, so stop immediately instead of waiting out the ceiling.
+            if process == nil { return false }
         }
         return false
     }

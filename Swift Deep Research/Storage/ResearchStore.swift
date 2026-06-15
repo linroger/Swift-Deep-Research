@@ -209,11 +209,67 @@ public final class ResearchStore {
         flushNow()
     }
 
-    public func allSessions() throws -> [StoredSession] {
-        let descriptor = FetchDescriptor<StoredSession>(
-            sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
+    /// Recreate a session from an exported JSON dump (decoded by
+    /// `SessionExporter.importJSON`) so an export round-trips back into a stored,
+    /// browsable session. Fresh UUIDs are minted for the session and its turns —
+    /// the originals aren't carried in the export and `.unique` ids must never
+    /// collide with an existing row. Citation ids are likewise regenerated, and
+    /// source ids reuse the `sessionID|url` composite convention from
+    /// `upsertSource` so an imported session de-dupes/cascades exactly like a
+    /// natively-created one.
+    ///
+    /// Durability boundary: the import is a discrete user action whose result
+    /// must survive immediately, so it flushes synchronously (also draining any
+    /// pending coalesced save).
+    @discardableResult
+    public func importSession(_ imported: SessionExporter.ImportedSession) throws -> StoredSession {
+        let session = StoredSession(
+            query: imported.query,
+            titleSummary: String(imported.query.prefix(80)),
+            providerName: imported.providerName,
+            createdAt: imported.createdAt,
+            status: StoredSession.Status(rawValue: imported.status) ?? .completed,
+            totalTokens: imported.totalTokens
         )
-        return try context.fetch(descriptor)
+        context.insert(session)
+        // The export sorts turns oldest-first; preserve that order and keep each
+        // turn's recorded createdAt so the timeline reads identically.
+        for t in imported.turns {
+            let turn = StoredTurn(
+                role: t.role,
+                markdown: t.markdown,
+                createdAt: t.createdAt,
+                session: session
+            )
+            context.insert(turn)
+            for c in t.citations {
+                let citation = StoredCitation(
+                    id: UUID().uuidString,
+                    claim: c.claim,
+                    exactQuote: c.exactQuote,
+                    sourceURLString: c.url,
+                    sourceTitle: c.title,
+                    turn: turn
+                )
+                context.insert(citation)
+            }
+        }
+        for s in imported.sources {
+            let source = StoredSource(
+                id: "\(session.id.uuidString)|\(s.url)",
+                urlString: s.url,
+                title: s.title,
+                snippet: s.snippet,
+                providerHint: s.providerHint,
+                fetchedAt: s.fetchedAt,
+                session: session
+            )
+            context.insert(source)
+        }
+        session.updatedAt = .now
+        isDirty = true
+        flushNow()
+        return session
     }
 
     /// Cap the stored history at the `keepingMostRecent` newest sessions, deleting
@@ -373,13 +429,6 @@ public final class ResearchStore {
         context.delete(record)
         isDirty = true
         flushNow()
-    }
-
-    public func allForecasts() throws -> [ForecastRecord] {
-        let descriptor = FetchDescriptor<ForecastRecord>(
-            sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
-        )
-        return try context.fetch(descriptor)
     }
 
     /// The local record for a MiroFish pipeline, if it was ever imported/started

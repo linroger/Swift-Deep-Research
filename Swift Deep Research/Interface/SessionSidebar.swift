@@ -12,6 +12,10 @@ struct SessionSidebar: View {
     /// filter doesn't re-lowercase every query/title/turn/source on each
     /// keystroke (each body re-eval). Invalidated per session by `updatedAt`.
     @State private var searchIndex = SessionSearchIndex()
+    /// Non-nil while an import-failure alert is shown. Holds a user-presentable
+    /// message so invalid/foreign JSON surfaces cleanly instead of silently
+    /// failing or crashing.
+    @State private var importErrorMessage: String?
 
     var body: some View {
         @Bindable var env = env
@@ -58,6 +62,23 @@ struct SessionSidebar: View {
         .searchable(text: $search,
                     placement: .sidebar,
                     prompt: "Search sessions")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    importSession()
+                } label: {
+                    Label("Import Session…", systemImage: "square.and.arrow.down")
+                }
+                .help("Import a session from an exported JSON file")
+            }
+        }
+        .alert("Import Failed",
+               isPresented: Binding(get: { importErrorMessage != nil },
+                                    set: { if !$0 { importErrorMessage = nil } })) {
+            Button("OK", role: .cancel) { importErrorMessage = nil }
+        } message: {
+            Text(importErrorMessage ?? "")
+        }
     }
 
     private func sectionLabel(_ title: String, icon: String, color: Color) -> some View {
@@ -113,6 +134,32 @@ struct SessionSidebar: View {
         panel.allowedContentTypes = [UTType(filenameExtension: format.fileExtension) ?? UTType.data]
         if panel.runModal() == .OK, let url = panel.url {
             try? payload.data.write(to: url)
+        }
+    }
+
+    /// Counterpart to `exportSession`: pick a JSON export and recreate it as a
+    /// fresh stored session. Mirrors Export's `NSOpenPanel`/`NSSavePanel` style.
+    /// Every failure mode — cancelled panel aside — is surfaced through a clean
+    /// alert (unreadable file, foreign/invalid JSON, store insert error) so the
+    /// affordance never crashes on bad input. On success the new session is
+    /// selected so the user lands on the imported result.
+    private func importSession() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.json]
+        panel.prompt = "Import"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data = try Data(contentsOf: url)
+            let imported = try SessionExporter.importJSON(data)
+            let session = try env.store.importSession(imported)
+            env.selectedSessionID = session.id
+        } catch let error as SessionExporter.ImportError {
+            importErrorMessage = error.reason
+        } catch {
+            importErrorMessage = error.localizedDescription
         }
     }
 }

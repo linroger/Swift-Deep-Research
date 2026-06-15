@@ -165,7 +165,7 @@ public actor SeekDBClient {
         public var errorDescription: String? {
             switch self {
             case .unreachable(let url):
-                return "Sidecar at \(url.absoluteString) is unreachable. Start it with `python3 sidecar/seekdb_sidecar.py`."
+                return "The knowledge-base sidecar at \(url.absoluteString) isn't responding. It starts automatically — open Settings → Knowledge → Reinstall/Start, or turn off the knowledge-base toggle."
             case .httpStatus(let code, let body):
                 return "Sidecar returned HTTP \(code): \(body.prefix(200))"
             case .decode(let m):

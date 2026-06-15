@@ -617,9 +617,9 @@ _Build: `xcodebuild -scheme "Swift Deep Research" -configuration Debug build` â†
 
 ### Wave 3 â€” P2 enhancements & optimizations
 
-- [ ] E3-engine-5
+- [x] E3-engine-5
 - [ ] E3-engine-6
-- [ ] E3-engine-7
+- [x] E3-engine-7
 - [ ] E3-forecast-10
 - [ ] E3-forecast-3
 - [ ] E3-forecast-4
@@ -628,7 +628,7 @@ _Build: `xcodebuild -scheme "Swift Deep Research" -configuration Debug build` â†
 - [x] E3-kb-4
 - [x] E3-kb-6
 - [ ] E3-kb-7
-- [ ] E3-kb-9
+- [x] E3-kb-9
 - [ ] E3-llm-4
 - [x] E3-llm-5
 - [ ] E3-llm-8
@@ -639,9 +639,9 @@ _Build: `xcodebuild -scheme "Swift Deep Research" -configuration Debug build` â†
 - [ ] E3-sec-4
 - [x] E3-storage-4
 - [x] E3-storage-5
-- [ ] E3-storage-6
+- [x] E3-storage-6
 - [ ] E3-ux-2
-- [ ] E3-ux-3
+- [x] E3-ux-3
 - [x] E3-ux-4
 - [ ] E3-ux-6
 
@@ -650,21 +650,21 @@ _Build: `xcodebuild -scheme "Swift Deep Research" -configuration Debug build` â†
 ### Wave 4 â€” P3 polish & code-health
 
 - [ ] E3-engine-8
-- [ ] E3-engine-9
+- [x] E3-engine-9
 - [ ] E3-forecast-5
 - [ ] E3-forecast-6
 - [ ] E3-forecast-8
 - [ ] E3-forecast-9
-- [ ] E3-kb-10
+- [x] E3-kb-10
 - [ ] E3-kb-5
 - [ ] E3-llm-6
 - [ ] E3-llm-7
 - [x] E3-oobe-6
 - [ ] E3-oobe-8
-- [ ] E3-oobe-9
-- [ ] E3-sec-5
-- [ ] E3-sec-6
-- [ ] E3-storage-7
+- [x] E3-oobe-9
+- [x] E3-sec-5
+- [x] E3-sec-6
+- [x] E3-storage-7
 - [ ] E3-ux-10
 - [x] E3-ux-5
 - [ ] E3-ux-7
