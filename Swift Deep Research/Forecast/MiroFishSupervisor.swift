@@ -41,6 +41,15 @@ public actor MiroFishSupervisor {
     private(set) var status: Status = .stopped
     /// Coalesce concurrent `ensureRunning` callers onto one launch.
     private var ensureTask: Task<Status, Never>?
+    /// Process-group id of the supervised backend when it was launched as its own
+    /// session leader (`pgid == child pid`). `> 0` means `killpg` reaps the entire
+    /// DeerFlow/OASIS tree, not just `run.py`. `0` when we couldn't establish a
+    /// group (no `perl`), in which case we fall back to single-process signalling.
+    private var childPGID: pid_t = 0
+    /// Nonisolated mirror of `childPGID` so the synchronous `willTerminate`
+    /// handler can reap the tree inline (an awaiting Task can't finish before the
+    /// app process exits).
+    nonisolated let liveGroup = ProcessGroupBox()
 
     private init() {
         Task { await registerTermination() }
@@ -50,7 +59,12 @@ public actor MiroFishSupervisor {
         let token = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { _ in
-            Task { await MiroFishSupervisor.shared.terminate() }
+            // Reap the backend tree SYNCHRONOUSLY here. AppKit does not wait for
+            // unstructured Tasks before the process exits, so the old
+            // `Task { await terminate() }` almost never ran to completion — it
+            // orphaned the DeerFlow/OASIS grandchildren (which then keep burning
+            // API credits). `killpg` is sync and safe to call inline.
+            MiroFishSupervisor.shared.liveGroup.reap()
         }
         self.quitObserver = token
     }
@@ -119,13 +133,25 @@ public actor MiroFishSupervisor {
     /// Stop a backend this supervisor started. (No-op if we attached to an
     /// externally-run backend.)
     public func terminate() async {
-        guard let process, process.isRunning else { return }
-        process.terminate()                       // SIGTERM
+        guard let process, process.isRunning else {
+            liveGroup.clear(); childPGID = 0; return
+        }
+        let pid = process.processIdentifier
+        // Reap the whole process group (run.py + DeerFlow/OASIS grandchildren),
+        // not just the direct child. `process.terminate()` covers the rare
+        // no-setsid fallback where childPGID == 0.
+        if childPGID > 0 { killpg(childPGID, SIGTERM) }
+        process.terminate()                       // SIGTERM to the direct child
         for _ in 0..<20 {
             if !process.isRunning { break }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
-        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        if process.isRunning {
+            if childPGID > 0 { killpg(childPGID, SIGKILL) }
+            kill(pid, SIGKILL)
+        }
+        liveGroup.clear()
+        childPGID = 0
         status = .stopped
     }
 
@@ -156,6 +182,12 @@ public actor MiroFishSupervisor {
         let output = lines.joined(separator: "\n")
         do {
             try output.write(to: envURL, atomically: true, encoding: .utf8)
+            // This file holds API keys (Zep, LLM providers). Restrict it to the
+            // owner — the default 0644 left secrets world-readable on shared Macs.
+            // `atomically: true` writes via a temp file + rename, so permissions
+            // must be (re)applied to the final path after the write.
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                    ofItemAtPath: envURL.path)
             return true
         } catch {
             logTail = "Failed to update MiroFish .env: \(error.localizedDescription)"
@@ -430,12 +462,35 @@ public actor MiroFishSupervisor {
         process.standardError = pipe
         process.currentDirectoryURL = backendDir
 
+        // The real command we want to run.
+        let realExec: String
+        let realArgs: [String]
         if invocation.executable.hasPrefix("/") {
-            process.executableURL = URL(fileURLWithPath: invocation.executable)
-            process.arguments = invocation.prefixArgs + ["run.py"]
+            realExec = invocation.executable
+            realArgs = invocation.prefixArgs + ["run.py"]
         } else {
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = [invocation.executable] + invocation.prefixArgs + ["run.py"]
+            realExec = "/usr/bin/env"
+            realArgs = [invocation.executable] + invocation.prefixArgs + ["run.py"]
+        }
+
+        // Launch the backend as a NEW SESSION / process-group leader via a tiny
+        // perl `setsid` shim, then `exec` the real command (preserving the pid).
+        // Foundation's `Process` leaves the child in the app's own process group,
+        // so MiroFish's DeerFlow/OASIS grandchildren reparent to launchd and keep
+        // running after we SIGKILL only `run.py`. With `setsid`, the child's pgid
+        // equals its pid and every descendant inherits it, so `killpg` reaps the
+        // whole tree. `exec @ARGV` (list form) runs execvp directly — no shell, no
+        // injection. Falls back to a direct launch if system perl is unavailable.
+        let perl = "/usr/bin/perl"
+        let useSetsid = FileManager.default.isExecutableFile(atPath: perl)
+        if useSetsid {
+            process.executableURL = URL(fileURLWithPath: perl)
+            process.arguments = ["-e",
+                                 "use POSIX qw(setsid); setsid(); exec @ARGV or die qq(exec failed: $!\\n);",
+                                 "--", realExec] + realArgs
+        } else {
+            process.executableURL = URL(fileURLWithPath: realExec)
+            process.arguments = realArgs
         }
         process.environment = childEnvironment(port: port)
 
@@ -448,6 +503,14 @@ public actor MiroFishSupervisor {
 
         self.process = process
         self.stdoutPipe = pipe
+        if useSetsid {
+            // After setsid in the child, pgid == pid; this is the group to reap.
+            childPGID = process.processIdentifier
+            liveGroup.set(childPGID)
+        } else {
+            childPGID = 0
+            liveGroup.clear()
+        }
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let chunk = handle.availableData
             guard !chunk.isEmpty, let text = String(data: chunk, encoding: .utf8), !text.isEmpty else { return }
@@ -478,6 +541,8 @@ public actor MiroFishSupervisor {
     private func handleExit(code: Int32) {
         if code != 0 { logTail += "\n[backend exited \(code)]" }
         process = nil
+        childPGID = 0
+        liveGroup.clear()
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
         stdoutPipe = nil
     }
@@ -512,8 +577,20 @@ public actor MiroFishSupervisor {
         req.timeoutInterval = 1.5
         req.httpMethod = "GET"
         do {
-            let (_, response) = try await URLSession.shared.data(for: req)
-            return (response as? HTTPURLResponse)?.statusCode == 200
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return false }
+            // Don't attach to just *any* server answering 200 on /health (a
+            // port-conflict false positive). Require the MiroFish signature: a
+            // JSON body decodable as MFHealth, and — when it advertises a
+            // `service` — that service must look like MiroFish. A foreign health
+            // endpoint returning HTML or an unrelated service is rejected so we
+            // surface a real port conflict instead of silently mis-attaching.
+            guard let health = try? JSONDecoder().decode(MFHealth.self, from: data) else { return false }
+            if let service = health.service?.lowercased(),
+               !(service.contains("mirofish") || service.contains("deerflow") || service.contains("forecast")) {
+                return false
+            }
+            return true
         } catch {
             return false
         }
@@ -528,5 +605,27 @@ public actor MiroFishSupervisor {
             if process == nil { return false }   // exited
         }
         return false
+    }
+}
+
+/// Nonisolated, lock-protected holder of the supervised backend's process-group
+/// id, so the synchronous `applicationWillTerminate` handler can reap the whole
+/// DeerFlow/OASIS tree inline. An actor `await` can't complete before the app
+/// process exits, so quit cleanup must not hop onto the actor.
+final class ProcessGroupBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pgid: pid_t = 0
+
+    func set(_ p: pid_t) { lock.lock(); pgid = p; lock.unlock() }
+    func clear() { lock.lock(); pgid = 0; lock.unlock() }
+
+    /// Synchronous best-effort SIGTERM→SIGKILL of the entire process group.
+    /// Safe to call on the main thread at quit; bounded by a short fixed grace.
+    func reap() {
+        lock.lock(); let p = pgid; lock.unlock()
+        guard p > 0 else { return }
+        killpg(p, SIGTERM)
+        usleep(200_000)          // 200ms grace for a clean Flask shutdown
+        killpg(p, SIGKILL)
     }
 }

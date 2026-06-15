@@ -171,7 +171,7 @@ struct SettingsSheet: View {
 
     private func subtitle(for s: Section) -> String {
         switch s {
-        case .providers: "Pick the LLMs that plan, research, and synthesize."
+        case .providers: "Pick the LLMs behind research and forecasts, and the research flow."
         case .apiKeys: "Keys are stored in Keychain — never on disk."
         case .knowledge: "Connect to the local pyseekdb sidecar."
         case .forecast: "The MiroFish prediction backend for forecasts."
@@ -291,6 +291,18 @@ private struct ProvidersTab: View {
     var body: some View {
         @Bindable var env = env
         VStack(alignment: .leading, spacing: 20) {
+            SettingsGroup("Deep research flow",
+                         footer: env.configuration.researchFlow.blurb) {
+                SettingsRow("Methodology", icon: "arrow.triangle.branch") {
+                    Picker("", selection: $env.configuration.researchFlow) {
+                        ForEach(ResearchFlow.allCases) { flow in
+                            Text(flow.displayName).tag(flow)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 280)
+                }
+            }
             roleGroup(
                 title: "Orchestrator",
                 subtitle: "Decomposes the user's query into sub-tasks.",
@@ -309,6 +321,7 @@ private struct ProvidersTab: View {
                 provider: $env.configuration.synthesisProvider,
                 model: $env.configuration.synthesisModel
             )
+            forecastRoleGroup
             if usesOllama { ollamaCard }
             if uses(.lmstudio) { lmStudioCard }
             if uses(.custom) { customCard }
@@ -333,14 +346,74 @@ private struct ProvidersTab: View {
         }
     }
 
+    /// The unified forecast role: which provider the MiroFish backend uses for
+    /// DeerFlow research, the simulation agents, and the report. Pushed to the
+    /// backend automatically whenever it starts; "Apply now" pushes immediately.
+    private var forecastRoleGroup: some View {
+        let providerBinding = Binding<ProviderRegistry.ProviderID>(
+            get: { env.modelProviders.forecastAssignment.provider },
+            set: { newValue in
+                env.modelProviders.forecastAssignment.provider = newValue
+                env.modelProviders.save()
+            }
+        )
+        let modelBinding = Binding<String?>(
+            get: { env.modelProviders.forecastAssignment.model },
+            set: { newValue in
+                env.modelProviders.forecastAssignment.model = newValue
+                env.modelProviders.save()
+            }
+        )
+        return VStack(alignment: .leading, spacing: 6) {
+            roleGroup(
+                title: ModelRole.forecast.title,
+                subtitle: ModelRole.forecast.subtitle + " Applied to the backend automatically on launch; on-device providers are excluded.",
+                provider: providerBinding,
+                model: modelBinding,
+                providers: ModelProviderManager.forecastEligible
+            )
+            HStack(spacing: 8) {
+                Button("Apply to backend now") {
+                    Task {
+                        await env.modelProviders.pushForecastProvider(
+                            client: MiroFishClient(host: env.forecastConfig.host),
+                            config: env.configuration
+                        )
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(env.modelProviders.forecastPushState == .pushing)
+                switch env.modelProviders.forecastPushState {
+                case .idle:
+                    EmptyView()
+                case .pushing:
+                    ProgressView().controlSize(.mini)
+                case .ok(let message):
+                    Label(message, systemImage: "checkmark.circle.fill")
+                        .font(.caption2).foregroundStyle(.green)
+                        .lineLimit(2)
+                case .failed(let message):
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2).foregroundStyle(.orange)
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+        }
+    }
+
     private func roleGroup(title: String,
                            subtitle: String,
                            provider: Binding<ProviderRegistry.ProviderID>,
-                           model: Binding<String?>) -> some View {
+                           model: Binding<String?>,
+                           providers: [ProviderRegistry.ProviderID] = ProviderRegistry.ProviderID.allCases) -> some View {
         SettingsGroup(title, footer: subtitle) {
             SettingsRow("Provider", icon: "cpu") {
                 Picker("", selection: provider) {
-                    ForEach(ProviderRegistry.ProviderID.allCases, id: \.self) { p in
+                    ForEach(providers, id: \.self) { p in
                         HStack(spacing: 6) {
                             ProviderIcon(provider: p, size: 14)
                             Text(p.displayName)
@@ -1245,8 +1318,8 @@ private struct ForecastTab: View {
                 .padding(12)
             }
 
-            SettingsGroup("LLM provider (simulation + report)",
-                         footer: "Which model MiroFish uses for ontology, personas, the simulation agents, and the report. Switching applies to newly started forecasts; CLI providers (claude-cli, codex-cli) use your local subscription and need no key.") {
+            SettingsGroup("LLM provider (backend live state)",
+                         footer: "The backend's current provider. Normally set automatically from Providers → Forecast (MiroFish); this panel reads the live state and lets you override it manually — e.g. for CLI providers (claude-cli, codex-cli), which use your local subscription and need no key. Switching applies to newly started forecasts.") {
                 if let info = providerInfo {
                     SettingsRow("Provider", icon: "cpu") {
                         Picker("", selection: $selectedProvider) {

@@ -90,20 +90,53 @@ public struct Synthesizer: Sendable {
                              temperature: 0.4)
 
         var draft = ""
+        // Track last-seen usage and charge ONCE after the stream. Providers
+        // disagree on usage semantics: OpenAI/Anthropic emit a single final
+        // usage, but Gemini emits CUMULATIVE usage on every SSE event — summing
+        // per-chunk (the old behavior) over-charged the budget 2-3×. Last-wins
+        // matches `complete()`'s assignment semantics and is correct for both.
+        var lastPrompt = 0
+        var lastCompletion = 0
+        var wallClockBust = false
+        var chunkCount = 0
         let stream = llm.stream(req)
         for try await chunk in stream {
+            // Synthesis is the single longest operation in a run, and
+            // checkWallClock previously only fired at loop boundaries — so a
+            // slow/hung synthesis stream could blow the whole wall-clock cap.
+            // Poll periodically (not per token — that's an actor hop each token)
+            // and stop streaming with whatever draft we have when time is up.
+            chunkCount += 1
+            if chunkCount % 48 == 0 {
+                do { try await budget.checkWallClock() }
+                catch { wallClockBust = true; break }
+            }
             switch chunk {
             case .text(let t):
                 draft += t
                 emit(.tokenDelta(stage: .synthesis, text: t))
             case .usage(let p, let c):
-                try? await budget.chargeTokens(p + c)
+                lastPrompt = p
+                lastCompletion = c
             case .finished: break
             default: break
             }
         }
+        if lastPrompt + lastCompletion > 0 {
+            try? await budget.chargeTokens(lastPrompt + lastCompletion)
+        }
 
-        let citations = try await citationExtractor.extract(draft: draft, sources: orderedSources)
+        // Skip the citation pass (another LLM round-trip) when the wall-clock
+        // budget is already spent — return the draft we have rather than overrun.
+        let citations: [Citation]
+        if wallClockBust {
+            emit(.warning("Synthesis reached the wall-clock budget; returning the draft without a citation pass."))
+            citations = []
+        } else {
+            citations = try await citationExtractor.extract(draft: draft,
+                                                            sources: orderedSources,
+                                                            budget: budget)
+        }
         for c in citations { emit(.citationAdded(c)) }
 
         let descriptor = DraftDescriptor(markdown: draft, citations: citations)

@@ -112,6 +112,13 @@ public actor BudgetMeter {
                  elapsed: ContinuousClock().now - startedAt)
     }
 
+    /// Wall-clock budget still available, clamped at zero. Used to derive a
+    /// per-call timeout so a single LLM/tool call can't outlive the whole run.
+    public var remainingWallClock: Duration {
+        let remaining = budget.maxWallClock - (ContinuousClock().now - startedAt)
+        return remaining > .zero ? remaining : .zero
+    }
+
     public struct Snapshot: Sendable {
         public let tokensUsed: Int
         public let maxTokens: Int

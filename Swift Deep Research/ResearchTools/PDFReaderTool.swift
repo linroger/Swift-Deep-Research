@@ -37,6 +37,9 @@ public struct PDFReaderTool: ResearchTool {
             return .failed(message: "read_pdf: invalid arguments")
         }
         guard let url = URL(string: args.url) else { return .failed(message: "read_pdf: bad URL") }
+        if let reason = URLSafety.blockReason(for: url) {
+            return .failed(message: "read_pdf: refusing to fetch \(url.absoluteString) — \(reason). Only public http(s) URLs are allowed.")
+        }
         guard await context.budget.registerSource(for: context.workerID) else {
             return .failed(message: "Source cap reached for this worker")
         }

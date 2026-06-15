@@ -34,6 +34,13 @@ public struct ResearchEngine: Sendable {
     public func run(query: String,
                     sessionID: UUID = UUID(),
                     context: ConversationContext = ConversationContext()) -> AsyncThrowingStream<ResearchEvent, Error> {
+        // The DeerFlow flow is a separate methodology (background investigation →
+        // structured plan → sequential steps → re-plan → report) but speaks the
+        // same ResearchEvent stream, so the UI is unchanged.
+        if config.researchFlow == .deerflow {
+            return DeerFlowEngine(registry: registry, config: config)
+                .run(query: query, sessionID: sessionID, context: context)
+        }
         let registry = self.registry
         let config = self.config
         let iteration = self.iteration
@@ -55,37 +62,21 @@ public struct ResearchEngine: Sendable {
                 emit(.sessionStarted(session))
 
                 do {
-                    let orchestratorLLM = try await registry.makeClient(
-                        provider: config.orchestratorProvider,
-                        model: config.orchestratorModel,
-                        ollamaHost: config.ollamaHost,
-                        lmStudioHost: config.lmStudioHost,
-                        customBaseURL: config.customEndpointBaseURL,
-                        qwenBaseURL: config.qwenBaseURL
-                    )
-                    let workerLLM = try await registry.makeClient(
-                        provider: config.workerProvider,
-                        model: config.workerModel,
-                        ollamaHost: config.ollamaHost,
-                        lmStudioHost: config.lmStudioHost,
-                        customBaseURL: config.customEndpointBaseURL,
-                        qwenBaseURL: config.qwenBaseURL
-                    )
-                    let synthesisLLM = try await registry.makeClient(
-                        provider: config.synthesisProvider,
-                        model: config.synthesisModel,
-                        ollamaHost: config.ollamaHost,
-                        lmStudioHost: config.lmStudioHost,
-                        customBaseURL: config.customEndpointBaseURL,
-                        qwenBaseURL: config.qwenBaseURL
-                    )
+                    // Resolve every role through the single role-based factory
+                    // (the same one DeerFlowEngine uses) so provider/model/endpoint
+                    // resolution lives in exactly one place — the native engine
+                    // previously repeated all six config args per role.
+                    let orchestratorLLM = try await registry.makeClient(role: .orchestrator, config: config)
+                    let workerLLM = try await registry.makeClient(role: .worker, config: config)
+                    let synthesisLLM = try await registry.makeClient(role: .synthesis, config: config)
 
                     let planner = Planner(llm: orchestratorLLM,
                                           instructions: config.systemPromptAddendum,
-                                          knowledgeBaseAvailable: config.useKnowledgeBase)
+                                          knowledgeBaseAvailable: config.useKnowledgeBase,
+                                          budget: budget)
                     let synthesizer = Synthesizer(llm: synthesisLLM,
                                                   instructions: config.systemPromptAddendum)
-                    let reflector = Reflector(llm: orchestratorLLM)
+                    let reflector = Reflector(llm: orchestratorLLM, budget: budget)
 
                     let tools = await Self.makeTools(cache: cache, config: config)
                     let perWorkerSourceTarget = config.budget.maxSourcesPerWorker
@@ -282,8 +273,9 @@ public struct ResearchEngine: Sendable {
         }
     }
 
-    private static func makeTools(cache: SourceCache,
-                                  config: EngineConfiguration) async -> [any ResearchTool] {
+    /// Shared by both research flows (native and DeerFlow).
+    static func makeTools(cache: SourceCache,
+                          config: EngineConfiguration) async -> [any ResearchTool] {
         let search = await WebSearchTool.makeDefault()
         let reader = WebReaderTool()
         let wikipedia = WikipediaTool()

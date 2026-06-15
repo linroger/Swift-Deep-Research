@@ -10,6 +10,10 @@ import SwiftData
 public final class AppEnvironment {
     public var store: ResearchStore
     public var configuration: EngineConfiguration
+    /// Unified model-provider manager: one vocabulary (`ModelRole`) for every
+    /// LLM consumer in the app. Research roles persist in `configuration`;
+    /// the forecast role lives here and is bridged to the MiroFish backend.
+    public let modelProviders = ModelProviderManager()
     public var selectedSessionID: UUID?
     public var live: LiveSession?
     public var settingsOpen: Bool = false
@@ -240,14 +244,24 @@ public final class AppEnvironment {
             status = await MiroFishSupervisor.shared.checkHealth(host: forecastConfig.host)
         }
         forecastBackendStatus = status
+        if case .running = status {
+            // Keep the backend on the unified forecast provider. Idempotent;
+            // applies to newly started pipelines only.
+            await modelProviders.pushForecastProvider(client: makeMiroFishClient(),
+                                                      config: configuration)
+        }
         return status
     }
 
-    /// Write the Zep key (entered under Settings → API keys) into MiroFish's `.env`.
+    /// Write the Zep key (entered under Settings → API keys) and the unified
+    /// forecast LLM provider into MiroFish's `.env`, so a cold-started backend
+    /// boots straight onto the user's configuration.
     public func syncMiroFishEnv() async {
+        var updates = await modelProviders.envSeed(config: configuration)
         let zep = await KeychainStore.shared.get(.zep) ?? ""
-        guard !zep.isEmpty else { return }
-        await MiroFishSupervisor.shared.syncEnv(["ZEP_API_KEY": zep], repoRoot: forecastConfig.repoRoot)
+        if !zep.isEmpty { updates["ZEP_API_KEY"] = zep }
+        guard !updates.isEmpty else { return }
+        await MiroFishSupervisor.shared.syncEnv(updates, repoRoot: forecastConfig.repoRoot)
     }
 
     static func backendMessage(_ status: MiroFishSupervisor.Status) -> String {
@@ -318,7 +332,6 @@ public final class LiveSession: Identifiable {
     public var fetchedSources: [URL: FetchedSource] = [:]
     public var citations: [Citation] = []
     public var draftMarkdown: String = ""
-    public var tokenStream: [TokenStreamEntry] = []
     public var activityLog: [ActivityEntry] = []
     public var failure: EngineFailure?
     public var totalTokens: Int = 0
@@ -353,12 +366,6 @@ public final class LiveSession: Identifiable {
             public let invocation: ToolInvocation
             public var outcome: ToolOutcome?
         }
-    }
-
-    public struct TokenStreamEntry: Sendable, Identifiable {
-        public let id = UUID()
-        public let stage: ResearchEvent.Stage
-        public let text: String
     }
 
     /// Full transcript visible to the UI when the session has multiple turns.
@@ -432,7 +439,6 @@ public final class LiveSession: Identifiable {
         workers.removeAll()
         draftMarkdown = ""
         citations = []
-        tokenStream.removeAll()
         lastCritique = nil
         failure = nil
         status = .planning
@@ -484,8 +490,28 @@ public final class LiveSession: Identifiable {
         if status != .complete { status = .cancelled }
     }
 
+    /// Whether an event warrants a durable `StoredEvent` row. Transient,
+    /// high-frequency streaming deltas are excluded so the persistence layer
+    /// isn't hit thousands of times per run on the MainActor (see `ingest`).
+    private static func shouldPersist(_ event: ResearchEvent) -> Bool {
+        switch event {
+        case .tokenDelta, .reasoningDelta, .workerProgress, .sourceCacheHit:
+            return false
+        default:
+            return true
+        }
+    }
+
     private func ingest(_ event: ResearchEvent) {
-        if let storedSession {
+        // High-frequency streaming deltas (one `.tokenDelta`/`.reasoningDelta`
+        // per token, plus chatty worker progress / cache hits) are live-UI only.
+        // Persisting each one ran `EventEnvelope` JSON-encode + a synchronous
+        // SwiftData `context.save()` on the MainActor — thousands of blocking
+        // SQLite transactions during synthesis, the dominant cause of beachballing
+        // on long "thorough" runs. The durable record is the final draft (persisted
+        // on `.draftReady`) and the meaningful timeline events below; the token
+        // stream is reconstructable from the draft and is never replayed verbatim.
+        if let storedSession, Self.shouldPersist(event) {
             let payload = (try? JSONEncoder().encode(EventEnvelope(event: event)))
                 .flatMap { String(data: $0, encoding: .utf8) } ?? ""
             try? store.appendEvent(kind: eventKind(event),
@@ -544,8 +570,6 @@ public final class LiveSession: Identifiable {
                 draftMarkdown += text
                 self.status = .synthesizing
             }
-            tokenStream.append(TokenStreamEntry(stage: stage, text: text))
-            if tokenStream.count > 4_000 { tokenStream.removeFirst(tokenStream.count - 4_000) }
         case .citationAdded(let c):
             if !citations.contains(where: { $0.id == c.id }) { citations.append(c) }
         case .workerCompleted(let id, let summary):

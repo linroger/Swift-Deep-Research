@@ -160,7 +160,7 @@
       "category": "orchestration",
       "description": "Actor-based orchestrator dispatches parallel worker agents",
       "steps": [
-        "ResearchOrchestrator actor decomposes query into \u22652 sub-tasks",
+        "ResearchOrchestrator actor decomposes query into ≥2 sub-tasks",
         "TaskGroup fans out worker actors in parallel",
         "Workers emit progress events through shared AsyncThrowingStream",
         "Orchestrator synthesizes final answer with citations",
@@ -325,7 +325,7 @@
     {
       "id": "feat_openai_compatible_client",
       "category": "llm",
-      "description": "Single OpenAICompatibleClient backing OpenAI, DeepSeek, MiniMax, Kimi, LM Studio, custom \u2014 one SSE/tool-call implementation",
+      "description": "Single OpenAICompatibleClient backing OpenAI, DeepSeek, MiniMax, Kimi, LM Studio, custom — one SSE/tool-call implementation",
       "steps": [
         "OpenAIClient is a thin wrapper selecting max_completion_tokens",
         "Third-party providers use legacy max_tokens",
@@ -401,6 +401,33 @@
         "Retry the query once when it comes up; otherwise soft-fail so the worker falls back to web"
       ],
       "passes": true
+    },
+    {
+      "id": "feat_deerflow_research_flow",
+      "category": "engine",
+      "description": "DeerFlow plan-and-execute research flow selectable in Settings: background investigation (web + SeekDB KB) grounds a structured planner (hasEnoughContext + steps), steps execute sequentially with observation threading, planner re-plans up to 3 iterations, Synthesizer writes the cited report over the same ResearchEvent stream",
+      "steps": [
+        "Settings -> Providers -> Deep research flow -> DeerFlow plan-and-execute",
+        "Run a research query",
+        "Verify a 'Background investigation' pseudo-worker appears with knowledge_base (if enabled) and web_search tool calls",
+        "Verify plan card shows sequential steps and steps run one at a time",
+        "Verify re-plan rounds appear for standard/thorough iteration presets",
+        "Verify final draft carries citations including kb:// sources when the KB matched"
+      ],
+      "passes": false
+    },
+    {
+      "id": "feat_unified_provider_manager",
+      "category": "providers",
+      "description": "ModelProviderManager unifies model selection across deep research (orchestrator/worker/synthesis) and Forecast: a fourth role in Settings -> Providers picks the MiroFish provider, auto-pushed via POST /api/settings/llm whenever the backend starts and seeded into .env (LLM_PROVIDER/LLM_BASE_URL/LLM_MODEL_NAME/LLM_API_KEY + key mirrors); Anthropic/Gemini/Ollama/LM Studio/custom bridge through MiroFish's OpenAI-compatible provider",
+      "steps": [
+        "Settings -> Providers -> Forecast (MiroFish): pick a provider and model",
+        "Click 'Apply to backend now' with the backend running; verify success message",
+        "Verify Settings -> Forecast 'LLM provider (backend live state)' reflects the pushed provider",
+        "Start a forecast; verify the backend pipeline uses the chosen provider",
+        "Cold-start path: stop backend, start a forecast, verify .env contains the LLM_* seed"
+      ],
+      "passes": false
     }
   ]
 }

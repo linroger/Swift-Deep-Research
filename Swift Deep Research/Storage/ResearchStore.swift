@@ -17,7 +17,30 @@ public final class ResearchStore {
         let config = ModelConfiguration("DeepResearch.v2",
                                         schema: schema,
                                         isStoredInMemoryOnly: false)
-        return try ModelContainer(for: schema, configurations: [config])
+        do {
+            return try ModelContainer(for: schema, configurations: [config])
+        } catch {
+            // The on-disk store is incompatible with the current schema — i.e. a
+            // @Model changed with no migration plan. Without this fallback, the
+            // very next schema edit would crash the app on launch for every
+            // existing install (an unrecoverable brick). Destroy the store and
+            // recreate it empty: local research history is lost, but the app
+            // launches. A VersionedSchema + SchemaMigrationPlan that PRESERVES
+            // data is the follow-up once the schema stabilizes.
+            Log.engine.error("SwiftData store incompatible (\(error.localizedDescription, privacy: .public)); rebuilding empty store.")
+            Self.destroyStore(at: config.url)
+            return try ModelContainer(for: schema, configurations: [config])
+        }
+    }
+
+    /// Remove the SQLite store and its WAL/SHM sidecar files so a fresh,
+    /// schema-current container can be created in their place.
+    private static func destroyStore(at url: URL) {
+        let fm = FileManager.default
+        try? fm.removeItem(at: url)
+        for suffix in ["-shm", "-wal"] {
+            try? fm.removeItem(at: URL(fileURLWithPath: url.path + suffix))
+        }
     }
 
     // MARK: - Session lifecycle
@@ -77,7 +100,13 @@ public final class ResearchStore {
                              snippet: String?,
                              providerHint: String,
                              session: StoredSession) throws -> StoredSource {
-        let target = fetched.id
+        // Scope source identity to the session. `StoredSource.id` is globally
+        // `.unique`, so keying it on the URL alone meant re-researching an
+        // overlapping URL in a different session OVERWROTE the other session's
+        // stored source text — and deleting either session cascade-deleted a row
+        // the other still referenced. A `sessionID|url` composite gives each
+        // session its own row while still de-duping within a session.
+        let target = "\(session.id.uuidString)|\(fetched.id)"
         let descriptor = FetchDescriptor<StoredSource>(
             predicate: #Predicate<StoredSource> { $0.id == target }
         )
@@ -89,7 +118,7 @@ public final class ResearchStore {
             return existing
         }
         let source = StoredSource(
-            id: fetched.id,
+            id: target,
             urlString: fetched.url.absoluteString,
             title: fetched.title,
             snippet: snippet ?? "",

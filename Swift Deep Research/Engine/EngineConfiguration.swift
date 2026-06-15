@@ -1,5 +1,35 @@
 import Foundation
 
+/// Which research methodology drives a deep-research run.
+///
+/// - `native`: the original multi-agent engine — plan once, fan out parallel
+///   workers, reflect, re-synthesize.
+/// - `deerflow`: DeerFlow's plan-and-execute loop — background investigation
+///   (web + private knowledge base), a structured plan with explicit steps,
+///   sequential step execution with observation threading, and re-planning
+///   until the planner judges the context sufficient.
+public enum ResearchFlow: String, Sendable, Codable, CaseIterable, Identifiable {
+    case native, deerflow
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .native: "Native multi-agent"
+        case .deerflow: "DeerFlow plan-and-execute"
+        }
+    }
+
+    public var blurb: String {
+        switch self {
+        case .native:
+            "Plans once, fans out parallel workers, then reflects and deepens across rounds."
+        case .deerflow:
+            "Investigates first (web + knowledge base), plans explicit steps, executes them sequentially with shared observations, and re-plans until the context is sufficient."
+        }
+    }
+}
+
 /// User-facing configuration for one research run.
 ///
 /// `Codable`/`Equatable` so the whole configuration survives app relaunches
@@ -30,6 +60,9 @@ public struct EngineConfiguration: Sendable, Codable, Equatable {
     /// Free-form user instructions injected into the orchestrator and worker
     /// system prompts. Empty by default.
     public var systemPromptAddendum: String
+    /// Which research methodology drives the run (native multi-agent vs.
+    /// DeerFlow plan-and-execute). Defaults to `.native`.
+    public var researchFlow: ResearchFlow
 
     public init(orchestratorProvider: ProviderRegistry.ProviderID,
                 orchestratorModel: String? = nil,
@@ -45,7 +78,8 @@ public struct EngineConfiguration: Sendable, Codable, Equatable {
                 qwenBaseURL: URL = ProviderRegistry.defaultQwenBaseURL,
                 seekdbHost: URL = URL(string: "http://127.0.0.1:9100")!,
                 useKnowledgeBase: Bool = false,
-                systemPromptAddendum: String = "") {
+                systemPromptAddendum: String = "",
+                researchFlow: ResearchFlow = .native) {
         self.orchestratorProvider = orchestratorProvider
         self.orchestratorModel = orchestratorModel
         self.workerProvider = workerProvider
@@ -61,6 +95,7 @@ public struct EngineConfiguration: Sendable, Codable, Equatable {
         self.seekdbHost = seekdbHost
         self.useKnowledgeBase = useKnowledgeBase
         self.systemPromptAddendum = systemPromptAddendum
+        self.researchFlow = researchFlow
     }
 
     // Tolerant decoding: new fields added in later versions fall back to
@@ -86,6 +121,7 @@ public struct EngineConfiguration: Sendable, Codable, Equatable {
             ?? URL(string: "http://127.0.0.1:9100")!
         useKnowledgeBase = try c.decodeIfPresent(Bool.self, forKey: .useKnowledgeBase) ?? false
         systemPromptAddendum = try c.decodeIfPresent(String.self, forKey: .systemPromptAddendum) ?? ""
+        researchFlow = try c.decodeIfPresent(ResearchFlow.self, forKey: .researchFlow) ?? .native
     }
 
     /// A reasonable starting configuration: orchestrate locally if Foundation Models is available,

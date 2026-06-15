@@ -566,3 +566,53 @@ clip the greedy Grape canvas so it no longer overdraws the pipeline header
 radius so node taps open the inspector. Verified live against the user's backend
 (7 pipelines, 5 completed); imported pipeline rendered all stages incl. a live one
 auto-advancing. 4 clean builds.
+
+-------------------------------------------------------------------------------
+SESSION 2026-06-15 — Multi-agent audit (EXECPLAN2.md) + systematic remediation
+branch: v2-deep-research-forecast
+-------------------------------------------------------------------------------
+Ran two background multi-agent workflows: 12 parallel subsystem auditors -> 155
+findings, then adversarial verification (12 verifiers re-reading cited code, 3
+throttled waves) + architect synthesis. Kept 150 verified findings (1 P0, 21 P1,
+59 P2, 69 P3); 5 refuted. Wrote EXECPLAN2.md (full checkbox catalog + exec
+summary, top risks, themes, quick wins, 5-phase roadmap, 8 capability ideas).
+
+Implemented 17 findings (all building green, incremental xcodebuild per cluster):
+ P0: iface-pertoken-save-1 (no per-token SwiftData save), mirofish-supervisor-1
+     (setsid process-group launch + killpg reaps DeerFlow/OASIS tree).
+ P1: build-health-1 (logs out of synced source root), iface-tokenstream-dead-2,
+     mirofish-supervisor-2 (synchronous killpg at quit via ProcessGroupBox),
+     engine-token-budget-undercount (Planner/Reflector/CitationExtractor charge),
+     anthropic-prompt-tokens-zero, research-tools-ssrf + sec-ssrf-fetch-tools-1
+     (new Shared/URLSafety.swift), sec-env-cleartext-perms-3 (.env chmod 0600),
+     gemini-apikey-unescaped-url (x-goog-api-key header), anthropic-error-body-
+     discarded, research-tools-js-timeout + concurrency-webreader-continuation-
+     leak (WKWebView watchdog + resume-once), store-no-migration-plan-5
+     (destroy-and-recreate fallback).
+ P2: mirofish-supervisor-4 (health service signature), gemini-cumulative-usage-
+     double-charge (last-wins charge once). Also applied the setsid/killpg +
+     synchronous-quit hardening to SidecarSupervisor (SeekDB).
+Files touched: AppEnvironment, MiroFishSupervisor, SidecarSupervisor, Planner,
+Reflector, CitationExtractor, Synthesizer, ResearchEngine, AnthropicClient,
+GeminiClient, ModelDiscovery, WebReaderTool, PDFReaderTool, RedditTool,
+ResearchStore, + new Shared/URLSafety.swift. No git commit (left for review).
+Next: engine-wallclock-not-interruptible, deerflow-1, store-source-id-cross-
+session-1, iface UI P1s; then Phase 4 structural (engine-dup-1, json-extract-dup-1,
+AppEnvironment decomposition, no-tests-1). Work top-down in EXECPLAN2.md.
+
+  [batch 2, same session] +6 findings (all green, logs/p3-*, logs/final2-*):
+  store-source-id-cross-session-1 (sessionID|url composite key),
+  engine-wallclock-not-interruptible (new Shared/TaskTimeout.swift withTimeout +
+  BudgetMeter.remainingWallClock; WorkerAgent per-call timeout; Synthesizer polls
+  checkWallClock mid-stream), concurrency-budgetmeter-charge-discard (chargeTokens(0)
+  re-assert), deerflow-1 (web_search hits -> citable FetchedSources), iface-orphaned-
+  live-run-4 (newSession cancels live first), iface-canvas-fetch-in-body-3 (cache
+  StoredSession in @State + onChange). Session total: 23 findings (2 P0, 17 P1, 4 P2).
+  Final full build: 0 errors / 0 warnings in app sources.
+
+  [batch 3, same session] +3 (all green, logs/p4-*, logs/p3-kbhost-*, logs/final3-*):
+  json-extract-dup-1 (new Shared/LLMJSON.swift; removed 4 duplicate extractors +
+  jsonString), provider-factory-1 (ResearchEngine -> registry.makeClient(role:config:)),
+  kb-host-contract-mismatch (sidecar launched with explicit --host). New files this
+  session: Shared/URLSafety.swift, Shared/TaskTimeout.swift, Shared/LLMJSON.swift +
+  EXECPLAN2.md. SESSION TOTAL: 26 findings (2 P0, 18 P1, 6 P2). Final build clean.
