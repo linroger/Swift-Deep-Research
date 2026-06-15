@@ -10,6 +10,10 @@ import SwiftData
 public final class AppEnvironment {
     public var store: ResearchStore
     public var configuration: EngineConfiguration
+    /// Unified model-provider manager: one vocabulary (`ModelRole`) for every
+    /// LLM consumer in the app. Research roles persist in `configuration`;
+    /// the forecast role lives here and is bridged to the MiroFish backend.
+    public let modelProviders = ModelProviderManager()
     public var selectedSessionID: UUID?
     public var live: LiveSession?
     public var settingsOpen: Bool = false
@@ -21,9 +25,43 @@ public final class AppEnvironment {
     /// keys change.
     public var missingKeyHint: String?
 
+    // MARK: Forecast workspace (DeerFlow × MiroFish prediction pipeline)
+
+    /// Which workspace the main window is showing.
+    public enum Workspace: String, Sendable, CaseIterable, Identifiable {
+        case research, forecast
+        public var id: String { rawValue }
+        public var title: String { self == .research ? "Research" : "Forecast" }
+        public var systemImage: String { self == .research ? "magnifyingglass" : "chart.line.uptrend.xyaxis" }
+    }
+    public var workspace: Workspace = .research
+    /// The active (or restored) forecast pipeline, if any.
+    public var forecast: ForecastRun?
+    /// MiroFish backend location + launch preferences.
+    public var forecastConfig: ForecastConfiguration = .suggestedDefault()
+    /// Last-known MiroFish backend status, surfaced in the Forecast UI.
+    public var forecastBackendStatus: MiroFishSupervisor.Status = .stopped
+    /// Presents the Forecast setup assistant (first run, or via banner/Settings).
+    public var forecastOnboardingOpen: Bool = false
+    /// Auto-present the assistant at most once per app session.
+    private var forecastOnboardingAutoShown = false
+
+    /// Pop the setup assistant when the Forecast workspace first opens on a
+    /// machine where the backend isn't ready and onboarding never completed.
+    public func maybeAutoPresentForecastOnboarding() {
+        guard !forecastOnboardingAutoShown, !ForecastOnboarding.hasCompletedOnce else { return }
+        switch forecastBackendStatus {
+        case .running, .launching: return
+        case .stopped, .backendMissing, .interpreterMissing, .failed:
+            forecastOnboardingAutoShown = true
+            forecastOnboardingOpen = true
+        }
+    }
+
     /// UserDefaults key for the persisted engine configuration. Versioned so a
     /// schema change can invalidate stale blobs by bumping the suffix.
     private static let configKey = "engineConfiguration.v2"
+    private static let forecastConfigKey = "forecastConfiguration.v1"
 
     public init(store: ResearchStore) {
         self.store = store
@@ -33,6 +71,10 @@ public final class AppEnvironment {
         } else {
             self.configuration = EngineConfiguration.suggestedDefault()
         }
+        if let data = UserDefaults.standard.data(forKey: Self.forecastConfigKey),
+           let saved = try? JSONDecoder().decode(ForecastConfiguration.self, from: data) {
+            self.forecastConfig = saved
+        }
     }
 
     /// Persist the current configuration so provider/model/endpoint choices
@@ -40,6 +82,200 @@ public final class AppEnvironment {
     public func saveConfiguration() {
         if let data = try? JSONEncoder().encode(configuration) {
             UserDefaults.standard.set(data, forKey: Self.configKey)
+        }
+    }
+
+    public func saveForecastConfiguration() {
+        if let data = try? JSONEncoder().encode(forecastConfig) {
+            UserDefaults.standard.set(data, forKey: Self.forecastConfigKey)
+        }
+    }
+
+    private func makeMiroFishClient() -> MiroFishClient {
+        MiroFishClient(host: forecastConfig.host)
+    }
+
+    /// Begin a new forecast pipeline. Ensures the MiroFish backend is up first so
+    /// the run doesn't fire a doomed `POST /api/research/run`.
+    public func startForecast(prompt: String, mode: ForecastRun.Mode, depth: String, maxRounds: Int?) {
+        detachForecast()   // don't kill a still-running pipeline; just stop following it
+        let run = ForecastRun(prompt: prompt, mode: mode, depth: depth, maxRounds: maxRounds,
+                              client: makeMiroFishClient(), store: store)
+        forecast = run
+        Task { @MainActor in
+            let status = await ensureForecastBackend()
+            if case .running = status {
+                run.start()
+            } else {
+                run.reportBackendUnavailable(Self.backendMessage(status))
+            }
+        }
+    }
+
+    /// Re-open a stored forecast. Runs that were live when the app last quit
+    /// reattach to their pipeline automatically; finished runs re-hydrate their
+    /// full artifacts (dossier, ontology, outline, …) from the backend when it's
+    /// reachable, falling back to the stored snapshot offline.
+    public func openForecast(record: ForecastRecord) {
+        detachForecast()
+        let run = ForecastRun.restored(from: record, client: makeMiroFishClient(), store: store)
+        forecast = run
+        if record.status == "running" {
+            // The pipeline may still be live server-side — reconnect and follow.
+            Task { @MainActor in
+                let status = await ensureForecastBackend()
+                if case .running = status {
+                    run.resumePolling()
+                } else {
+                    run.hydrateFromBackend()   // no-op offline; keeps snapshot
+                }
+            }
+        } else {
+            run.hydrateFromBackend()
+        }
+    }
+
+    public func newForecast() {
+        detachForecast()
+        forecast = nil
+    }
+
+    /// Delete a stored forecast, and best-effort remove the matching pipeline
+    /// (with its handoff artifacts) on the MiroFish backend so the two sides
+    /// don't drift apart.
+    public func deleteForecast(record: ForecastRecord) {
+        if forecast?.pipelineID == record.pipelineID {
+            forecast?.cancel()
+            forecast = nil
+        }
+        let pipelineID = record.pipelineID
+        do {
+            try store.deleteForecast(record)
+        } catch {
+            // Don't swallow silently — a failed local delete leaves a phantom row
+            // in the sidebar with no signal to the user or logs.
+            Log.engine.error("Failed to delete forecast \(pipelineID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+        let client = makeMiroFishClient()
+        Task.detached {
+            try? await client.deletePipeline(pipelineID)
+        }
+    }
+
+    // MARK: Backend pipeline browser
+
+    /// Every pipeline MiroFish knows about (started from this app, the web UI,
+    /// or run_simulation.py). Drives the sidebar's "On backend" section.
+    public var backendPipelines: [MFPipelineSummary] = []
+    public var backendPipelinesRefreshing = false
+
+    /// Refresh the backend pipeline list. Keeps the previous list on transport
+    /// errors so a momentary hiccup doesn't blank the sidebar.
+    public func refreshBackendPipelines() async {
+        guard !backendPipelinesRefreshing else { return }
+        backendPipelinesRefreshing = true
+        defer { backendPipelinesRefreshing = false }
+        if let pipelines = try? await makeMiroFishClient().listPipelines() {
+            backendPipelines = pipelines
+        }
+    }
+
+    /// Open a pipeline that lives only on the backend: import it as a local
+    /// `ForecastRecord` (so it joins the regular sidebar and survives offline),
+    /// then open it through the normal restore + hydrate path, which pulls the
+    /// research dossier, ontology, knowledge graph, simulation telemetry, and
+    /// the prediction report.
+    public func openBackendPipeline(_ summary: MFPipelineSummary) {
+        if let existing = try? store.findForecast(pipelineID: summary.pipeline_id) {
+            openForecast(record: existing)
+            return
+        }
+        Task { @MainActor in
+            let client = makeMiroFishClient()
+            do {
+                let state = try await client.pipelineStatus(summary.pipeline_id)
+                let record = try store.createForecast(pipelineID: state.pipeline_id,
+                                                      prompt: state.prompt,
+                                                      mode: state.mode,
+                                                      depth: state.options?.depth ?? "standard")
+                // "pending" isn't a ForecastRun.Phase; treat it as running so a
+                // queued pipeline reattaches and follows along.
+                record.status = state.status == "pending" ? "running" : state.status
+                record.globalProgress = state.global_progress
+                record.graphID = state.graph_id
+                record.simulationID = state.simulation_id
+                record.reportID = state.report_id
+                record.errorText = state.error
+                try? store.saveChanges()
+                openForecast(record: record)
+            } catch {
+                Log.engine.error("Backend pipeline import failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    /// Delete a backend-only pipeline (its record + handoff artifacts on the
+    /// server). Running pipelines are refused by the backend with a 409.
+    public func deleteBackendPipeline(_ summary: MFPipelineSummary) {
+        let client = makeMiroFishClient()
+        Task { @MainActor in
+            try? await client.deletePipeline(summary.pipeline_id)
+            await refreshBackendPipelines()
+        }
+    }
+
+    /// Stop following the current run in the UI *without* cancelling it on the
+    /// backend — switching to another forecast shouldn't kill a live pipeline.
+    private func detachForecast() {
+        guard let forecast else { return }
+        if forecast.phase.isActive {
+            forecast.detach()
+        } else {
+            forecast.cancel()
+        }
+    }
+
+    /// Make sure the MiroFish backend is reachable, launching it if auto-launch is
+    /// on. Also syncs the user's Zep key into MiroFish's `.env` so the graph stage
+    /// can authenticate (MiroFish reads `.env` with override, so env injection
+    /// alone wouldn't stick).
+    @discardableResult
+    public func ensureForecastBackend() async -> MiroFishSupervisor.Status {
+        await syncMiroFishEnv()
+        let status: MiroFishSupervisor.Status
+        if forecastConfig.autoLaunchBackend {
+            status = await MiroFishSupervisor.shared.ensureRunning(host: forecastConfig.host,
+                                                                   repoRoot: forecastConfig.repoRoot)
+        } else {
+            status = await MiroFishSupervisor.shared.checkHealth(host: forecastConfig.host)
+        }
+        forecastBackendStatus = status
+        if case .running = status {
+            // Keep the backend on the unified forecast provider. Idempotent;
+            // applies to newly started pipelines only.
+            await modelProviders.pushForecastProvider(client: makeMiroFishClient(),
+                                                      config: configuration)
+        }
+        return status
+    }
+
+    /// Write the Zep key (entered under Settings → API keys) and the unified
+    /// forecast LLM provider into MiroFish's `.env`, so a cold-started backend
+    /// boots straight onto the user's configuration.
+    public func syncMiroFishEnv() async {
+        var updates = await modelProviders.envSeed(config: configuration)
+        let zep = await KeychainStore.shared.get(.zep) ?? ""
+        if !zep.isEmpty { updates["ZEP_API_KEY"] = zep }
+        guard !updates.isEmpty else { return }
+        await MiroFishSupervisor.shared.syncEnv(updates, repoRoot: forecastConfig.repoRoot)
+    }
+
+    static func backendMessage(_ status: MiroFishSupervisor.Status) -> String {
+        switch status {
+        case .running: "MiroFish backend ready."
+        case .launching: "The MiroFish backend is still starting — try again in a moment."
+        case .stopped: "The MiroFish backend isn't running. Enable auto-launch in Settings → Forecast, or start it manually (`npm run dev`)."
+        case .backendMissing(let m), .interpreterMissing(let m), .failed(let m): m
         }
     }
 
@@ -102,7 +338,6 @@ public final class LiveSession: Identifiable {
     public var fetchedSources: [URL: FetchedSource] = [:]
     public var citations: [Citation] = []
     public var draftMarkdown: String = ""
-    public var tokenStream: [TokenStreamEntry] = []
     public var activityLog: [ActivityEntry] = []
     public var failure: EngineFailure?
     public var totalTokens: Int = 0
@@ -137,12 +372,6 @@ public final class LiveSession: Identifiable {
             public let invocation: ToolInvocation
             public var outcome: ToolOutcome?
         }
-    }
-
-    public struct TokenStreamEntry: Sendable, Identifiable {
-        public let id = UUID()
-        public let stage: ResearchEvent.Stage
-        public let text: String
     }
 
     /// Full transcript visible to the UI when the session has multiple turns.
@@ -216,7 +445,6 @@ public final class LiveSession: Identifiable {
         workers.removeAll()
         draftMarkdown = ""
         citations = []
-        tokenStream.removeAll()
         lastCritique = nil
         failure = nil
         status = .planning
@@ -268,8 +496,28 @@ public final class LiveSession: Identifiable {
         if status != .complete { status = .cancelled }
     }
 
+    /// Whether an event warrants a durable `StoredEvent` row. Transient,
+    /// high-frequency streaming deltas are excluded so the persistence layer
+    /// isn't hit thousands of times per run on the MainActor (see `ingest`).
+    private static func shouldPersist(_ event: ResearchEvent) -> Bool {
+        switch event {
+        case .tokenDelta, .reasoningDelta, .workerProgress, .sourceCacheHit:
+            return false
+        default:
+            return true
+        }
+    }
+
     private func ingest(_ event: ResearchEvent) {
-        if let storedSession {
+        // High-frequency streaming deltas (one `.tokenDelta`/`.reasoningDelta`
+        // per token, plus chatty worker progress / cache hits) are live-UI only.
+        // Persisting each one ran `EventEnvelope` JSON-encode + a synchronous
+        // SwiftData `context.save()` on the MainActor — thousands of blocking
+        // SQLite transactions during synthesis, the dominant cause of beachballing
+        // on long "thorough" runs. The durable record is the final draft (persisted
+        // on `.draftReady`) and the meaningful timeline events below; the token
+        // stream is reconstructable from the draft and is never replayed verbatim.
+        if let storedSession, Self.shouldPersist(event) {
             let payload = (try? JSONEncoder().encode(EventEnvelope(event: event)))
                 .flatMap { String(data: $0, encoding: .utf8) } ?? ""
             try? store.appendEvent(kind: eventKind(event),
@@ -328,8 +576,6 @@ public final class LiveSession: Identifiable {
                 draftMarkdown += text
                 self.status = .synthesizing
             }
-            tokenStream.append(TokenStreamEntry(stage: stage, text: text))
-            if tokenStream.count > 4_000 { tokenStream.removeFirst(tokenStream.count - 4_000) }
         case .citationAdded(let c):
             if !citations.contains(where: { $0.id == c.id }) { citations.append(c) }
         case .workerCompleted(let id, let summary):

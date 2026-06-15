@@ -39,6 +39,14 @@ public actor SidecarSupervisor {
     /// In-flight launch, so concurrent `ensureRunning` callers join one launch
     /// instead of each spawning a duplicate sidecar that collides on the port.
     private var ensureTask: Task<Status, Never>?
+    /// Process-group id of the supervised sidecar when launched as its own
+    /// session leader (`pgid == pid`), so `killpg` reaps any helper processes
+    /// pyseekdb/uvicorn spawn — not just the parent. `0` when no group was
+    /// established (no system `perl`).
+    private var childPGID: pid_t = 0
+    /// Nonisolated mirror so the synchronous `willTerminate` handler reaps the
+    /// tree inline instead of via an unstructured Task that never finishes.
+    nonisolated let liveGroup = ProcessGroupBox()
 
     private init() {
         Task { await registerTermination() }
@@ -50,7 +58,10 @@ public actor SidecarSupervisor {
             object: nil,
             queue: .main
         ) { _ in
-            Task { await SidecarSupervisor.shared.terminate() }
+            // Synchronous reap — AppKit won't wait for an unstructured Task before
+            // the process exits, so the old `Task { await terminate() }` orphaned
+            // the sidecar on quit. `killpg` is sync and safe inline.
+            SidecarSupervisor.shared.liveGroup.reap()
         }
         self.quitObserver = token
     }
@@ -229,15 +240,24 @@ public actor SidecarSupervisor {
     /// waiting (the old `Thread.sleep` blocked every other actor caller for up
     /// to a second).
     public func terminate() async {
-        guard let process, process.isRunning else { return }
-        process.terminate()   // SIGTERM
+        guard let process, process.isRunning else {
+            liveGroup.clear(); childPGID = 0; return
+        }
+        let pid = process.processIdentifier
+        // Reap the whole group (sidecar + any pyseekdb/uvicorn helpers), not just
+        // the parent. `process.terminate()` covers the no-setsid fallback.
+        if childPGID > 0 { killpg(childPGID, SIGTERM) }
+        process.terminate()   // SIGTERM to the direct child
         for _ in 0..<20 {
             if !process.isRunning { break }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
         if process.isRunning {
-            kill(process.processIdentifier, SIGKILL)
+            if childPGID > 0 { killpg(childPGID, SIGKILL) }
+            kill(pid, SIGKILL)
         }
+        liveGroup.clear()
+        childPGID = 0
     }
 
     // MARK: - Launch plumbing
@@ -258,7 +278,7 @@ public actor SidecarSupervisor {
     }
 
     private func launchAndWait(script: URL, port: Int, host: URL, python: String) async -> Status {
-        let launched = launch(script: script, port: port, python: python)
+        let launched = launch(script: script, port: port, host: host, python: python)
         guard case .launching = launched else { return launched }
         return await waitForHealthOrExit(host: host) ? .running : statusAfterExit()
     }
@@ -271,7 +291,7 @@ public actor SidecarSupervisor {
         return .failed(lastError ?? "Sidecar process exited before becoming healthy.")
     }
 
-    private func launch(script: URL, port: Int, python: String) -> Status {
+    private func launch(script: URL, port: Int, host: URL, python: String) -> Status {
         // Tear down any prior pipe before replacing it, so a relaunch doesn't
         // leak the old read handle / readability handler.
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
@@ -282,10 +302,29 @@ public actor SidecarSupervisor {
         process.standardOutput = pipe
         process.standardError = pipe
 
+        // Launch the sidecar as a new SESSION / process-group leader via a perl
+        // `setsid` shim, then `exec` the real command (preserving the pid). This
+        // makes `killpg` reap any helper processes pyseekdb/uvicorn spawn instead
+        // of orphaning them. `exec @ARGV` (list form) is execvp — no shell, no
+        // injection. Falls back to a direct launch if system perl is missing.
         // `/usr/bin/env <python> …` works whether `python` is an absolute venv
         // path or the bare `python3` resolved via PATH.
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [python, script.path, "--port", String(port)]
+        // Bind to the exact host the client probes. Previously only `--port` was
+        // passed, so the sidecar fell back to its own 127.0.0.1 default — fine
+        // until the configured seekdb host URL diverged from that default.
+        let bindHost = host.host ?? "127.0.0.1"
+        let realArgs = [python, script.path, "--host", bindHost, "--port", String(port)]
+        let perl = "/usr/bin/perl"
+        let useSetsid = FileManager.default.isExecutableFile(atPath: perl)
+        if useSetsid {
+            process.executableURL = URL(fileURLWithPath: perl)
+            process.arguments = ["-e",
+                                 "use POSIX qw(setsid); setsid(); exec @ARGV or die qq(exec failed: $!\\n);",
+                                 "--", "/usr/bin/env"] + realArgs
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = realArgs
+        }
         process.environment = childEnvironment()
 
         // Reset the rolling error buffer for this attempt so stale messages from
@@ -301,6 +340,13 @@ public actor SidecarSupervisor {
 
         self.process = process
         self.stdoutPipe = pipe
+        if useSetsid {
+            childPGID = process.processIdentifier   // pgid == pid after setsid
+            liveGroup.set(childPGID)
+        } else {
+            childPGID = 0
+            liveGroup.clear()
+        }
 
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let chunk = handle.availableData
@@ -343,6 +389,8 @@ public actor SidecarSupervisor {
             lastError = (lastError ?? "") + "\n[exit \(status)]"
         }
         process = nil
+        childPGID = 0
+        liveGroup.clear()
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
         stdoutPipe = nil
     }

@@ -43,8 +43,14 @@ public struct GeminiClient: LLMClient {
                     return
                 }
                 let modelID = request.model ?? model
+                // Percent-encode the model id in the path and pass the key via the
+                // `x-goog-api-key` header rather than a `?key=` query param. The
+                // old interpolation put the raw key (and an unescaped model id)
+                // straight into the URL string — a malformed key/model could break
+                // URL parsing, and the secret leaked into any URL logging.
+                let encodedModel = modelID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? modelID
                 let urlString = baseURL.absoluteString
-                    + "/v1beta/models/\(modelID):streamGenerateContent?alt=sse&key=\(apiKey)"
+                    + "/v1beta/models/\(encodedModel):streamGenerateContent?alt=sse"
                 guard let url = URL(string: urlString) else {
                     continuation.yield(.finished(reason: .error))
                     continuation.finish(throwing: EngineFailure(kind: .providerFailure, message: "Bad Gemini URL"))
@@ -69,6 +75,7 @@ public struct GeminiClient: LLMClient {
                         var req = URLRequest(url: url)
                         req.httpMethod = "POST"
                         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                        req.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
                         req.httpBody = body
 
                         let (bytes, response) = try await session.bytes(for: req)

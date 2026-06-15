@@ -208,3 +208,244 @@ Remaining (needs user-supplied secrets / live services, not code):
 
 Evidence: build logs `logs/build-kbshared-*.log`, `logs/build-kbrecover-*.log`
 (SUCCEEDED, 0 dup warnings); live sidecar transcript captured in session.
+
+---
+
+## 2026-06-10 — Forecast workspace robustness + deeper MiroFish integration
+
+**Request:** "Make the app more robust, integrating more closely the deep research
+forecast workflow from `~/Downloads/mirofish`."
+
+**Backend ground truth verified first.** The Swift Forecast layer was written
+against an older partial copy of MiroFish; every route the client uses (and every
+route added this session) was re-verified against the live code in
+`~/Downloads/mirofish/MiroFish-0.1.2/backend/app/api/*.py`. That backend's venv is
+healthy (Python 3.12.6, camel imports cleanly) — the screenshot's "venv needs
+re-provisioning" banner was a supervisor misclassification path, now improved.
+The backend gained (upstream) preflight checks on `POST /run` & `/resume` that
+return 400 + bullet list — the app now surfaces those verbatim.
+
+**Changes (all in `Swift Deep Research/`):**
+- `Forecast/MiroFishClient.swift`: added `cancelPipeline` (404/409 tolerated),
+  `resumePipeline`, `deletePipeline`, `reportChat` (300 s per-request timeout —
+  ReAct loop is slow), `setProvider` (`POST /api/settings/llm`); new wire types
+  `MFChatTurn`/`MFChatReply` (+`toolNames` extraction), `MFRunResponse.resumed`;
+  `rawData`/`request` accept a per-call timeout.
+- `Forecast/ForecastRun.swift`:
+  - `cancel()` now also fires backend `POST /cancel` (was poll-stop only → the
+    pipeline kept burning tokens server-side).
+  - New `resume()` → backend `POST /resume`, reuses completed stage artifacts.
+  - New `detach()` — stop following without cancelling (used when the UI switches
+    runs; record stays "running" for later reattach).
+  - `restored(from:)` keeps the SwiftData record attached (was nil → restored runs
+    never persisted updates) and restores `errorText`.
+  - New `hydrateFromBackend()` — restored runs re-fetch dossier/ontology/graph/
+    report live, adopt backend status drift, and reattach if still running.
+  - Poll loop handles backend `cancelled` status; failures persist `errorText`.
+  - Report-agent chat: `chatMessages`/`chatBusy`/`chatError`, `canChat`,
+    `sendChat(_:)` with prior-turn history.
+- `Forecast/ForecastModels.swift`: `ForecastRecord.errorText: String?` (additive,
+  lightweight SwiftData migration).
+- `Forecast/MiroFishSupervisor.swift`: exit-classification now distinguishes
+  import errors / port-in-use (Errno 48) / `.env` validation failures (run.py
+  prints `配置错误:` bullets — Zep key and LLM key get targeted English guidance);
+  new `repairEnvironment(repoRoot:)` (stops supervised child, `uv venv --python
+  3.12` when venv missing/wrong, `uv sync`, 15-min cap per step, off-actor pipe
+  drain) + `RepairError`.
+- `Interface/AppEnvironment.swift`: `openForecast` auto-reattaches records stored
+  as "running" (ensures backend, `resumePolling`) and hydrates finished ones;
+  new `deleteForecast` (SwiftData + best-effort backend `DELETE`); private
+  `detachForecast()` so switching/new runs never kill a live pipeline;
+  `startForecast` uses it.
+- `Interface/Forecast/ForecastPipelineView.swift`: failure/cancel banner showing
+  `errorMessage` (incl. multi-line preflight bullets, text-selectable) with a
+  **Resume** button wired to `run.resume()`.
+- `Interface/Forecast/ForecastReportView.swift`: new `ForecastChatView` — Q&A
+  thread with the report agent (markdown replies, tool-name chips, busy/error
+  states), shown once `run.canChat`.
+- `Interface/Forecast/ForecastSidebar.swift`: delete routes through
+  `env.deleteForecast`.
+- `Interface/Forecast/ForecastComposer.swift`: depth picker seeds from
+  `forecastConfig.defaultDepth`.
+- `Interface/SettingsSheet.swift` (Forecast tab): **Repair environment** button
+  (drives `repairEnvironment`, then relaunches + reports), and an **LLM provider**
+  group (GET/POST `/api/settings/llm`: picker from backend metadata, conditional
+  API-key field, applies to new forecasts).
+
+**Verification:** full `xcodebuild` Debug build (log `logs/forecast-robust-build-*.log`).
+Backend routes/shapes verified by reading `research.py`, `report.py`, `settings.py`,
+`simulation.py`, `config.py`, `pipeline_orchestrator.py` in the Downloads copy.
+Live end-to-end run not executed this session (forecast pipelines take 30+ min and
+spend LLM tokens); scenario checks to run next: cancel-mid-research (verify child
+process dies server-side), resume-after-preflight-failure, relaunch-during-run
+(auto-reattach), report chat round-trip.
+
+**Note:** repo-root `MiroFish-0.1.2/` and `deer-flow/` (untracked) are stale,
+incomplete copies of the Downloads originals (missing `backend/app/api`,
+`config.py`, bridge). The app defaults to `~/Downloads/mirofish/MiroFish-0.1.2`,
+so they're unused — candidates for deletion, left in place pending user say-so.
+
+**2026-06-10 verification evidence (appended post-build):**
+- `xcodebuild` Debug build SUCCEEDED, 0 errors / 0 project warnings
+  (`logs/forecast-robust-build-20260610-170321.log`).
+- All edited Swift files pass `swiftc -parse`.
+- Live endpoint smoke test against the user's running backend at :5001:
+  `/health` ✓, `GET /api/settings/llm` ✓ (envelope + provider metadata decode
+  into `MFProviderInfo` shape), `GET /api/research/list` ✓, cancel/resume/delete
+  on unknown id → 404 as the client expects, `POST /api/report/chat` with bad
+  simulation id → `{"success": false, "error": …}` ✓.
+- Caution learned: launching a second backend instance while one is live runs
+  MiroFish's orphan-pipeline reclaim *before* the port-bind failure — it can kill
+  stale child pids. `MiroFishSupervisor` already probes `/health` first and
+  attaches instead of double-launching, which avoids this; keep it that way.
+
+### 2026-06-10 (later) — Forecast onboarding assistant
+
+**Request:** "create an onboarding phase that runs the startup script and gets
+everything started up."
+
+- `Forecast/ForecastOnboarding.swift` (new): @Observable model for the setup
+  flow — environment checks (MiroFish folder, uv, git, claude/codex CLI or API
+  provider in .env, Zep key in Keychain/.env, backend venv `python3.12` shim,
+  DeerFlow checkout incl. `DEERFLOW_DIR` override), Zep key capture (Keychain +
+  `syncEnv` into .env), `setup.sh` execution with live console (600-line cap,
+  \r-progress collapsed), backend launch + health wait. Persists completion in
+  UserDefaults (`forecastOnboardingCompleted.v1`).
+- `MiroFishSupervisor.setupScriptStream(repoRoot:)` (new): nonisolated
+  AsyncThrowingStream running `bash setup.sh` with stdin=/dev/null (the script's
+  interactive Zep prompt self-skips — verified by reading setup.sh:229-247),
+  augmented PATH, line-buffered output, cancellation → SIGTERM, non-zero exit →
+  typed error.
+- `Interface/Forecast/ForecastOnboardingView.swift` (new): 4-step sheet
+  (checks → Zep key → setup console → start backend) with auto-scrolling
+  console and skip hint when everything is already provisioned.
+- Wiring: auto-presents once per session on first visit to the Forecast
+  workspace when the backend isn't running and onboarding never completed;
+  "Set up…" button on the backend-needs-setup banner; "Setup assistant…" in
+  Settings → Forecast (switches to the Forecast workspace first since the sheet
+  hangs off it).
+- Known upstream behavior (accepted): re-running setup.sh on a configured
+  machine re-detects the CLI provider and may flip LLM_PROVIDER in .env (e.g.
+  minimax → claude-cli); the onboarding marks the step skippable when
+  provisioned, and the provider can be switched back in Settings → Forecast.
+
+**Evidence:** two `xcodebuild` Debug builds SUCCEEDED, 0 warnings
+(`logs/forecast-onboarding-build*.log`); all check predicates validated against
+the real machine (venv shim, deerflow_research.py, tool discovery incl. claude
+at `~/.local/bin`); setup.sh non-interactive path verified by source read. Live
+setup.sh run intentionally NOT performed — the user's backend is mid-pipeline
+and the script would mutate `.env`'s LLM_PROVIDER.
+
+### 2026-06-10 (later) — Backend forecast browser + knowledge-graph fixes
+
+**Request:** "read from the completed forecast reports and display them on the
+app's interface, including all the research, reports, and knowledge graph, and
+everything else."
+
+**Backend pipeline browser.** The sidebar now lists every pipeline MiroFish
+knows about — started from this app, the web UI, run_simulation.py, or another
+machine — under an "On backend" section (deduped against locally-imported runs,
+manual refresh button). Tapping a remote pipeline imports it as a `ForecastRecord`
+and opens it through the normal restore→hydrate path.
+- `AppEnvironment`: `backendPipelines` state, `refreshBackendPipelines()`,
+  `openBackendPipeline()` (creates record from `/status`, treats `pending`→running),
+  `deleteBackendPipeline()`.
+- `ResearchStore.findForecast(pipelineID:)` for dedupe.
+- `ForecastSidebar`: "On backend" section + `BackendPipelineRow`; refresh `.task`.
+- `ForecastWorkspaceView`: refreshes the list once the backend is confirmed up.
+
+**Full hydration of completed/imported runs.** `ForecastRun.finalFetches` now
+pulls *every* stage artifact (research console tail, dossier, project ontology,
+knowledge graph, simulation run-status + timeline, report + agent log), not just
+the ones that streamed in live — so an imported finished forecast renders all six
+stages. `hydrateFromBackend()` (added earlier) drives this on open.
+
+**Knowledge-graph view fixes (user-reported bugs).**
+- *"No way to back out."* Grape's `ForceDirectedGraph` is a bare greedy `Canvas`
+  that drew **unclipped over the pipeline header/stepper**, hiding the New/back
+  controls. Fixed by `.clipShape(RoundedRectangle)` on both the graph canvas and
+  the outer container, plus a finite `maxWidth/maxHeight:.infinity` frame.
+- *"Tapping nodes shows no labels/details."* The plain `.onTapGesture` was being
+  swallowed by Grape's `withGraphDragGesture`. Replaced with a
+  `.simultaneousGesture(SpatialTapGesture)` that survives the drag and carries the
+  hit location; empty-space taps now dismiss the inspector. Grape's hit-test area
+  equals a node's drawn radius (confirmed by reading
+  `ForceDirectedGraphModel.findNode`), so the node radius floor was raised
+  (5→8 + degree) to make small nodes tappable.
+
+**Live verification (against the user's running backend, 7 pipelines).**
+- `/api/research/list` decodes cleanly into `MFPipelineSummary` (isolated Swift
+  harness): 7 pipelines, 5 completed.
+- Endpoint shapes for a completed pipeline confirmed: dossier (5.4 KB report),
+  ontology (10 entity / 8 edge types), graph (90 nodes / 140 edges), simulation
+  (542 actions, 24 timeline rounds), report (16.7 KB markdown, 3 sections),
+  agent-log (70 lines).
+- Built app launched: the Forecast sidebar populated with the backend pipelines;
+  opening one rendered the full view — header, 6-stage stepper (Deep Research /
+  Ontology / Knowledge Graph / Agent Setup all green, Simulation telemetry with
+  the actions-per-round chart + agent feed, Report state). A live pipeline
+  auto-advanced through its stages in real time in the imported view.
+- Four clean `xcodebuild` Debug builds (`logs/backend-browser-build-*.log`,
+  `logs/graph-fix-build-*.log`).
+- Not visually re-confirmed via automation: the graph chip's rendered output
+  after the clip fix — scripted clicking kept being confounded by live-pipeline
+  auto-follow and then an OS automation-permission dialog. The fix is grounded in
+  reading Grape's source (overdraw + gesture swallowing) and is low-risk.
+
+## 2026-06-12 — DeerFlow flow in Deep Research + unified model provider manager
+
+**Request.** Implement the DeerFlow deep-research flow inside the app's deep research function, augmented with the SeekDB knowledge base, and create a unified model provider manager covering both Deep Research and Forecast.
+
+**What was built (all compiles clean — `logs/build-deerflow-unified-full.log`, 0 errors / 0 warnings in changed files):**
+
+1. **`Engine/DeerFlowEngine.swift` (new).** Native Swift adaptation of DeerFlow's plan-and-execute LangGraph: background investigation (one `web_search` + one `knowledge_base` query run as a visible pseudo-worker whose findings and `kb://` sources feed the planner and the final report) → structured planner JSON (`title/thought/hasEnoughContext/steps[{title,description,stepType,suggestedQueries}]`, strict-context rule, max steps = min(4, budget.maxWorkers)) → sequential step execution via `WorkerAgent` with observation threading (`extraContext`) → re-plan loop (plan iterations = min(iteration.maxRounds, 3); planner sees step findings and either plans only the missing steps or declares context sufficient) → existing `Synthesizer` writes the cited report. Emits the same `ResearchEvent` stream, so LiveSession/UI/persistence are untouched. Processing-type steps get only calculator/datetime/knowledge_base tools.
+2. **Flow selection.** `ResearchFlow` enum (`native`/`deerflow`) added to `EngineConfiguration` (tolerant decoding, default native). `ResearchEngine.run` delegates to `DeerFlowEngine` when selected. Picker in Settings → Providers → "Deep research flow".
+3. **SeekDB augmentation.** KB queried during background investigation; planner prompt lists the KB document titles as DeerFlow-style "resources" and instructs steps to search the KB first; research steps keep the `knowledge_base` tool (existing `makeTools`, now shared between flows).
+4. **`LLM/ModelProviderManager.swift` (new).** `ModelRole` enum (orchestrator/worker/synthesis/forecast) + `ProviderRegistry.makeClient(role:config:)` as the single in-process factory (both engines use it). `@Observable ModelProviderManager` owns the forecast assignment (UserDefaults `modelProviders.forecast.v1`), maps app providers onto MiroFish's vocabulary (deepseek/minimax/kimi/qwen native; openai/anthropic/gemini/ollama/lmstudio/custom bridged through MiroFish's generic OpenAI-compatible provider with the right base URL; MLX/FM excluded), pushes via `POST /api/settings/llm`, and seeds `.env` (`LLM_PROVIDER`, `DEERFLOW_MODEL`, `LLM_BASE_URL`, `LLM_MODEL_NAME`, `LLM_API_KEY` + per-provider key mirrors like `DEEPSEEK_API_KEY`).
+5. **AppEnvironment.** Owns `modelProviders`; `ensureForecastBackend()` auto-pushes the forecast provider whenever the backend is confirmed running; `syncMiroFishEnv()` now seeds the LLM_* vars alongside the Zep key.
+6. **Settings UI.** Providers tab: research-flow picker, fourth role group "Forecast (MiroFish)" (eligible providers only, model field, "Apply to backend now" + push-state label). Forecast tab's provider panel reframed as "backend live state" override.
+
+**Assumptions / risks (to verify at runtime, see feature_list entries `feat_deerflow_research_flow` and `feat_unified_provider_manager`, both `passes:false`):**
+- Anthropic/Gemini OpenAI-compat bridging assumes their `/v1`-style OpenAI-compatible endpoints accept MiroFish's chat-completions calls.
+- Local providers (Ollama `/v1`, LM Studio `/v1`) pass dummy keys ("ollama"/"lm-studio") because MiroFish's generic provider requires a key string.
+- DeerFlow planner JSON parsing falls back to a single direct research step (first iteration) / plan termination (re-plan) when the model emits malformed JSON.
+
+**Next steps.** Runtime validation of both features end-to-end (needs API keys + running backend), then flip the feature_list flags with evidence.
+
+## 2026-06-15 — Multi-agent codebase audit + systematic remediation (EXECPLAN2.md)
+
+**Request.** Run a team of subagents to find blocks/bottlenecks/bugs and note them in `EXECPLAN2.md`; study the codebase and propose improvements; then work through EXECPLAN2.md and implement each item.
+
+**Audit method (evidence under `logs/` + workflow transcripts).** Two background multi-agent workflows: (1) 12 parallel auditors, one per subsystem (core-engine, deerflow-engine, llm-providers, research-tools, forecast-mirofish, knowledge-seekdb, storage/domain/shared, ui-core, ui-settings + 3 cross-cutting: concurrency, security, architecture) → 155 findings; (2) adversarial verification (12 verifiers re-read the cited code, throttled into 3 waves to dodge rate limits) + an architect synthesis. Result: **150 verified findings kept (1 P0, 21 P1, 59 P2, 69 P3), 5 refuted** (e.g. `mirofish-supervisor-3` actor-reentrancy — coalescing is sound). `EXECPLAN2.md` is the full catalog (checkbox per finding) + executive summary, top risks, themes, quick wins, a 5-phase roadmap, and 8 capability ideas.
+
+**Implemented this session — 23 findings (2 P0, 17 P1, 4 P2), each validated by a clean `xcodebuild` (Debug/macOS, 0 errors). The first 17 are below; a second batch followed (see "Batch 2").**
+- **`build-health-1` (P1):** removed the stale 1.1 MB hook-log tree (incl. `aaa/bbb-collisiontest`) from under the synchronized source root — the build-collision source; moved to a `/tmp` backup. Green baseline captured (`logs/baseline-*.log`).
+- **P0 `iface-pertoken-save-1`:** `AppEnvironment.ingest` no longer does a synchronous SwiftData `save()` (+ double JSON-encode) per `.tokenDelta`/`.reasoningDelta` — new `shouldPersist(_:)` persists only meaningful events. Removed the dead write-only `tokenStream` (`iface-tokenstream-dead-2`, P1).
+- **P0 `mirofish-supervisor-1` + `-2` (P1):** backend launches as a new session/process-group leader via a `/usr/bin/perl … setsid` shim (falls back to direct launch), so `killpg` reaps the whole DeerFlow/OASIS tree instead of orphaning grandchildren. `terminate()` signals the group; a new nonisolated `ProcessGroupBox` lets `applicationWillTerminate` reap **synchronously** (the old `Task { await terminate() }` never finished before exit). Same hardening applied to `SidecarSupervisor` (SeekDB). `-4` (P2): `probeHealth` requires the MiroFish `service` signature, not any 200.
+- **Budget cluster:** `Planner`/`Reflector`/`CitationExtractor` now charge tokens (`engine-token-budget-undercount`, P1); `AnthropicClient` captures `message_start` `input_tokens`(+cache) → single combined usage so prompt tokens count (`anthropic-prompt-tokens-zero`, P1); `Synthesizer` charges last-seen usage **once** instead of summing per-chunk, fixing Gemini's cumulative double-charge (`gemini-cumulative-usage-double-charge`, P2).
+- **Security:** new `Shared/URLSafety.swift` SSRF guard (blocks non-http(s), loopback/private/link-local/metadata IPs + localhost-style hosts) wired into `WebReaderTool`/`PDFReaderTool`/`RedditTool` (`research-tools-ssrf`, `sec-ssrf-fetch-tools-1`, P1). MiroFish `.env` `chmod 0600` after write (`sec-env-cleartext-perms-3`, P1). Gemini key moved from `?key=` to the `x-goog-api-key` header + percent-encoded model path, in `GeminiClient` and `ModelDiscovery` (`gemini-apikey-unescaped-url`, P1).
+- **Robustness:** `AnthropicClient.checkOK` drains+parses the error body (`anthropic-error-body-discarded`, P1). `WebReaderTool.HiddenWebView` got a load watchdog timeout (20s) + resume-exactly-once `finish()` (`research-tools-js-timeout` + `concurrency-webreader-continuation-leak`, P1). `ResearchStore.makeContainer` got a destroy-and-recreate fallback so a schema change can't brick launch (`store-no-migration-plan-5`, P1; data-preserving VersionedSchema is the follow-up).
+
+**Batch 2 (6 more findings, all building green):**
+- `store-source-id-cross-session-1` (P1): `StoredSource.id` is now a `sessionID|url` composite (was url-only + `.unique`), so re-researching an overlapping URL no longer overwrites another session's source nor cascade-deletes it. No schema change (value-only), so the destroy-and-recreate fallback isn't triggered.
+- `engine-wallclock-not-interruptible` (P1): new `Shared/TaskTimeout.swift` `withTimeout(_:operation:)`; `WorkerAgent` bounds each `llm.complete` by `BudgetMeter.remainingWallClock` (new property); `Synthesizer` polls `checkWallClock()` every 48 chunks mid-stream and stops (keeping the partial draft, skipping the citation pass) when the budget is spent.
+- `concurrency-budgetmeter-charge-discard` (P2): `WorkerAgent` re-asserts the token cap via `chargeTokens(0)` after each tool-charged hop, so tool token spend (charged through the non-throwing `ToolContext.charge`) actually stops the worker.
+- `deerflow-1` (P1): `DeerFlowEngine.backgroundInvestigation` now decodes `web_search` hits into lightweight `FetchedSource`s (`decodeSearchAsSources`, snippet as text, URL-string id) so the background sweep's web findings are citable in the final report (were previously markdown-only and lost).
+- `iface-orphaned-live-run-4` (P1, the clear orphan part): `ResearchCanvas.newSession()` calls `env.cancelLive()` before dropping `env.live` — the "New Chat" button no longer leaves a detached, budget-spending `streamTask` running. (The softer "navigate to another session while live is active" case was left as-is deliberately — cancelling on mere navigation is harsh UX, and the live run persists to its own session so it doesn't corrupt the viewed one; the proper fix is a persistent "Running" sidebar row, a larger UI change.)
+- `iface-canvas-fetch-in-body-3` (P2): `ResearchCanvas` caches the resolved `StoredSession` in `@State` and refreshes it via `.onChange(of: selectedSessionID, initial: true)` instead of running a `FetchDescriptor` fetch inside `body` on every live-timer re-render.
+
+**Batch 3 — Phase-4 consolidations + 1 P1 (3 more, all green; session total 26: 2 P0, 18 P1, 6 P2):**
+- `json-extract-dup-1` (P2): new `Shared/LLMJSON.swift` with `extractObject(_:)` (strip ```json fences → first `{`…last `}`) and `quoted(_:)` (JSON string literal). Replaced the 4 copy-pasted extractors (Planner/Reflector/DeerFlowEngine/CitationExtractor) and DeerFlow's `jsonString` with calls to it — one source of truth for LLM-JSON salvage.
+- `provider-factory-1` (P2): `ResearchEngine` now resolves all three roles via `registry.makeClient(role:config:)` (the same factory DeerFlowEngine uses) instead of repeating six config args per role — single provider/model/endpoint resolution path. (Left the legacy positional `makeClient(provider:…)` non-private since the role factory + ModelDiscovery call it.)
+- `kb-host-contract-mismatch` (P1): `SidecarSupervisor` now launches the sidecar with an explicit `--host` (from the probe URL) in addition to `--port`, so the bind address matches what the client probes instead of relying on the sidecar's 127.0.0.1 default. (`--data-dir`/`--collection`/`--database` have no app-side config to diverge from — both sides use the same hardcoded defaults — so they're left as sidecar defaults.)
+
+**Batch 4 — error-surfacing + observation threading (3 more + 1 partial; session total 29: 2 P0, 18 P1, 9 P2):**
+- `sec-keychain-no-error-surface-11` + `keychain-set-failure-silent-6` (P2/P3): `KeychainStore` get/set/delete now log non-success `OSStatus` (never the secret) instead of silently returning nil/false — so a locked-Mac `errSecInteractionNotAllowed` is distinguishable from "no key configured".
+- `native-engine-dedup-gap-1` (P3): the native engine's later (deepening) rounds now receive a `WorkerOutput.digest(of:)` `extraContext` so follow-up workers build on prior evidence (DeerFlow already did this). The digest helper was promoted to a shared `WorkerOutput.digest` and DeerFlow's private `observationDigest` removed.
+- `error-handling-consistency-1` (P2, partial): `AppEnvironment.deleteForecast` no longer swallows the store delete error with `try?` (would leave a phantom sidebar row); logs it. The other silent `try?` sites were either already logged (`openBackendPipeline`) or deliberate (`refreshBackendPipelines` keeps the prior list on transient transport error).
+
+**Git workflow (this session).** All work committed to a new branch **`audit-remediation-execplan2`** (off `v2-deep-research-forecast`) and pushed to origin. Round-1 commit `7aeae3a` = the 26 fixes + the pending DeerFlow/provider integration the tree was carrying (29 files, staged selectively — vendored trees `MiroFish-0.1.2/`, `deer-flow/`, `src/`, `frontend/`, etc. and `Screenshots/` left untracked, NOT committed). Round-2 commit = batch-4 fixes. Branch then merged into `main` and pushed. `untracked-backend-trees-1` (whether to gitignore/submodule the vendored backend) is left as a user decision.
+
+**Verification.** Each cluster built clean (`logs/p1-*`, `logs/p2-*`, `logs/p3-*`, `logs/p4-*`, `logs/r2-*`, `logs/final3-*` — 0 errors / 0 warnings in app sources). These are code-review-grounded; runtime E2E (process-tree reaping, SSRF rejection, budget accuracy, wall-clock interruption, observation threading) needs a live run with keys + backend — the next validation step.
+
+**Next session — highest-value remaining (EXECPLAN2.md):** `engine-wallclock-not-interruptible` (P1, wrap llm/tool calls in a ContinuousClock/Task-race timeout), `deerflow-1` (P1, background web-sweep sources never become citable FetchedSources), `store-source-id-cross-session-1` (P1, `StoredSource.id` unique-on-url corrupts across sessions), `iface-canvas-fetch-in-body-3` / `iface-orphaned-live-run-4` (P1 UI). Phase 4 structural: `engine-dup-1` (unify the two engines' scaffold), `json-extract-dup-1`, `provider-factory-1`, AppEnvironment decomposition, and `no-tests-1` (Swift Testing target — deferred because adding a target to the synchronized-group pbxproj is risky; do carefully first). Work top-down; build after each cluster.

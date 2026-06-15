@@ -10,7 +10,8 @@ public enum ResearchSchema {
         StoredTurn.self,
         StoredSource.self,
         StoredCitation.self,
-        StoredEvent.self
+        StoredEvent.self,
+        ForecastRecord.self
     ]
 }
 

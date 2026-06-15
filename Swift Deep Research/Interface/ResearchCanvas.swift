@@ -8,6 +8,10 @@ struct ResearchCanvas: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.modelContext) private var modelContext
     @Binding var query: String
+    /// Cache of the selected stored session. Resolving it inside `body` ran a
+    /// SwiftData fetch on every re-render (and `body` re-evaluates on every
+    /// live-timer tick); we resolve once and refresh on selection change instead.
+    @State private var resolvedStored: StoredSession?
 
     var body: some View {
         Group {
@@ -16,7 +20,7 @@ struct ResearchCanvas: View {
             // the canvas to that one even if a live session is still in memory.
             if let id = env.selectedSessionID,
                id != env.live?.sessionID,
-               let stored = storedSession(for: id) {
+               let stored = resolvedStored, stored.id == id {
                 ConversationView(
                     live: nil,
                     storedSession: stored,
@@ -50,6 +54,9 @@ struct ResearchCanvas: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(canvasBackground)
+        .onChange(of: env.selectedSessionID, initial: true) { _, id in
+            resolvedStored = storedSession(for: id)
+        }
     }
 
     @ViewBuilder
@@ -78,6 +85,10 @@ struct ResearchCanvas: View {
     }
 
     private func newSession() {
+        // Cancel before dropping the reference — otherwise an in-progress run's
+        // streamTask keeps streaming, persisting, and spending budget detached
+        // (orphaned) with no way for the user to stop it.
+        env.cancelLive()
         env.live = nil
         env.selectedSessionID = nil
         query = ""

@@ -9,15 +9,21 @@ public struct Planner: Sendable {
     public let retry: RetryPolicy
     public let instructions: String
     public let knowledgeBaseAvailable: Bool
+    /// Optional shared meter so the planner's (non-trivial) LLM call counts
+    /// toward the run's token cap. Without it, planning was free in the budget's
+    /// eyes — a systematic under-count.
+    public let budget: BudgetMeter?
 
     public init(llm: any LLMClient,
                 instructions: String = "",
                 knowledgeBaseAvailable: Bool = false,
-                retry: RetryPolicy = .networkDefault) {
+                retry: RetryPolicy = .networkDefault,
+                budget: BudgetMeter? = nil) {
         self.llm = llm
         self.instructions = instructions
         self.knowledgeBaseAvailable = knowledgeBaseAvailable
         self.retry = retry
+        self.budget = budget
     }
 
     public func plan(query: String,
@@ -61,25 +67,16 @@ public struct Planner: Sendable {
         let completion = try await retry.run({
             try await llm.complete(req)
         }, label: "planner")
+        // Count planning against the run's token cap (non-throwing: a plan should
+        // never be aborted mid-run for budget — but it must be accounted for).
+        if let budget { try? await budget.chargeTokens(completion.totalTokens) }
 
-        let json = Self.extractJSON(completion.text)
+        let json = LLMJSON.extractObject(completion.text)
         do {
             return try ResearchPlanJSON.decode(json, userQuery: query)
         } catch {
             Log.engine.warning("Planner JSON parse failed; using fallback. Raw: \(completion.text, privacy: .public)")
             return ResearchPlanJSON.fallback(query: query)
         }
-    }
-
-    private static func extractJSON(_ text: String) -> String {
-        var s = text
-        if s.contains("```") {
-            s = s.replacingOccurrences(of: "```json", with: "")
-            s = s.replacingOccurrences(of: "```", with: "")
-        }
-        if let first = s.firstIndex(of: "{"), let last = s.lastIndex(of: "}") {
-            return String(s[first...last])
-        }
-        return s
     }
 }

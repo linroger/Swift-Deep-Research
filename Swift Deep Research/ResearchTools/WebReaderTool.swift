@@ -45,6 +45,9 @@ public struct WebReaderTool: ResearchTool {
         guard let url = URL(string: args.url) else {
             return .failed(message: "fetch_url: invalid URL")
         }
+        if let reason = URLSafety.blockReason(for: url) {
+            return .failed(message: "fetch_url: refusing to fetch \(url.absoluteString) — \(reason). Only public http(s) URLs are allowed.")
+        }
         guard await context.budget.registerSource(for: context.workerID) else {
             return .failed(message: "Source cap reached for this worker")
         }
@@ -154,6 +157,7 @@ public struct WebReaderTool: ResearchTool {
     fileprivate final class HiddenWebView: NSObject, WKNavigationDelegate {
         let webView: WKWebView
         private var continuation: CheckedContinuation<Void, Error>?
+        private var timeoutTask: Task<Void, Never>?
 
         override init() {
             let config = WKWebViewConfiguration()
@@ -162,23 +166,46 @@ public struct WebReaderTool: ResearchTool {
             self.webView.navigationDelegate = self
         }
 
-        func load(_ url: URL) async throws {
+        func load(_ url: URL, timeout: Duration = .seconds(20)) async throws {
             try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
                 self.continuation = c
                 let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
                 webView.load(request)
+                // Overall watchdog. WKWebView navigation can hang indefinitely
+                // (slow/looping JS, delegate callbacks that never fire), and
+                // URLRequest.timeoutInterval is not reliably honored for
+                // navigation — so without this the continuation would never
+                // resume, leaking it and stalling the worker for the entire
+                // wall-clock budget. On expiry we resume exactly once (via
+                // `finish`) with a timeout error and stop the load.
+                self.timeoutTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: timeout)
+                    guard let self, self.continuation != nil else { return }
+                    self.webView.stopLoading()
+                    self.finish(.failure(URLError(.timedOut)))
+                }
             }
         }
 
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            continuation?.resume()
+        /// Resume the pending continuation exactly once and tear down the
+        /// watchdog. Guards against the delegate-callback/timeout race and the
+        /// double-resume that crashes a CheckedContinuation.
+        private func finish(_ result: Result<Void, Error>) {
+            timeoutTask?.cancel()
+            timeoutTask = nil
+            guard let c = continuation else { return }
             continuation = nil
+            c.resume(with: result)
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            finish(.success(()))
         }
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            continuation?.resume(throwing: error); continuation = nil
+            finish(.failure(error))
         }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            continuation?.resume(throwing: error); continuation = nil
+            finish(.failure(error))
         }
 
         /// Evaluate JS using the async API. The previous implementation blocked

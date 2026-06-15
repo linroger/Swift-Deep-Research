@@ -70,12 +70,14 @@ public struct AnthropicClient: LLMClient {
 
                         let (bytes, response) = try await session.bytes(for: url)
                         serverResponded = true   // headers arrived; HTTP errors are not retried here
-                        try Self.checkOK(response: response, snippet: nil)
+                        try await Self.checkOK(response: response, bytes: bytes)
 
                         var toolBlockIDs: [Int: String] = [:]
+                        var inputTokens = 0
                         for try await event in SSEParser.stream(bytes) {
                             try Self.handle(event: event,
                                             toolBlockIDs: &toolBlockIDs,
+                                            inputTokens: &inputTokens,
                                             into: continuation)
                         }
                         continuation.finish()
@@ -221,12 +223,26 @@ public struct AnthropicClient: LLMClient {
 
     private static func handle(event: SSEParser.Event,
                                toolBlockIDs: inout [Int: String],
+                               inputTokens: inout Int,
                                into continuation: AsyncThrowingStream<LLMStreamChunk, Error>.Continuation) throws {
         guard let data = event.data.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = obj["type"] as? String else { return }
 
         switch type {
+        case "message_start":
+            // Anthropic reports prompt-side usage (input_tokens + cache read/
+            // creation) only here. `complete()` does last-wins on the usage
+            // tuple, so we stash it and emit ONE combined usage at message_delta;
+            // otherwise the (often large) system-prompt input is never counted
+            // and the token budget under-enforces.
+            if let message = obj["message"] as? [String: Any],
+               let usage = message["usage"] as? [String: Any] {
+                let input = (usage["input_tokens"] as? Int) ?? 0
+                let cacheRead = (usage["cache_read_input_tokens"] as? Int) ?? 0
+                let cacheCreate = (usage["cache_creation_input_tokens"] as? Int) ?? 0
+                inputTokens = input + cacheRead + cacheCreate
+            }
         case "content_block_start":
             if let cb = obj["content_block"] as? [String: Any],
                (cb["type"] as? String) == "tool_use",
@@ -256,7 +272,7 @@ public struct AnthropicClient: LLMClient {
         case "message_delta":
             if let usage = obj["usage"] as? [String: Any],
                let out = usage["output_tokens"] as? Int {
-                continuation.yield(.usage(promptTokens: 0, completionTokens: out))
+                continuation.yield(.usage(promptTokens: inputTokens, completionTokens: out))
             }
         case "message_stop":
             continuation.yield(.finished(reason: .stop))
@@ -267,14 +283,39 @@ public struct AnthropicClient: LLMClient {
         }
     }
 
-    private static func checkOK(response: URLResponse, snippet: String?) throws {
+    private static func checkOK(response: URLResponse,
+                                bytes: URLSession.AsyncBytes) async throws {
         guard let http = response as? HTTPURLResponse else {
             throw EngineFailure(kind: .providerFailure, message: "Anthropic: no HTTP response")
         }
-        if !(200..<300 ~= http.statusCode) {
-            throw EngineFailure(kind: .providerFailure,
-                                message: "Anthropic HTTP \(http.statusCode)",
-                                underlying: snippet)
+        guard !(200..<300 ~= http.statusCode) else { return }
+        // Drain a bounded prefix of the error body so the user sees Anthropic's
+        // real message (invalid key, model not found, rate limit, overloaded)
+        // instead of a bare "HTTP 4xx". Anthropic returns
+        // {"error":{"type":...,"message":...}}.
+        var data = Data()
+        do {
+            for try await b in bytes {
+                data.append(b)
+                if data.count >= 2048 { break }
+            }
+        } catch { /* best-effort: fall back to status-only message */ }
+        let detail = Self.extractErrorMessage(data)
+        throw EngineFailure(kind: .providerFailure,
+                            message: "Anthropic HTTP \(http.statusCode)" + (detail.map { ": \($0)" } ?? ""),
+                            underlying: detail)
+    }
+
+    /// Pull `error.message` from Anthropic's error JSON, falling back to a short
+    /// raw-text prefix when the body isn't the expected shape.
+    private static func extractErrorMessage(_ data: Data) -> String? {
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let err = obj["error"] as? [String: Any],
+           let msg = err["message"] as? String, !msg.isEmpty {
+            return msg
         }
+        let raw = String(data: data.prefix(500), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (raw?.isEmpty == false) ? raw : nil
     }
 }

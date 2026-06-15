@@ -59,6 +59,9 @@ public struct RedditTool: ResearchTool {
             guard let urlString = args.url, let url = URL(string: urlString) else {
                 return .failed(message: "reddit thread: url required")
             }
+            if let reason = URLSafety.blockReason(for: url) {
+                return .failed(message: "reddit thread: refusing to fetch \(url.absoluteString) — \(reason).")
+            }
             return try await thread(url: url,
                                     limit: max(1, min(args.limit ?? 10, 50)),
                                     context: context)

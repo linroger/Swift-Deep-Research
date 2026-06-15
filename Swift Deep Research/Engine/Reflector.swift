@@ -18,9 +18,13 @@ import Foundation
 /// subtasks if the reflector returns nothing.
 public struct Reflector: Sendable {
     public let llm: any LLMClient
+    /// Optional shared meter so each reflection pass (which feeds an 8k-char
+    /// draft to the orchestrator LLM) counts toward the run's token cap.
+    public let budget: BudgetMeter?
 
-    public init(llm: any LLMClient) {
+    public init(llm: any LLMClient, budget: BudgetMeter? = nil) {
         self.llm = llm
+        self.budget = budget
     }
 
     public enum Mode: Sendable {
@@ -114,7 +118,8 @@ public struct Reflector: Sendable {
             temperature: mode == .deepening ? 0.5 : 0.2
         )
         let completion = try await llm.complete(req)
-        let json = JSONSchema.extract(from: completion.text)
+        if let budget { try? await budget.chargeTokens(completion.totalTokens) }
+        let json = LLMJSON.extractObject(completion.text)
         do {
             let wire = try JSONDecoder().decode(JSONSchema.Wire.self,
                                                 from: json.data(using: .utf8) ?? Data())
@@ -203,13 +208,5 @@ public struct Reflector: Sendable {
             let rationale: String
         }
 
-        static func extract(from text: String) -> String {
-            var s = text.replacingOccurrences(of: "```json", with: "")
-                       .replacingOccurrences(of: "```", with: "")
-            if let first = s.firstIndex(of: "{"), let last = s.lastIndex(of: "}") {
-                s = String(s[first...last])
-            }
-            return s
-        }
     }
 }

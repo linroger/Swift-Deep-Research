@@ -45,7 +45,7 @@ public enum ModelDiscovery {
                                      config: EngineConfiguration) -> URL? {
         switch provider {
         case .deepseek: return URL(string: "https://api.deepseek.com")
-        case .minimax:  return URL(string: "https://api.minimax.io")
+        case .minimax:  return URL(string: "https://api.minimaxi.com")   // domestic (国内) host
         case .kimi:     return URL(string: "https://api.moonshot.ai")
         case .qwen:     return config.qwenBaseURL
         case .lmstudio: return config.lmStudioHost
@@ -130,9 +130,13 @@ public enum ModelDiscovery {
     private static func fetchGemini() async throws -> [String] {
         let key = await KeychainStore.shared.get(.gemini) ?? ""
         guard !key.isEmpty else { throw DiscoveryError.missingKey("Gemini") }
-        let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=\(key)")!
+        // Pass the key via header, not `?key=` — keeps the secret out of the URL
+        // string (and any logging) and avoids breakage on keys with URL-special
+        // characters. Mirrors GeminiClient.
+        let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200")!
         var req = URLRequest(url: url)
         req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue(key, forHTTPHeaderField: "x-goog-api-key")
         let data = try await get(req)
         struct Resp: Decodable {
             struct M: Decodable { let name: String; let supportedGenerationMethods: [String]? }

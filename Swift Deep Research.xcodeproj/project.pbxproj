@@ -19,43 +19,56 @@
 		2A8EA9C72D515B9F003DC358 /* MLXLinalg in Frameworks */ = {isa = PBXBuildFile; productRef = 2A8EA9C62D515B9F003DC358 /* MLXLinalg */; };
 		2A8EA9C92D515B9F003DC358 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = 2A8EA9C82D515B9F003DC358 /* MLXNN */; };
 		2A8EA9CC2D515BAF003DC358 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = 2A8EA9CB2D515BAF003DC358 /* MarkdownUI */; };
+		A70775532FD7FA72004824B3 /* ForceSimulation in Frameworks */ = {isa = PBXBuildFile; productRef = A70775522FD7FA72004824B3 /* ForceSimulation */; };
+		A70775552FD7FA72004824B3 /* Grape in Frameworks */ = {isa = PBXBuildFile; productRef = A70775542FD7FA72004824B3 /* Grape */; };
 		A790CBDA2F8ED8DF000F1E4A /* Ollama in Frameworks */ = {isa = PBXBuildFile; productRef = A790CBD92F8ED8DF000F1E4A /* Ollama */; };
 		DECAFB10000000000000B501 /* seekdb_sidecar.py in Resources */ = {isa = PBXBuildFile; fileRef = D291438BC16BA1C93628A10C /* seekdb_sidecar.py */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		00286BE6BA83A0DD4CB1A7C7 /* 49e88f37-4218-417c-8102-f47844b2aaa9.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = "49e88f37-4218-417c-8102-f47844b2aaa9.json"; path = ".claude/data/sessions/49e88f37-4218-417c-8102-f47844b2aaa9.json"; sourceTree = SOURCE_ROOT; };
-		1D764313E164DCB57F977E30 /* Info.plist */ = {isa = PBXFileReference; explicitFileType = text.plist; lastKnownFileType = text.plist; name = Info.plist; path = "Swift Deep Research.app/Contents/Info.plist"; sourceTree = SOURCE_ROOT; };
+		0F3E69E67027B5CB5CC3167D /* today-2026-06-07.done.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; lastKnownFileType = net.daringfireball.markdown; name = "today-2026-06-07.done.md"; path = ".remember/today-2026-06-07.done.md"; sourceTree = SOURCE_ROOT; };
+		107051906A818A8BF0DE1FD9 /* post_tool_use.json */ = {isa = PBXFileReference; explicitFileType = text.json; lastKnownFileType = text.json; name = post_tool_use.json; path = "logs/6ebd926c-1962-474f-ba72-c5750a5f4e6d/post_tool_use.json"; sourceTree = SOURCE_ROOT; };
+		11E98B82C62FD6EAF0DDC8F0 /* LogStoreManifest.plist */ = {isa = PBXFileReference; explicitFileType = text.plist; lastKnownFileType = text.plist; name = LogStoreManifest.plist; path = build/dd/Logs/Build/LogStoreManifest.plist; sourceTree = SOURCE_ROOT; };
+		1555084B3F52C3516202E305 /* pre_tool_use.json */ = {isa = PBXFileReference; explicitFileType = text.json; lastKnownFileType = text.json; name = pre_tool_use.json; path = "logs/6ebd926c-1962-474f-ba72-c5750a5f4e6d/pre_tool_use.json"; sourceTree = SOURCE_ROOT; };
+		1D764313E164DCB57F977E30 /* Info.plist */ = {isa = PBXFileReference; explicitFileType = text.plist; name = Info.plist; path = "Swift Deep Research.app/Contents/Info.plist"; sourceTree = SOURCE_ROOT; };
 		1DD38B8EF16C34AF8EC5CB8C /* feature_list.json */ = {isa = PBXFileReference; explicitFileType = text.json; path = feature_list.json; sourceTree = SOURCE_ROOT; };
+		1ED10A258B8DC1AD32B829F7 /* LogStoreManifest.plist */ = {isa = PBXFileReference; explicitFileType = text.plist; lastKnownFileType = text.plist; name = LogStoreManifest.plist; path = build/dd/Logs/Launch/LogStoreManifest.plist; sourceTree = SOURCE_ROOT; };
 		1F27B6978244BDCDDF657620 /* now.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; name = now.md; path = .remember/now.md; sourceTree = SOURCE_ROOT; };
-		20D171E3CB983FD4BCCFD53C /* pre_tool_use.json */ = {isa = PBXFileReference; explicitFileType = text.json; lastKnownFileType = text.json; name = pre_tool_use.json; path = "Swift Deep Research.app/Contents/Resources/pre_tool_use.json"; sourceTree = SOURCE_ROOT; };
+		20D171E3CB983FD4BCCFD53C /* pre_tool_use.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = pre_tool_use.json; path = "Swift Deep Research.app/Contents/Resources/pre_tool_use.json"; sourceTree = SOURCE_ROOT; };
 		24027781C1DA419ADC55D562 /* README_zh.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; path = README_zh.md; sourceTree = SOURCE_ROOT; };
 		2A89B85D2D514ACF00EB12F9 /* Swift Deep Research.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Swift Deep Research.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		2D92FF74D6A6A5AA11C28F26 /* post_tool_use.json */ = {isa = PBXFileReference; explicitFileType = text.json; lastKnownFileType = text.json; name = post_tool_use.json; path = "Swift Deep Research.app/Contents/Resources/post_tool_use.json"; sourceTree = SOURCE_ROOT; };
+		2D92FF74D6A6A5AA11C28F26 /* post_tool_use.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = post_tool_use.json; path = "Swift Deep Research.app/Contents/Resources/post_tool_use.json"; sourceTree = SOURCE_ROOT; };
 		35DC20AAD76193E783A57D47 /* manifest.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = manifest.json; path = build/XCBuildData/eddd5ebc78e95320da9489cfcf0d6c8a.xcbuilddata/manifest.json; sourceTree = SOURCE_ROOT; };
-		3D483DABB0CFD842A1ECA801 /* gpt2_tokenizer_config.json */ = {isa = PBXFileReference; explicitFileType = text.json; lastKnownFileType = text.json; name = gpt2_tokenizer_config.json; path = "Swift Deep Research.app/Contents/Resources/swift-transformers_Hub.bundle/Contents/Resources/gpt2_tokenizer_config.json"; sourceTree = SOURCE_ROOT; };
+		3CA705806D4E6AB42F98DF97 /* LogStoreManifest.plist */ = {isa = PBXFileReference; explicitFileType = text.plist; lastKnownFileType = text.plist; name = LogStoreManifest.plist; path = build/dd/Logs/Test/LogStoreManifest.plist; sourceTree = SOURCE_ROOT; };
+		3D483DABB0CFD842A1ECA801 /* gpt2_tokenizer_config.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = gpt2_tokenizer_config.json; path = "Swift Deep Research.app/Contents/Resources/swift-transformers_Hub.bundle/Contents/Resources/gpt2_tokenizer_config.json"; sourceTree = SOURCE_ROOT; };
 		4744CCC99A7F675144DEEF70 /* PLANS.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; path = PLANS.md; sourceTree = SOURCE_ROOT; };
 		66BBA5F9BF9CB0DAE650B50C /* build-request.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = "build-request.json"; path = "build/XCBuildData/eddd5ebc78e95320da9489cfcf0d6c8a.xcbuilddata/build-request.json"; sourceTree = SOURCE_ROOT; };
+		682EE24CC97960A9D5A4F91F /* today-2026-06-09.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; lastKnownFileType = net.daringfireball.markdown; name = "today-2026-06-09.md"; path = ".remember/today-2026-06-09.md"; sourceTree = SOURCE_ROOT; };
 		6EEC1C6516603B8356F5B3FF /* target-graph.txt */ = {isa = PBXFileReference; explicitFileType = text; name = "target-graph.txt"; path = "build/XCBuildData/eddd5ebc78e95320da9489cfcf0d6c8a.xcbuilddata/target-graph.txt"; sourceTree = SOURCE_ROOT; };
 		70762D8E201AD9B12C0F68F5 /* user_prompt_submit.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = user_prompt_submit.json; path = logs/user_prompt_submit.json; sourceTree = SOURCE_ROOT; };
-		72A825053F245F755A535F9C /* archive.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; lastKnownFileType = net.daringfireball.markdown; name = archive.md; path = .remember/archive.md; sourceTree = SOURCE_ROOT; };
+		72A825053F245F755A535F9C /* archive.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; name = archive.md; path = .remember/archive.md; sourceTree = SOURCE_ROOT; };
 		747A49591310721DF1A907D8 /* last-save.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = "last-save.json"; path = ".remember/tmp/last-save.json"; sourceTree = SOURCE_ROOT; };
-		7AD71C1A02303611B29199D8 /* Info.plist */ = {isa = PBXFileReference; explicitFileType = text.plist; lastKnownFileType = text.plist; name = Info.plist; path = "Swift Deep Research.app/Contents/Resources/mlx-swift_Cmlx.bundle/Contents/Info.plist"; sourceTree = SOURCE_ROOT; };
-		7CE3279B714C996592325A9B /* pre_compact.json */ = {isa = PBXFileReference; explicitFileType = text.json; lastKnownFileType = text.json; name = pre_compact.json; path = logs/pre_compact.json; sourceTree = SOURCE_ROOT; };
+		7AD71C1A02303611B29199D8 /* Info.plist */ = {isa = PBXFileReference; explicitFileType = text.plist; name = Info.plist; path = "Swift Deep Research.app/Contents/Resources/mlx-swift_Cmlx.bundle/Contents/Info.plist"; sourceTree = SOURCE_ROOT; };
+		7CE3279B714C996592325A9B /* pre_compact.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = pre_compact.json; path = logs/pre_compact.json; sourceTree = SOURCE_ROOT; };
 		7D1A2AF42442BA9A854ADF7B /* pre_tool_use.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = pre_tool_use.json; path = "logs/49e88f37-4218-417c-8102-f47844b2aaa9/pre_tool_use.json"; sourceTree = SOURCE_ROOT; };
 		80F4D852C45EAAE2CCEAD599 /* chat.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = chat.json; path = "logs/49e88f37-4218-417c-8102-f47844b2aaa9/chat.json"; sourceTree = SOURCE_ROOT; };
-		861E6EA91D22EAEEB03B21AB /* today-2026-05-25.done.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; lastKnownFileType = net.daringfireball.markdown; name = "today-2026-05-25.done.md"; path = ".remember/today-2026-05-25.done.md"; sourceTree = SOURCE_ROOT; };
-		92606E599AEACB5DFD90C5B6 /* Info.plist */ = {isa = PBXFileReference; explicitFileType = text.plist; lastKnownFileType = text.plist; name = Info.plist; path = "Swift Deep Research.app/Contents/Resources/swift-transformers_Hub.bundle/Contents/Info.plist"; sourceTree = SOURCE_ROOT; };
+		861E6EA91D22EAEEB03B21AB /* today-2026-05-25.done.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; name = "today-2026-05-25.done.md"; path = ".remember/today-2026-05-25.done.md"; sourceTree = SOURCE_ROOT; };
+		92606E599AEACB5DFD90C5B6 /* Info.plist */ = {isa = PBXFileReference; explicitFileType = text.plist; name = Info.plist; path = "Swift Deep Research.app/Contents/Resources/swift-transformers_Hub.bundle/Contents/Info.plist"; sourceTree = SOURCE_ROOT; };
 		978896E5F5A6EB26379F8383 /* stop.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = stop.json; path = "logs/49e88f37-4218-417c-8102-f47844b2aaa9/stop.json"; sourceTree = SOURCE_ROOT; };
+		984BE9B23445B438DEB2AF31 /* subagent_stop.json */ = {isa = PBXFileReference; explicitFileType = text.json; lastKnownFileType = text.json; name = subagent_stop.json; path = "logs/6ebd926c-1962-474f-ba72-c5750a5f4e6d/subagent_stop.json"; sourceTree = SOURCE_ROOT; };
+		A882EC7C1B3E712501747C03 /* LogStoreManifest.plist */ = {isa = PBXFileReference; explicitFileType = text.plist; lastKnownFileType = text.plist; name = LogStoreManifest.plist; path = build/dd/Logs/Package/LogStoreManifest.plist; sourceTree = SOURCE_ROOT; };
 		C75EF9819295552714422E18 /* README.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; path = README.md; sourceTree = SOURCE_ROOT; };
 		D291438BC16BA1C93628A10C /* seekdb_sidecar.py */ = {isa = PBXFileReference; explicitFileType = text.script.python; name = seekdb_sidecar.py; path = sidecar/seekdb_sidecar.py; sourceTree = SOURCE_ROOT; };
 		D3E1864782904DE8367F7E53 /* subagent_stop.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = subagent_stop.json; path = "logs/49e88f37-4218-417c-8102-f47844b2aaa9/subagent_stop.json"; sourceTree = SOURCE_ROOT; };
-		DA5A865EA4854A9384DB5FDD /* today-2026-05-24.done.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; lastKnownFileType = net.daringfireball.markdown; name = "today-2026-05-24.done.md"; path = ".remember/today-2026-05-24.done.md"; sourceTree = SOURCE_ROOT; };
+		D8FF5BBAEE3A2B5577E9DE9E /* 6ebd926c-1962-474f-ba72-c5750a5f4e6d.json */ = {isa = PBXFileReference; explicitFileType = text.json; lastKnownFileType = text.json; name = "6ebd926c-1962-474f-ba72-c5750a5f4e6d.json"; path = ".claude/data/sessions/6ebd926c-1962-474f-ba72-c5750a5f4e6d.json"; sourceTree = SOURCE_ROOT; };
+		DA5A865EA4854A9384DB5FDD /* today-2026-05-24.done.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; name = "today-2026-05-24.done.md"; path = ".remember/today-2026-05-24.done.md"; sourceTree = SOURCE_ROOT; };
 		DD0E529BF2B461B268711F8A /* last-ndc.ts */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.typescript; name = "last-ndc.ts"; path = ".remember/tmp/last-ndc.ts"; sourceTree = SOURCE_ROOT; };
 		E94741CBFB68B19F22E124DE /* Swift_Deep_Research.entitlements */ = {isa = PBXFileReference; explicitFileType = text.plist.entitlements; name = Swift_Deep_Research.entitlements; path = "Swift Deep Research/Swift_Deep_Research.entitlements"; sourceTree = SOURCE_ROOT; };
-		EDFEF85C471C401AB1C5262F /* recent.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; lastKnownFileType = net.daringfireball.markdown; name = recent.md; path = .remember/recent.md; sourceTree = SOURCE_ROOT; };
-		FB0F90EDCA1B9DD43E76C2C9 /* session_start.json */ = {isa = PBXFileReference; explicitFileType = text.json; lastKnownFileType = text.json; name = session_start.json; path = logs/session_start.json; sourceTree = SOURCE_ROOT; };
-		FB92200C056604907AF1BCF5 /* t5_tokenizer_config.json */ = {isa = PBXFileReference; explicitFileType = text.json; lastKnownFileType = text.json; name = t5_tokenizer_config.json; path = "Swift Deep Research.app/Contents/Resources/swift-transformers_Hub.bundle/Contents/Resources/t5_tokenizer_config.json"; sourceTree = SOURCE_ROOT; };
+		EDFEF85C471C401AB1C5262F /* recent.md */ = {isa = PBXFileReference; explicitFileType = net.daringfireball.markdown; name = recent.md; path = .remember/recent.md; sourceTree = SOURCE_ROOT; };
+		F6B07CFBB50BA8EE8FED95A9 /* LogStoreManifest.plist */ = {isa = PBXFileReference; explicitFileType = text.plist; lastKnownFileType = text.plist; name = LogStoreManifest.plist; path = build/dd/Logs/Localization/LogStoreManifest.plist; sourceTree = SOURCE_ROOT; };
+		FB0F90EDCA1B9DD43E76C2C9 /* session_start.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = session_start.json; path = logs/session_start.json; sourceTree = SOURCE_ROOT; };
+		FB92200C056604907AF1BCF5 /* t5_tokenizer_config.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = t5_tokenizer_config.json; path = "Swift Deep Research.app/Contents/Resources/swift-transformers_Hub.bundle/Contents/Resources/t5_tokenizer_config.json"; sourceTree = SOURCE_ROOT; };
 		FCA55CF8E67028DD40B7A054 /* post_tool_use.json */ = {isa = PBXFileReference; explicitFileType = text.json; name = post_tool_use.json; path = "logs/49e88f37-4218-417c-8102-f47844b2aaa9/post_tool_use.json"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
@@ -75,10 +88,12 @@
 				A790CBDA2F8ED8DF000F1E4A /* Ollama in Frameworks */,
 				2A8EA9C12D515B9F003DC358 /* MLX in Frameworks */,
 				2A8EA9BA2D515B90003DC358 /* MLXMNIST in Frameworks */,
+				A70775552FD7FA72004824B3 /* Grape in Frameworks */,
 				2A8EA9B82D515B90003DC358 /* MLXLMCommon in Frameworks */,
 				2A8EA9BC2D515B90003DC358 /* MLXVLM in Frameworks */,
 				2A8EA9C32D515B9F003DC358 /* MLXFFT in Frameworks */,
 				2A6031A42D517812001E22A9 /* SwiftSoup in Frameworks */,
+				A70775532FD7FA72004824B3 /* ForceSimulation in Frameworks */,
 				2A8EA9B62D515B90003DC358 /* MLXLLM in Frameworks */,
 				2A8EA9C52D515B9F003DC358 /* MLXFast in Frameworks */,
 				2A8EA9C72D515B9F003DC358 /* MLXLinalg in Frameworks */,
@@ -128,6 +143,17 @@
 				72A825053F245F755A535F9C /* archive.md */,
 				861E6EA91D22EAEEB03B21AB /* today-2026-05-25.done.md */,
 				EDFEF85C471C401AB1C5262F /* recent.md */,
+				0F3E69E67027B5CB5CC3167D /* today-2026-06-07.done.md */,
+				682EE24CC97960A9D5A4F91F /* today-2026-06-09.md */,
+				D8FF5BBAEE3A2B5577E9DE9E /* 6ebd926c-1962-474f-ba72-c5750a5f4e6d.json */,
+				1555084B3F52C3516202E305 /* pre_tool_use.json */,
+				107051906A818A8BF0DE1FD9 /* post_tool_use.json */,
+				984BE9B23445B438DEB2AF31 /* subagent_stop.json */,
+				1ED10A258B8DC1AD32B829F7 /* LogStoreManifest.plist */,
+				A882EC7C1B3E712501747C03 /* LogStoreManifest.plist */,
+				11E98B82C62FD6EAF0DDC8F0 /* LogStoreManifest.plist */,
+				3CA705806D4E6AB42F98DF97 /* LogStoreManifest.plist */,
+				F6B07CFBB50BA8EE8FED95A9 /* LogStoreManifest.plist */,
 			);
 			sourceTree = "<group>";
 		};
@@ -172,6 +198,8 @@
 				2A8EA9CB2D515BAF003DC358 /* MarkdownUI */,
 				2A6031A32D517812001E22A9 /* SwiftSoup */,
 				A790CBD92F8ED8DF000F1E4A /* Ollama */,
+				A70775522FD7FA72004824B3 /* ForceSimulation */,
+				A70775542FD7FA72004824B3 /* Grape */,
 			);
 			productName = "Swift Deep Research";
 			productReference = 2A89B85D2D514ACF00EB12F9 /* Swift Deep Research.app */;
@@ -207,6 +235,7 @@
 				2A8EA9CA2D515BAF003DC358 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
 				2A6031A22D517812001E22A9 /* XCRemoteSwiftPackageReference "SwiftSoup" */,
 				A790CBD82F8ED8DF000F1E4A /* XCRemoteSwiftPackageReference "ollama-swift" */,
+				A70775512FD7FA72004824B3 /* XCRemoteSwiftPackageReference "Grape" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 2A89B85E2D514ACF00EB12F9 /* Products */;
@@ -390,6 +419,7 @@
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
+				EXCLUDED_SOURCE_FILE_NAMES = "chat.json pre_tool_use.json post_tool_use.json notification.json stop.json subagent_stop.json session_start.json session_end.json user_prompt_submit.json";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Swift Deep Research";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -427,6 +457,7 @@
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
+				EXCLUDED_SOURCE_FILE_NAMES = "chat.json pre_tool_use.json post_tool_use.json notification.json stop.json subagent_stop.json session_start.json session_end.json user_prompt_submit.json";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Swift Deep Research";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -496,6 +527,14 @@
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 2.4.1;
+			};
+		};
+		A70775512FD7FA72004824B3 /* XCRemoteSwiftPackageReference "Grape" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/SwiftGraphs/Grape.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.1.0;
 			};
 		};
 		A790CBD82F8ED8DF000F1E4A /* XCRemoteSwiftPackageReference "ollama-swift" */ = {
@@ -568,6 +607,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 2A8EA9CA2D515BAF003DC358 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
 			productName = MarkdownUI;
+		};
+		A70775522FD7FA72004824B3 /* ForceSimulation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A70775512FD7FA72004824B3 /* XCRemoteSwiftPackageReference "Grape" */;
+			productName = ForceSimulation;
+		};
+		A70775542FD7FA72004824B3 /* Grape */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A70775512FD7FA72004824B3 /* XCRemoteSwiftPackageReference "Grape" */;
+			productName = Grape;
 		};
 		A790CBD92F8ED8DF000F1E4A /* Ollama */ = {
 			isa = XCSwiftPackageProductDependency;

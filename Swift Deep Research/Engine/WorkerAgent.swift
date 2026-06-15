@@ -42,7 +42,13 @@ public actor WorkerAgent {
     }
 
     /// Run the worker loop until it produces a summary or hits a tool-call limit.
-    public func run(subtask: ResearchPlan.Subtask, parentQuery: String) async throws -> WorkerOutput {
+    ///
+    /// `extraContext` carries observations from earlier (sequential) steps so a
+    /// DeerFlow-style step can build on what previous steps found instead of
+    /// re-researching it. Empty for the native parallel fan-out flow.
+    public func run(subtask: ResearchPlan.Subtask,
+                    parentQuery: String,
+                    extraContext: String = "") async throws -> WorkerOutput {
         emit(.workerStarted(WorkerDescriptor(id: id, task: subtask.question, rationale: subtask.rationale)))
 
         let extra = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -89,9 +95,12 @@ public actor WorkerAgent {
 
         When you are done, reply with your final markdown summary and stop calling tools.\(appendix)
         """
+        let contextBlock = extraContext.isEmpty
+            ? ""
+            : "\n\n# Findings from earlier steps (build on these — do not re-research them)\n\(extraContext)"
         var messages: [LLMMessage] = [
             .system(system),
-            .user("Subtask: \(subtask.question)\n\nParent question for context: \(parentQuery)")
+            .user("Subtask: \(subtask.question)\n\nParent question for context: \(parentQuery)\(contextBlock)")
         ]
         let toolSpecs = tools.values.map { $0.spec }
 
@@ -118,7 +127,13 @@ public actor WorkerAgent {
                 // No artificial maxTokens cap — workers may need to summarize
                 // long tool outputs, and 1500 was clipping richer responses.
                 let req = LLMRequest(messages: messages, tools: toolSpecs, temperature: 0.3)
-                let completion = try await llm.complete(req)
+                // Bound the single call by the remaining wall-clock budget so one
+                // hung provider stream can't run past the run's cap (checkWallClock
+                // only fires between hops). On timeout this throws and the worker
+                // stops gracefully like any other budget bust.
+                let llm = self.llm
+                let remaining = await budget.remainingWallClock
+                let completion = try await withTimeout(remaining) { try await llm.complete(req) }
                 try await budget.chargeTokens(completion.totalTokens)
 
                 if !completion.text.isEmpty {
@@ -182,6 +197,11 @@ public actor WorkerAgent {
                         collectedSources.append(fetched)
                     }
                 }
+                // Tools charge tokens through the non-throwing `ToolContext.charge`
+                // (try? swallows the cap throw). Re-assert the token cap here so a
+                // tool-heavy hop that crossed the budget stops the worker now
+                // instead of running another full completion.
+                try await budget.chargeTokens(0)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -234,4 +254,14 @@ public struct WorkerOutput: Sendable {
     public let subtask: ResearchPlan.Subtask
     public let summary: String
     public let sources: [FetchedSource]
+}
+
+public extension WorkerOutput {
+    /// Compact digest of prior worker findings, threaded into later-round (native
+    /// engine) and sequential (DeerFlow) workers as `extraContext` so they build
+    /// on earlier evidence instead of restarting cold.
+    static func digest(of outputs: [WorkerOutput]) -> String {
+        outputs.map { "## \($0.subtask.question)\n\(Clip.clip($0.summary, to: 2_000))" }
+               .joined(separator: "\n\n")
+    }
 }

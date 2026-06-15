@@ -15,7 +15,8 @@ public struct CitationExtractor: Sendable {
     }
 
     public func extract(draft: String,
-                        sources: [FetchedSource]) async throws -> [Citation] {
+                        sources: [FetchedSource],
+                        budget: BudgetMeter? = nil) async throws -> [Citation] {
         let sourceCorpus = sources.enumerated().map { idx, src in
             """
             <source index="\(idx)" url="\(src.url.absoluteString)" title="\(src.title)">
@@ -52,7 +53,10 @@ public struct CitationExtractor: Sendable {
         ], temperature: 0.1)
 
         let completion = try await llm.complete(req)
-        let json = stripCodeFences(completion.text)
+        // Count the citation pass (large source corpus in, JSON out) against the
+        // run's token cap. Non-throwing so it accounts without aborting.
+        if let budget { try? await budget.chargeTokens(completion.totalTokens) }
+        let json = LLMJSON.extractObject(completion.text)
         struct Wire: Decodable {
             struct C: Decodable {
                 let claim: String
@@ -77,16 +81,4 @@ public struct CitationExtractor: Sendable {
         }
     }
 
-    private func stripCodeFences(_ s: String) -> String {
-        var out = s
-        if out.contains("```") {
-            out = out.replacingOccurrences(of: "```json", with: "")
-            out = out.replacingOccurrences(of: "```", with: "")
-        }
-        // Trim to outermost {...}
-        if let first = out.firstIndex(of: "{"), let last = out.lastIndex(of: "}") {
-            return String(out[first...last])
-        }
-        return out
-    }
 }
