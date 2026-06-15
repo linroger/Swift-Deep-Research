@@ -112,6 +112,13 @@ public actor BudgetMeter {
                  elapsed: ContinuousClock().now - startedAt)
     }
 
+    /// The per-worker tool-call ceiling for this run's budget mode. Exposed so a
+    /// worker's LLM-hop cap can track the tool budget rather than being a fixed
+    /// constant that may bind BEFORE the tool budget is spent — thorough allows
+    /// 36 tool calls, so a hardcoded 32-hop cap cut workers off early
+    /// (engine-hops-cap-decoupled-from-budget).
+    public var toolCallBudget: Int { budget.maxToolCallsPerWorker }
+
     /// Wall-clock budget still available, clamped at zero. Used to derive a
     /// per-call timeout so a single LLM/tool call can't outlive the whole run.
     public var remainingWallClock: Duration {

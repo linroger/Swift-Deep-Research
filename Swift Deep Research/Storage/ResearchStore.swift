@@ -135,6 +135,29 @@ public final class ResearchStore {
     // MARK: - Citations
 
     public func attachCitations(_ citations: [Citation], to turn: StoredTurn) throws {
+        insertCitations(citations, into: turn)
+        try context.save()
+    }
+
+    /// Replace a turn's citations wholesale. Used on a re-draft: multi-round
+    /// reflection emits a fresh `.draftReady` for the SAME turn, and
+    /// `CitationExtractor` mints a new UUID per run so the `.unique` ids never
+    /// collide with the prior round's rows. Calling `attachCitations` again would
+    /// therefore APPEND a second full set, so a turn that went through N rounds
+    /// accumulated N× its citations (duplicated in exports and the inspector).
+    /// Deleting the existing cascade-related rows before inserting the new set —
+    /// in one save — keeps exactly one set per turn.
+    public func replaceCitations(_ citations: [Citation], on turn: StoredTurn) throws {
+        for existing in turn.citations {
+            context.delete(existing)
+        }
+        insertCitations(citations, into: turn)
+        try context.save()
+    }
+
+    /// Insert citation rows for `turn` without saving, so callers can batch the
+    /// insert with related deletes into a single `context.save()`.
+    private func insertCitations(_ citations: [Citation], into turn: StoredTurn) {
         for c in citations {
             let stored = StoredCitation(
                 id: c.id,
@@ -146,7 +169,6 @@ public final class ResearchStore {
             )
             context.insert(stored)
         }
-        try context.save()
     }
 
     // MARK: - Forecasts (DeerFlow × MiroFish pipeline runs)

@@ -56,7 +56,7 @@ public struct WebReaderTool: ResearchTool {
         let session = self.session
 
         do {
-            let fetched = try await context.cache.fetch(url) { resolved in
+            let (fetched, wasCached) = try await context.cache.fetch(url) { resolved in
                 if !forceJS, let static_ = try await Self.extractStatic(url: resolved, session: session) {
                     return static_.asFetched(strategy: .staticHTML)
                 }
@@ -68,8 +68,17 @@ public struct WebReaderTool: ResearchTool {
                                     message: "Static fetch yielded no content and WebKit fallback unavailable.")
                 #endif
             }
-            context.emit(.sourceFetched(context.workerID, fetched))
-            await context.charge(fetched.extractedText.count / 4)
+            if wasCached {
+                // Cache/in-flight hit: no new network fetch happened, so give back
+                // the source slot we speculatively reserved and skip the token
+                // charge (re-charging would double-count). Surface the dedup so
+                // the wired-up UI can show the 'Cache hit' activity.
+                await context.budget.releaseSource(for: context.workerID)
+                context.emit(.sourceCacheHit(context.workerID, url))
+            } else {
+                context.emit(.sourceFetched(context.workerID, fetched))
+                await context.charge(fetched.extractedText.count / 4)
+            }
             let payload = try JSONEncoder().encode(fetched)
             return .ok(summary: "Fetched \(url.host ?? "page") (\(fetched.extractedText.count) chars, \(fetched.strategy.rawValue))",
                        payloadJSON: String(decoding: payload, as: UTF8.self))

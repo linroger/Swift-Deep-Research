@@ -663,3 +663,49 @@ AppEnvironment decomposition, no-tests-1). Work top-down in EXECPLAN2.md.
   UI responsiveness (inline-citations-tokenize, eventenvelope-encode,
   followup-turnhistory-corrupt). Larger/deferred: engine-dup-1 unification,
   AppEnvironment decomposition, no-tests-1 (pbxproj risk), sec-sandbox-off-2.
+
+  ========================================================================
+  SESSION 2026-06-15 (continuation) — Batch 6: engine correctness +
+  citation/cache integrity (+11 findings, BUILD SUCCEEDED Debug/macOS, 0
+  errors/0 warnings). HYBRID: the coupled engine cluster done in the main
+  loop (ResearchEngine/WorkerAgent/Synthesizer/Reflector/AgentBudget share
+  the WorkerOutput contract + round loop, so parallel agents would conflict);
+  4 independent findings fanned out to a background workflow on DISJOINT files
+  while the main loop worked — zero file overlap, both built together green.
+
+  Engine flow (main loop):
+  - engine-dedup-truncates-reflection-rounds: synthesizeDeepeningSubtasks now
+    rotates a 9-angle pool by round (was 3 fixed questions templated only on
+    userQuery → identical every round → self-filtered to empty → collapsed
+    thorough runs). Disjoint 3-angle window per round.
+  - engine-plan-truncation-silent: dispatchedQuestions Set (not the accumulated
+    plan) drives dedup; pendingSubtasks queue carries overflow beyond maxWorkers
+    to later rounds instead of dropping it and marking it 'asked'. Warnings emitted.
+  - engine-empty-worker-summary-pollutes-synthesis: WorkerOutput.hasFindings;
+    Synthesizer + Reflector filter empty-summary workers (sources still flow via
+    flatMap(\.sources)). WorkerAgent warns on thin/sourceless workers
+    (engine-source-target-unenforced; added WorkerOutput.sourcesRead).
+  - engine-hops-cap-decoupled-from-budget: maxHops = budget.toolCallBudget+8
+    (new BudgetMeter accessor) so the hop cap never binds before the 36-tool
+    thorough budget.
+  - research-tools-serial-toolcalls: a single turn's tool calls now run
+    concurrently in a withThrowingTaskGroup; budget slots reserved in order
+    first (cap-aware), results applied in original call order (provider
+    tool_result ordering preserved), cancellation propagates.
+  - engine-double-error-and-throw: error surfaced once via .error event +
+    finish() (was .error AND finish(throwing:) → double surface).
+
+  Citation/cache integrity (background workflow, 4 disjoint agents):
+  - research-tools-citation-substring (CitationExtractor): exactQuote verified as
+    a whitespace-collapsed, case-insensitive substring of a real source's text;
+    ungrounded quotes dropped, wrong-URL quotes repaired to the matching source.
+  - cache-sourcecachehit-never-emitted-3 (SourceCache + 4 tools): fetch() returns
+    (source, wasCached); on a hit tools releaseSource + emit .sourceCacheHit +
+    skip token charge; verified no other cache.fetch caller exists.
+  - engine-workerid-collision-risk (ResearchEvent): full UUID (was 6-char prefix
+    + hash mod 0xFFFF). event-id-hashvalue-instability-10 deferred (Refuted).
+  - store-duplicate-citations-2 (ResearchStore + AppEnvironment): replaceCitations
+    deletes the turn's existing rows before inserting; .draftReady repointed to it.
+
+  CATALOG PROGRESS: 61 / 150 findings done (41%). Branch audit-remediation-batch5
+  (commits 21a2f2a batch5, + this batch6). Not yet pushed/merged.

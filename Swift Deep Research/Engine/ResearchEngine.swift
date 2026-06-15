@@ -89,8 +89,25 @@ public struct ResearchEngine: Sendable {
                     emit(.planEmitted(plan))
 
                     var accumulatedOutputs: [WorkerOutput] = []
+                    // Track the questions actually DISPATCHED to workers (not the
+                    // full accumulated plan). The old dedup keyed off plan.subtasks,
+                    // which included subtasks queued-but-never-run beyond the worker
+                    // cap — so those were marked "asked" and never researched, even
+                    // in later rounds. A separate dispatched-set + an overflow queue
+                    // keeps unran subtasks eligible (engine-plan-truncation-silent).
+                    var dispatchedQuestions = Set<String>()
+                    var pendingSubtasks: [ResearchPlan.Subtask] = []
+
+                    let round1Batch = Array(plan.subtasks.prefix(config.budget.maxWorkers))
+                    let round1Overflow = Array(plan.subtasks.dropFirst(config.budget.maxWorkers))
+                    pendingSubtasks.append(contentsOf: round1Overflow)
+                    if !round1Overflow.isEmpty {
+                        emit(.warning("Plan has \(plan.subtasks.count) subtasks but only \(config.budget.maxWorkers) run per round — \(round1Overflow.count) queued for later rounds."))
+                    }
+                    for s in round1Batch { dispatchedQuestions.insert(s.question.lowercased()) }
+
                     let firstRound = try await Self.runWorkers(
-                        subtasks: Array(plan.subtasks.prefix(config.budget.maxWorkers)),
+                        subtasks: round1Batch,
                         parentQuery: query,
                         workerLLM: workerLLM,
                         tools: tools,
@@ -144,7 +161,12 @@ public struct ResearchEngine: Sendable {
                             // If the reflector returns nothing actionable,
                             // synthesize fallback subtasks so the round still
                             // contributes. This is what keeps "Round 4/6"
-                            // from being a no-op.
+                            // from being a no-op. The fallbacks are now distinct
+                            // per round (synthesizeDeepeningSubtasks rotates its
+                            // angles by `round`), so a quiet reflector no longer
+                            // regenerates the same three questions every round and
+                            // self-filters to empty (engine-dedup-truncates-
+                            // reflection-rounds).
                             if newSubtasks.isEmpty {
                                 newSubtasks = Self.synthesizeDeepeningSubtasks(
                                     plan: plan,
@@ -152,25 +174,50 @@ public struct ResearchEngine: Sendable {
                                     round: round + 1
                                 )
                             }
-                            // Drop duplicates of questions already explored.
-                            let asked = Set(plan.subtasks.map { $0.question.lowercased() })
-                            newSubtasks = newSubtasks.filter { !asked.contains($0.question.lowercased()) }
-                            if newSubtasks.isEmpty {
-                                // Genuinely nothing new to ask — end the loop
-                                // gracefully rather than spin.
+
+                            // Candidates = previously-queued overflow first (so
+                            // deferred planned work runs before brand-new gaps),
+                            // then this round's fresh subtasks. Dedup against what
+                            // was actually DISPATCHED and against intra-batch
+                            // repeats, preserving order.
+                            let candidatesRaw = pendingSubtasks + newSubtasks
+                            pendingSubtasks = []
+                            var candidates: [ResearchPlan.Subtask] = []
+                            var seenThisRound = Set<String>()
+                            for s in candidatesRaw {
+                                let key = s.question.lowercased()
+                                if dispatchedQuestions.contains(key) { continue }
+                                if !seenThisRound.insert(key).inserted { continue }
+                                candidates.append(s)
+                            }
+                            if candidates.isEmpty {
+                                // Genuinely nothing new to ask and nothing queued —
+                                // end the loop gracefully rather than spin.
                                 emit(.reflectionConcluded(continuing: false, remainingGaps: 0))
                                 break
                             }
 
                             round += 1
-                            emit(.reflectionConcluded(continuing: true, remainingGaps: newSubtasks.count))
+                            emit(.reflectionConcluded(continuing: true, remainingGaps: candidates.count))
                             emit(.iterationStarted(round: round, of: iteration.maxRounds))
+
+                            // Dispatch up to the worker cap; re-queue the rest for a
+                            // later round instead of dropping it. Only the dispatched
+                            // subtasks join the plan and the asked-set, so queued
+                            // overflow stays eligible (engine-plan-truncation-silent).
+                            let toRun = Array(candidates.prefix(config.budget.maxWorkers))
+                            let overflow = Array(candidates.dropFirst(config.budget.maxWorkers))
+                            pendingSubtasks.append(contentsOf: overflow)
+                            if !overflow.isEmpty {
+                                emit(.warning("\(overflow.count) follow-up subtask(s) queued for a later round (worker cap \(config.budget.maxWorkers))."))
+                            }
+                            for s in toRun { dispatchedQuestions.insert(s.question.lowercased()) }
 
                             plan = ResearchPlan(
                                 userQuery: plan.userQuery,
                                 restatement: plan.restatement,
                                 strategy: plan.strategy,
-                                subtasks: plan.subtasks + newSubtasks,
+                                subtasks: plan.subtasks + toRun,
                                 estimatedComplexity: plan.estimatedComplexity,
                                 estimatedTokenBudget: plan.estimatedTokenBudget
                             )
@@ -181,7 +228,7 @@ public struct ResearchEngine: Sendable {
                             // verbatim repeats, not semantic overlap).
                             let priorContext = WorkerOutput.digest(of: accumulatedOutputs)
                             let refinementOutputs = try await Self.runWorkers(
-                                subtasks: Array(newSubtasks.prefix(config.budget.maxWorkers)),
+                                subtasks: toRun,
                                 parentQuery: query,
                                 workerLLM: workerLLM,
                                 tools: tools,
@@ -214,14 +261,20 @@ public struct ResearchEngine: Sendable {
                     emit(.error(EngineFailure(kind: .cancelled, message: "Research cancelled")))
                     continuation.finish()
                 } catch let failure as EngineFailure {
+                    // Surface the failure EXACTLY ONCE — via the .error event — and
+                    // finish the stream cleanly. Previously this both emitted .error
+                    // AND finished(throwing:), so a consumer that renders .error
+                    // events and ALSO catches the stream throw showed the same
+                    // failure twice (engine-double-error-and-throw). The cancelled
+                    // path above already established the emit-then-finish() contract.
                     emit(.error(failure))
-                    continuation.finish(throwing: failure)
+                    continuation.finish()
                 } catch {
                     let wrapped = EngineFailure(kind: .unknown,
                                                 message: error.localizedDescription,
                                                 underlying: String(describing: error))
                     emit(.error(wrapped))
-                    continuation.finish(throwing: wrapped)
+                    continuation.finish()
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
@@ -301,42 +354,55 @@ public struct ResearchEngine: Sendable {
     }
 
     /// Fallback subtasks when the reflector returns nothing usable. Generated
-    /// deterministically from the existing plan + worker outputs so we never
-    /// blow a round on an empty critique. Targets the three angles a deep
-    /// research analyst typically opens up next: cross-verification,
-    /// quantitative specifics, and adjacent context.
+    /// deterministically from the existing plan so we never blow a round on an
+    /// empty critique.
+    ///
+    /// The angles ROTATE by round. The previous version templated three fixed
+    /// questions purely on `userQuery` (with `round` only in the rationale text),
+    /// so a quiet reflector regenerated byte-identical questions every round —
+    /// which the asked-question dedup then filtered to empty, collapsing a
+    /// thorough 6-round run into far fewer effective rounds
+    /// (engine-dedup-truncates-reflection-rounds). Drawing a distinct 3-angle
+    /// window per round keeps later rounds producing genuinely new directions.
     private static func synthesizeDeepeningSubtasks(plan: ResearchPlan,
                                                     workerOutputs: [WorkerOutput],
                                                     round: Int) -> [ResearchPlan.Subtask] {
-        let userQuery = plan.userQuery
-        return [
-            ResearchPlan.Subtask(
-                question: "What are the most recent (last 30-90 days) updates, releases, or developments related to: \(userQuery)?",
-                rationale: "Engine-injected deepening round \(round): keep the answer current; the original plan may miss late-breaking information.",
-                suggestedQueries: [
-                    "\(userQuery) latest update",
-                    "\(userQuery) news 2026",
-                    "\(userQuery) recent release"
-                ]
-            ),
-            ResearchPlan.Subtask(
-                question: "Find independent or contrarian sources that critique, contradict, or qualify the main claims so far about: \(userQuery).",
-                rationale: "Engine-injected deepening round \(round): cross-verify load-bearing claims and surface counter-evidence.",
-                suggestedQueries: [
-                    "\(userQuery) criticism",
-                    "\(userQuery) limitations",
-                    "\(userQuery) benchmark comparison"
-                ]
-            ),
-            ResearchPlan.Subtask(
-                question: "What technical specifics, exact numbers, benchmarks, datasets, or quantitative comparisons would sharpen the analysis of: \(userQuery)?",
-                rationale: "Engine-injected deepening round \(round): replace generic descriptions with hard numbers.",
-                suggestedQueries: [
-                    "\(userQuery) benchmark",
-                    "\(userQuery) performance numbers",
-                    "\(userQuery) technical specifications"
-                ]
-            )
+        let q = plan.userQuery
+        // A pool of deepening angles a research analyst opens up next. Each round
+        // takes a sliding window of three, so consecutive rounds are disjoint.
+        let pool: [ResearchPlan.Subtask] = [
+            .init(question: "What are the most recent (last 30-90 days) updates, releases, or developments related to: \(q)?",
+                  rationale: "Deepening: keep the answer current; the plan may miss late-breaking information.",
+                  suggestedQueries: ["\(q) latest update", "\(q) news 2026", "\(q) recent release"]),
+            .init(question: "Find independent or contrarian sources that critique, contradict, or qualify the main claims so far about: \(q).",
+                  rationale: "Deepening: cross-verify load-bearing claims and surface counter-evidence.",
+                  suggestedQueries: ["\(q) criticism", "\(q) limitations", "\(q) controversy"]),
+            .init(question: "What technical specifics, exact numbers, benchmarks, datasets, or quantitative comparisons would sharpen the analysis of: \(q)?",
+                  rationale: "Deepening: replace generic descriptions with hard numbers.",
+                  suggestedQueries: ["\(q) benchmark", "\(q) performance numbers", "\(q) technical specifications"]),
+            .init(question: "How does \(q) compare to its main alternatives or competitors, and what are the tradeoffs?",
+                  rationale: "Deepening: situate the answer against comparables the draft alludes to but doesn't develop.",
+                  suggestedQueries: ["\(q) vs alternatives", "\(q) comparison", "\(q) competitors"]),
+            .init(question: "What is the history, timeline, and origin of \(q), and how did it reach its current state?",
+                  rationale: "Deepening: add the historical/ecosystem context that frames the present.",
+                  suggestedQueries: ["\(q) history", "\(q) timeline", "\(q) origin"]),
+            .init(question: "What are the known failure modes, edge cases, risks, or unresolved problems with \(q)?",
+                  rationale: "Deepening: probe where it breaks down rather than only where it works.",
+                  suggestedQueries: ["\(q) problems", "\(q) failure cases", "\(q) risks"]),
+            .init(question: "What do domain experts, primary documentation, or original authors say about \(q) (vs secondary commentary)?",
+                  rationale: "Deepening: pull toward primary and expert sources for grounding.",
+                  suggestedQueries: ["\(q) documentation", "\(q) expert analysis", "\(q) original paper"]),
+            .init(question: "How is \(q) actually adopted or used in practice, and what real-world results or case studies exist?",
+                  rationale: "Deepening: replace theory with concrete real-world evidence.",
+                  suggestedQueries: ["\(q) case study", "\(q) real world results", "\(q) adoption"]),
+            .init(question: "What future trends, roadmaps, or open research questions surround \(q)?",
+                  rationale: "Deepening: extend the answer forward to where the topic is heading.",
+                  suggestedQueries: ["\(q) future", "\(q) roadmap", "\(q) open problems"]),
         ]
+        // round is the upcoming round (>= 2). Slide a 3-wide window; disjoint for
+        // the first three reflection rounds, wrapping gracefully after that (a
+        // wrapped repeat is filtered by the dispatched-set and the round ends).
+        let base = max(0, round - 2) * 3
+        return (0..<3).map { pool[(base + $0) % pool.count] }
     }
 }

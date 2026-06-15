@@ -68,10 +68,40 @@ public struct CitationExtractor: Sendable {
         }
         do {
             let wire = try JSONDecoder().decode(Wire.self, from: json.data(using: .utf8) ?? Data())
+            // Pre-normalize every source's text once so the per-citation verification
+            // is O(citations × sources) on already-collapsed strings rather than
+            // re-normalizing the (large) corpus for each candidate.
+            let normalizedSources = sources.map { (src: $0, normalizedText: Self.normalizeWhitespace($0.extractedText)) }
             return wire.citations.compactMap { c in
                 guard let url = URL(string: c.sourceURL) else { return nil }
-                return Citation(sourceURL: url,
-                                sourceTitle: c.sourceTitle,
+                let normalizedQuote = Self.normalizeWhitespace(c.exactQuote)
+                // Empty/whitespace-only quotes can't be grounded; drop them so a model
+                // that emits "" doesn't smuggle in a citation that trivially "matches".
+                guard !normalizedQuote.isEmpty else { return nil }
+
+                // Anti-hallucination gate: the exactQuote MUST appear (whitespace-
+                // tolerant, case-insensitive) in a real source's extractedText, or the
+                // citation is fabricated. Prefer the source the model named (by URL,
+                // then title); fall back to scanning the whole corpus so a correct
+                // quote tagged with the wrong URL is repaired rather than discarded.
+                let named = normalizedSources.first { $0.src.url == url }
+                    ?? normalizedSources.first { $0.src.title.caseInsensitiveCompare(c.sourceTitle) == .orderedSame }
+                let match: FetchedSource?
+                if let named, named.normalizedText.range(of: normalizedQuote, options: .caseInsensitive) != nil {
+                    match = named.src
+                } else {
+                    match = normalizedSources.first {
+                        $0.normalizedText.range(of: normalizedQuote, options: .caseInsensitive) != nil
+                    }?.src
+                }
+                guard let source = match else {
+                    Log.tool.warning("Dropping ungrounded citation; exactQuote not found in any source: \(c.exactQuote, privacy: .public)")
+                    return nil
+                }
+                // Repair the URL/title to whichever source actually contains the quote;
+                // for a clean match against the named source these are unchanged.
+                return Citation(sourceURL: source.url,
+                                sourceTitle: source.title,
                                 exactQuote: c.exactQuote,
                                 claim: c.claim)
             }
@@ -79,6 +109,16 @@ public struct CitationExtractor: Sendable {
             Log.tool.warning("Citation extraction failed: \(error.localizedDescription, privacy: .public)")
             return []
         }
+    }
+
+    /// Collapse every run of whitespace (spaces, tabs, newlines) to a single space
+    /// and trim the ends, so a quote and its source text compare equal even when the
+    /// LLM re-wrapped lines or normalized indentation. This is the "whitespace
+    /// tolerant" half of the verbatim-grounding promise made in the prompt; the
+    /// case-insensitive `range(of:)` call supplies the rest.
+    private static func normalizeWhitespace(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
     }
 
 }

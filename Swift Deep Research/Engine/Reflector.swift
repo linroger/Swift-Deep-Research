@@ -39,7 +39,11 @@ public struct Reflector: Sendable {
                          mode: Mode = .gapFinding,
                          minSubtasks: Int = 3,
                          maxSubtasks: Int = 6) async throws -> Critique {
-        let workerSection = workerOutputs.map { o in
+        // Only list workers that actually produced findings. An empty summary
+        // rendered as "- **<question>** → " reads as "answered" to the critic and
+        // suppresses legitimate gap-finding for a sub-question nobody covered
+        // (engine-empty-worker-summary-pollutes-synthesis).
+        let workerSection = workerOutputs.filter(\.hasFindings).map { o in
             "- **\(o.subtask.question)** → \(Clip.clip(o.summary, to: 800))"
         }.joined(separator: "\n")
         let sourceURLs = workerOutputs.flatMap(\.sources).map(\.url.absoluteString)

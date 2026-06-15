@@ -47,8 +47,9 @@ public struct PDFReaderTool: ResearchTool {
         let maxPages = max(1, min(args.maxPages ?? 60, 200))
         let session = self.session
         let fetched: FetchedSource
+        let wasCached: Bool
         do {
-            fetched = try await context.cache.fetch(url) { resolved in
+            (fetched, wasCached) = try await context.cache.fetch(url) { resolved in
                 var req = URLRequest(url: resolved)
                 req.setValue("application/pdf", forHTTPHeaderField: "Accept")
                 req.setValue(HTTPClientCommon.browserUserAgent, forHTTPHeaderField: "User-Agent")
@@ -72,8 +73,16 @@ public struct PDFReaderTool: ResearchTool {
             await context.budget.releaseSource(for: context.workerID)
             return .failed(message: "read_pdf failed: \(error.localizedDescription)")
         }
-        context.emit(.sourceFetched(context.workerID, fetched))
-        await context.charge(fetched.extractedText.count / 4)
+        if wasCached {
+            // Cache/in-flight hit: no new download happened, so give back the
+            // reserved source slot and skip the token charge (re-charging would
+            // double-count), then surface the dedup to the UI.
+            await context.budget.releaseSource(for: context.workerID)
+            context.emit(.sourceCacheHit(context.workerID, url))
+        } else {
+            context.emit(.sourceFetched(context.workerID, fetched))
+            await context.charge(fetched.extractedText.count / 4)
+        }
         let payload = try JSONEncoder().encode(fetched)
         return .ok(summary: "Read PDF: \(fetched.title) (\(fetched.extractedText.count) chars)",
                    payloadJSON: String(decoding: payload, as: UTF8.self))

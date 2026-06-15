@@ -105,11 +105,13 @@ public actor WorkerAgent {
         let toolSpecs = tools.values.map { $0.spec }
 
         var hops = 0
-        // Cap LLM round-trips. The real ceiling on tool calls is enforced by
-        // BudgetMeter.maxToolCallsPerWorker per budget mode (6 fast, 12
-        // standard, 24 thorough); maxHops here is a safety net against an LLM
-        // that keeps "thinking" without producing a final answer.
-        let maxHops = 32
+        // Cap LLM round-trips against an LLM that keeps "thinking" without
+        // finishing. Derive the cap from the per-worker tool-call budget plus
+        // headroom for thinking/summary hops, so the hop cap never binds BEFORE
+        // the tool budget is spent — a fixed 32 cut thorough workers (36 tool
+        // calls) off early (engine-hops-cap-decoupled-from-budget). With tool
+        // calls now dispatched concurrently per hop, hops needed ≤ tool budget.
+        let maxHops = await budget.toolCallBudget + 8
         var collectedSources: [FetchedSource] = []
         var lastText = ""
 
@@ -150,53 +152,92 @@ public actor WorkerAgent {
                     .toolCall(id: call.id, name: call.name, argumentsJSON: call.argumentsJSON)
                 } + (completion.text.isEmpty ? [] : [.text(completion.text)])))
 
+                // Reserve a tool-call budget slot for each call IN ORDER, stopping
+                // at the per-worker cap. Hitting the cap is a normal stop for this
+                // worker (keep the sources gathered so far), not a fatal run error.
+                var reserved: [ToolInvocation] = []
+                var capHit = false
                 for call in completion.toolCalls {
                     let invocation = ToolInvocation(id: call.id,
                                                    name: call.name,
                                                    argumentsJSON: call.argumentsJSON)
                     emit(.toolInvoked(id, invocation))
-                    // Per-worker tool-call cap. Hitting it is a normal stop for
-                    // this worker, not a fatal run error — end the loop and keep
-                    // the sources collected so far.
                     do {
                         try await budget.registerToolCall(by: id)
                     } catch {
-                        break toolLoop
+                        capHit = true
+                        break
                     }
+                    reserved.append(invocation)
+                }
 
-                    let outcome: ToolOutcome
-                    if let tool = tools[call.name] {
-                        let context = ToolContext(
-                            workerID: id,
-                            session: session,
-                            emit: emit,
-                            charge: { tokens in try? await self.budget.chargeTokens(tokens) },
-                            budget: budget,
-                            cache: cache
-                        )
-                        do {
-                            outcome = try await tool.call(argumentsJSON: call.argumentsJSON, context: context)
-                        } catch is CancellationError {
-                            throw CancellationError()
-                        } catch {
-                            outcome = .failed(message: "Tool \(call.name) threw: \(error.localizedDescription)")
+                // Run the reserved tool calls CONCURRENTLY. They are independent
+                // network/IO operations and the SourceCache dedupes in-flight
+                // fetches, so serializing them was pure latency — a worker reading
+                // 6 URLs took ~6× a single fetch (research-tools-serial-toolcalls).
+                // Results are collected by index so tool_result messages append in
+                // the SAME order as the assistant's tool_calls, which several
+                // providers require. Genuine cancellation propagates out of the
+                // group; any other tool error becomes a .failed outcome.
+                let toolsByName = tools
+                let workerID = id
+                let workerSession = session
+                let workerEmit = emit
+                let workerBudget = budget
+                let workerCache = cache
+                let outcomes: [ToolOutcome] = try await withThrowingTaskGroup(of: (Int, ToolOutcome).self) { group in
+                    for (index, invocation) in reserved.enumerated() {
+                        let tool = toolsByName[invocation.name]
+                        let argumentsJSON = invocation.argumentsJSON
+                        let toolName = invocation.name
+                        group.addTask {
+                            let outcome: ToolOutcome
+                            if let tool {
+                                let context = ToolContext(
+                                    workerID: workerID,
+                                    session: workerSession,
+                                    emit: workerEmit,
+                                    charge: { tokens in try? await workerBudget.chargeTokens(tokens) },
+                                    budget: workerBudget,
+                                    cache: workerCache
+                                )
+                                do {
+                                    outcome = try await tool.call(argumentsJSON: argumentsJSON, context: context)
+                                } catch is CancellationError {
+                                    throw CancellationError()
+                                } catch {
+                                    outcome = .failed(message: "Tool \(toolName) threw: \(error.localizedDescription)")
+                                }
+                            } else {
+                                outcome = .failed(message: "Unknown tool: \(toolName)")
+                            }
+                            return (index, outcome)
                         }
-                    } else {
-                        outcome = .failed(message: "Unknown tool: \(call.name)")
                     }
-                    emit(.toolResult(id, invocation, outcome))
+                    var collected = [ToolOutcome?](repeating: nil, count: reserved.count)
+                    for try await (index, outcome) in group {
+                        collected[index] = outcome
+                    }
+                    return collected.map { $0 ?? .failed(message: "Tool produced no outcome") }
+                }
 
+                // Process results in original order: emit, thread the tool_result
+                // back into the conversation, and collect any new sources.
+                for (index, invocation) in reserved.enumerated() {
+                    let outcome = outcomes[index]
+                    emit(.toolResult(id, invocation, outcome))
                     let output: String = switch outcome {
                     case .ok(_, let payload): payload
                     case .failed(let m): "ERROR: \(m)"
                     }
-                    messages.append(.toolResult(callID: call.id, name: call.name, output: output))
+                    messages.append(.toolResult(callID: invocation.id, name: invocation.name, output: output))
 
                     for fetched in Self.fetchedSources(from: outcome)
                         where !collectedSources.contains(where: { $0.id == fetched.id || $0.url == fetched.url }) {
                         collectedSources.append(fetched)
                     }
                 }
+                if capHit { break toolLoop }
                 // Tools charge tokens through the non-throwing `ToolContext.charge`
                 // (try? swallows the cap throw). Re-assert the token cap here so a
                 // tool-heavy hop that crossed the budget stops the worker now
@@ -213,6 +254,18 @@ public actor WorkerAgent {
                 emit(.warning("Worker \(id.raw) stopped early: \(error.localizedDescription)"))
                 break toolLoop
             }
+        }
+
+        // Surface weak triangulation. The source target is prompt-only — nothing
+        // forces the LLM to actually read sources — so a worker that ignored the
+        // instruction and read 0–1 sources still returns successfully. Emit a
+        // warning so a thinly-sourced (or sourceless) worker is visible in the
+        // activity log and its `sourcesRead` lets synthesis/reflection down-weight
+        // it, instead of being silently accepted as grounded
+        // (engine-source-target-unenforced).
+        let sourceFloor = min(2, sourceTarget)
+        if collectedSources.count < sourceFloor {
+            emit(.warning("Worker \(id.raw) read only \(collectedSources.count) source(s) (target \(sourceTarget)) — its findings are weakly triangulated."))
         }
 
         emit(.workerCompleted(id, summary: Clip.clip(lastText, to: 200)))
@@ -254,6 +307,18 @@ public struct WorkerOutput: Sendable {
     public let subtask: ResearchPlan.Subtask
     public let summary: String
     public let sources: [FetchedSource]
+
+    /// Distinct sources this worker actually read. Lets the synthesizer and
+    /// reflector down-weight or target workers that triangulated thinly, and is
+    /// the structured signal `engine-source-target-unenforced` asked for.
+    public var sourcesRead: Int { sources.count }
+
+    /// A worker that exhausted its hops/tool-calls without ever emitting a final
+    /// summary returns `summary == ""`. Such outputs must not be rendered as
+    /// answered sections in synthesis or listed as covered by the reflector
+    /// (engine-empty-worker-summary-pollutes-synthesis) — their sources still
+    /// feed the citation/source table separately.
+    public var hasFindings: Bool { !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 }
 
 public extension WorkerOutput {

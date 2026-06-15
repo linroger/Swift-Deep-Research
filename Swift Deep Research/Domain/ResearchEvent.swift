@@ -72,7 +72,16 @@ public struct WorkerID: Sendable, Hashable, Codable, RawRepresentable {
     public init(rawValue: String) { self.rawValue = rawValue }
     public var raw: String { rawValue }
     public static func make(_ task: String) -> WorkerID {
-        WorkerID(rawValue: "w-\(task.hashValue.magnitude % 0xFFFF)-\(UUID().uuidString.prefix(6))")
+        // Uniqueness comes solely from a full UUID so two workers can never
+        // collide — even across rounds. The prior scheme reduced the task hash
+        // mod 0xFFFF and kept only a 6-char UUID prefix, both of which had a
+        // small but nonzero collision chance; a collision would silently merge
+        // two workers' live snapshots (keyed by WorkerID in the UI). The full
+        // UUID guarantees uniqueness; the task hash stays only as a stable,
+        // human-readable display prefix. (Note: String.hashValue is
+        // per-process-randomized, so the prefix is for readability within a
+        // run, not a persistence key.)
+        WorkerID(rawValue: "w-\(task.hashValue.magnitude % 0xFFFF)-\(UUID().uuidString)")
     }
 }
 

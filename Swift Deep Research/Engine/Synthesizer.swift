@@ -23,8 +23,13 @@ public struct Synthesizer: Sendable {
                            conversation: ConversationContext = ConversationContext(),
                            budget: BudgetMeter,
                            emit: @escaping @Sendable (ResearchEvent) -> Void) async throws -> DraftDescriptor {
-        // Aggregate worker findings.
-        let workerSection = workerOutputs.map { o in
+        // Aggregate worker findings. Skip workers that produced no final summary
+        // (exhausted hops/tool-calls without prose): rendering an empty
+        // "## Worker … — <question>" section injects noise and implies the
+        // sub-question was answered when it wasn't. Their sources still flow into
+        // the numbered source table below via flatMap(\.sources), so nothing
+        // citable is lost (engine-empty-worker-summary-pollutes-synthesis).
+        let workerSection = workerOutputs.filter(\.hasFindings).map { o in
             """
             ## Worker \(o.workerID.raw) — \(o.subtask.question)
             \(o.summary)

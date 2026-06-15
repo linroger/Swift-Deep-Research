@@ -594,7 +594,10 @@ public final class LiveSession: Identifiable {
                                                            markdown: descriptor.markdown)
                 }
                 if let turn = self.draftTurn {
-                    try? store.attachCitations(descriptor.citations, to: turn)
+                    // Replace, don't append: reflection re-emits `.draftReady` for
+                    // the SAME turn, and each run mints fresh citation ids, so a
+                    // plain attach would duplicate the set once per round.
+                    try? store.replaceCitations(descriptor.citations, on: turn)
                 }
             }
         case .reflectionStarted(let round):

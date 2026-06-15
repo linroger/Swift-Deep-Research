@@ -29,19 +29,26 @@ public actor SourceCache {
 
     /// Fetch the URL or hand back a cached/in-flight version. The closure runs
     /// at most once per normalized URL per session.
+    ///
+    /// `wasCached` reports whether the result was served *without* running the
+    /// extractor — true for both a completed-cache hit and an in-flight dedup
+    /// (where another worker is already fetching the same URL). Callers use this
+    /// to avoid double-charging the per-worker source budget and token budget on
+    /// a URL that incurred no new network fetch, and to surface the dedup to the
+    /// UI via `.sourceCacheHit`. Only a genuine miss returns `wasCached: false`.
     public func fetch(_ url: URL,
-                      using extractor: @Sendable @escaping (URL) async throws -> FetchedSource) async throws -> FetchedSource {
+                      using extractor: @Sendable @escaping (URL) async throws -> FetchedSource) async throws -> (source: FetchedSource, wasCached: Bool) {
         let key = Self.normalize(url)
-        if let cached = cached[key] { return cached }
+        if let cached = cached[key] { return (cached, true) }
         if let task = inFlight[key] {
-            return try await task.value
+            return (try await task.value, true)
         }
         let task = Task { try await extractor(url) }
         inFlight[key] = task
         defer { inFlight[key] = nil }
         let result = try await task.value
         store(key: key, value: result)
-        return result
+        return (result, false)
     }
 
     private func store(key: String, value: FetchedSource) {
