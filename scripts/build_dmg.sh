@@ -17,6 +17,7 @@
 #
 # Safe to re-run; it cleans its own intermediate staging each time.
 set -euo pipefail
+export LC_ALL=${LC_ALL:-en_US.UTF-8} LANG=${LANG:-en_US.UTF-8}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -32,7 +33,7 @@ STAGE="$ROOT_DIR/release/dmg-stage"
 
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 
-bold "==> Building $CONFIG ($SCHEME)…"
+bold "==> Building $CONFIG ($SCHEME)..."
 rm -rf "$STAGE"
 mkdir -p "$OUT_DIR" "$STAGE"
 
@@ -59,7 +60,7 @@ fi
 DMG_NAME="Swift-Deep-Research-${VERSION}.dmg"
 DMG_PATH="$OUT_DIR/$DMG_NAME"
 
-bold "==> Staging app + /Applications symlink…"
+bold "==> Staging app + /Applications symlink..."
 cp -R "$APP_PATH" "$STAGE/$APP_NAME.app"
 ln -s /Applications "$STAGE/Applications"
 
@@ -67,7 +68,7 @@ ln -s /Applications "$STAGE/Applications"
 # after the copy (xcodebuild already ad-hoc signs, but re-sign to be safe).
 codesign --force --deep --sign - "$STAGE/$APP_NAME.app" 2>/dev/null || true
 
-bold "==> Creating $DMG_NAME…"
+bold "==> Creating ${DMG_NAME} ..."
 rm -f "$DMG_PATH"
 hdiutil create \
   -volname "$APP_NAME" \
